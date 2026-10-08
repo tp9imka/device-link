@@ -15,8 +15,6 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import java.io.File
 import java.io.FileOutputStream
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import java.security.SecureRandom
 import java.util.UUID
 
@@ -41,11 +39,11 @@ class NativeLinkController(context: Context, private val scope: CoroutineScope) 
     private var authenticationCode = ""
     private var agreement: EphemeralAgreement? = null
     private var secureChannel: SecureChannel? = null
-    private val sendLock = Mutex()
+    private val frameWrites = FrameWriteGate(onPendingChanged = { updateWakeLock() }) { radio.send(it) }
     private val transferWakeLock = (this.context.getSystemService(Context.POWER_SERVICE) as android.os.PowerManager)
         .newWakeLock(android.os.PowerManager.PARTIAL_WAKE_LOCK, "DeviceLink:transfer").apply { setReferenceCounted(false) }
     private fun updateWakeLock() {
-        if (activeCount() > 0) {
+        if (protectedWorkCount() > 0) {
             if (!transferWakeLock.isHeld) transferWakeLock.acquire(10 * 60_000L)
         } else if (transferWakeLock.isHeld) transferWakeLock.release()
     }
@@ -77,6 +75,7 @@ class NativeLinkController(context: Context, private val scope: CoroutineScope) 
     private fun message(id: Int) = context.getString(id)
     private fun error(id: Int) { mutable.update { it.copy(error = message(id)) } }
     private fun activeCount() = mutable.value.transfers.count { it.status == TransferStatus.TRANSFERRING }
+    private fun protectedWorkCount() = activeCount() + frameWrites.pendingWrites(generation)
     private fun expired() = SessionPolicy.expired(deadline, SystemClock.elapsedRealtime())
     private val progressPublished = mutableMapOf<String, Long>()
     private fun updateTransfer(id: String, transform: (Transfer) -> Transfer) {
@@ -120,7 +119,7 @@ class NativeLinkController(context: Context, private val scope: CoroutineScope) 
         timer = scope.launch(Dispatchers.Main.immediate) {
             while (isActive && generation == session) {
                 mutable.update { it.copy(remainingSeconds = ((deadline - SystemClock.elapsedRealtime()) / 1000).coerceAtLeast(0)) }
-                if (SessionPolicy.shouldStop(deadline, SystemClock.elapsedRealtime(), activeCount())) { stopInternal(); break }
+                if (SessionPolicy.shouldStop(deadline, SystemClock.elapsedRealtime(), protectedWorkCount())) { stopInternal(); break }
                 delay(1000)
             }
         }
@@ -192,7 +191,15 @@ class NativeLinkController(context: Context, private val scope: CoroutineScope) 
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (_: Exception) { if (session == generation && mutable.value.enabled) disconnectWithError(R.string.link_protocol_error) }
         }
-        override fun failed() { if (mutable.value.enabled) disconnectWithError(R.string.link_connect_error) }
+        override fun failed() {
+            if (!mutable.value.enabled) return
+            val reason = when {
+                activeCount() > 0 -> R.string.link_transfer_error
+                mutable.value.phase == LinkPhase.CONNECTED -> R.string.link_disconnected
+                else -> R.string.link_connect_error
+            }
+            disconnectWithError(reason)
+        }
     }
     override fun connect(endpointId: String) = main {
         if (mutable.value.phase != LinkPhase.SEARCHING || expired()) return@main
@@ -211,21 +218,21 @@ class NativeLinkController(context: Context, private val scope: CoroutineScope) 
         val session = generation
         main {
             try {
-                sendLock.withLock {
-                    if (session != generation) return@withLock
+                frameWrites.write(session) {
+                    check(session == generation)
                     val bytes = WireCodec.encode(value)
                     val frame = if (value is WireMessage.Hello || value is WireMessage.Commitment) byteArrayOf(0) + bytes
                         else byteArrayOf(1) + requireNotNull(secureChannel).encrypt(byteArrayOf(1) + bytes)
-                    radio.send(frame)
+                    frame
                 }
             } catch (_: Exception) { if (generation == session) disconnectWithError(R.string.link_transfer_error) }
         }
     }
     private suspend fun sendFileFrame(payloadId: Long, bytes: ByteArray?, session: Long) {
-        sendLock.withLock {
+        frameWrites.write(session) {
             check(session == generation)
             val plain = FileFrames.encode(payloadId, bytes)
-            radio.send(byteArrayOf(1) + requireNotNull(secureChannel).encrypt(plain))
+            byteArrayOf(1) + requireNotNull(secureChannel).encrypt(plain)
         }
     }
     private fun receive(wire: WireMessage) {
@@ -352,7 +359,15 @@ class NativeLinkController(context: Context, private val scope: CoroutineScope) 
         try {
             val size = if (descriptor.statSize >= 0) descriptor.statSize else declaredSize
             require(size in 0..WireCodec.MAX_FILE_BYTES)
-            val mime = context.contentResolver.getType(uri)?.takeIf { it.length <= 128 } ?: "application/octet-stream"
+            // FileProvider's backing filename is an opaque ID, so preserve our verified receipt MIME on return sharing.
+            val receivedMime = if (uri.authority == "${context.packageName}.files") {
+                mutable.value.transfers.firstOrNull { item ->
+                    item.id == uri.lastPathSegment && item.kind == TransferKind.FILE &&
+                        item.direction == TransferDirection.INCOMING && item.status == TransferStatus.COMPLETE &&
+                        item.localUri?.let { Uri.parse(it).path } == uri.path
+                }?.mimeType
+            } else null
+            val mime = receivedMime ?: context.contentResolver.getType(uri)?.takeIf { it.length <= 128 } ?: "application/octet-stream"
             WireMessage.Offer(UUID.randomUUID().toString(), FileNames.sanitize(name), size, mime, TransferKind.FILE, SecureRandom().nextLong()) to PreparedFile(descriptor)
         } catch (failure: Exception) { descriptor.close(); throw failure }
     }.getOrNull()
@@ -421,7 +436,7 @@ class NativeLinkController(context: Context, private val scope: CoroutineScope) 
             if (!receivingIo(offer.id, session) { stream.fd.sync(); stream.close() }) return
             incomingStreams.remove(offer.id); incomingCounts.remove(offer.id)
             val file = File(context.filesDir, "received/${offer.id}")
-            val uri = FileProvider.getUriForFile(context, "${context.packageName}.files", file).toString()
+            val uri = FileProvider.getUriForFile(context, "${context.packageName}.files", file, transfer.name).toString()
             val completed = transfer.copy(status = TransferStatus.COMPLETE, transferredBytes = offer.size, localUri = uri)
             finalizing.add(offer.id)
             try {

@@ -71,6 +71,11 @@ private staging storage and durably recording its index before a receipt.
 Per-item index mutations protect concurrent removal and completion. Cancellation
 or failed persistence rolls back staging/index changes; startup removes abandoned
 partial files.
+
+Encrypted frame writes serialize counter allocation and socket output. Cancelling
+one transfer cannot abandon a consumed cipher counter halfway through a write;
+socket failures close the link, and a stalled write has a 30-second close watchdog.
+Session expiry waits for pending acknowledgements as well as active transfers.
 Partial files are removed on cancellation/failure. Completed files use a scoped
 FileProvider URI for Open/Save/Share.
 

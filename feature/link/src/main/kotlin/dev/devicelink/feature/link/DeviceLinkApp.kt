@@ -158,7 +158,7 @@ fun DeviceLinkApp(state: LinkState, controller: LinkController, appearanceStore:
                         if (state.transfers.isEmpty()) item {
                             LinkPanel { QuietMessage(stringResource(R.string.dl_empty_title), stringResource(R.string.dl_empty_body)) }
                         }
-                        items(state.transfers.asReversed(), key = { it.id }) { transfer -> TransferCard(transfer, controller, callbacks) }
+                        items(state.transfers, key = { it.id }) { transfer -> TransferCard(transfer, controller, callbacks) }
                         item { Text(stringResource(R.string.dl_battery), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                     }
                 }

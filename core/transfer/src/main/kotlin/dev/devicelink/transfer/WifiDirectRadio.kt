@@ -252,8 +252,23 @@ internal class WifiDirectRadio(
         // Called on Main. Capture the exact writer before dispatch; never publish into a newer session.
         require(bytes.size in 1..MAX_FRAME)
         val writer = output ?: error("Disconnected")
-        withContext(Dispatchers.IO) {
-            writeLock.withLock { writer.writeInt(bytes.size); writer.write(bytes); writer.flush() }
+        val session = epoch
+        // Java socket writes are blocking; cancelling a coroutine cannot interrupt them.
+        val watchdog = scope.launch(Dispatchers.Main.immediate) {
+            delay(30_000)
+            if (isCurrent(session) && output === writer) events.failed()
+        }
+        try {
+            withContext(Dispatchers.IO) {
+                writeLock.withLock { writer.writeInt(bytes.size); writer.write(bytes); writer.flush() }
+            }
+        } catch (cancelled: CancellationException) { throw cancelled }
+        catch (failure: Exception) {
+            // A partial TCP frame cannot be recovered by appending a Cancel message to this stream.
+            if (isCurrent(session) && output === writer) events.failed()
+            throw failure
+        } finally {
+            watchdog.cancel()
         }
     }
     fun stop() {

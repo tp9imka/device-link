@@ -4,6 +4,7 @@ import android.content.Context
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
+import androidx.core.content.FileProvider
 import dev.devicelink.model.Peer
 import dev.devicelink.model.Transfer
 import dev.devicelink.model.TransferDirection
@@ -49,13 +50,14 @@ internal class IdentityStore(context: Context) {
     }
     fun receivedFiles(context: Context): List<Transfer> = runCatching {
         val array = JSONArray(prefs.getString("received", "[]"))
-        List(array.length()) { array.getJSONObject(it) }.mapNotNull { item ->
+        List(array.length()) { array.getJSONObject(it) }.asReversed().mapNotNull { item ->
             val id = item.getString("id")
             if (!id.matches(Regex("[A-Za-z0-9_-]{1,80}")) || !File(context.filesDir, "received/$id").isFile) null else Transfer(
                 id = id, name = item.getString("name"), kind = TransferKind.FILE,
                 direction = TransferDirection.INCOMING, status = TransferStatus.COMPLETE,
                 totalBytes = item.getLong("size"), transferredBytes = item.getLong("size"),
-                mimeType = item.getString("mime"), localUri = item.getString("uri"))
+                mimeType = item.getString("mime"), localUri = FileProvider.getUriForFile(context, "${context.packageName}.files",
+                    File(context.filesDir, "received/$id"), item.getString("name")).toString())
         }
     }.getOrDefault(emptyList())
     /** Atomic per-item mutations prevent a concurrent Clear from dropping a newly completed receipt. */
