@@ -1,0 +1,21 @@
+<resources>
+ <string name="app_name">DeviceLink</string>
+ <string name="channel_name">Active device link</string>
+ <string name="session_active">DeviceLink is available</string>
+ <string name="session_remaining">%1$d minutes remaining · Tap to manage</string>
+ <string name="session_finishing">Finishing your transfer</string>
+ <string name="stop_session">Turn off</string>
+ <string name="permission_required">Allow nearby devices to connect your phones.</string>
+ <string name="clipboard_empty">Copy some text or an image first, then try again.</string>
+ <string name="clipboard_copied">Copied. Paste in your other app.</string>
+ <string name="clipboard_label">From DeviceLink</string>
+ <string name="file_unavailable">This file is no longer available.</string>
+ <string name="file_saved">File saved</string>
+ <string name="save_failed">Could not save the file. Try another location.</string>
+ <string name="no_viewer">No installed app can open this file. Try Save or Share.</string>
+ <string name="scan_prompt">Scan the QR on your other phone</string>
+ <string name="share_file">Share received file</string>
+ <string name="scan_failed">Could not scan the code. Try again or connect from the nearby list.</string>
+ <string name="tile_off">Off</string>
+ <string name="tile_on">Available</string>
+</resources>

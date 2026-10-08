@@ -1,0 +1,19 @@
+<resources>
+    <string name="link_radio_error">Could not start nearby discovery. Check nearby permissions and enable Wi-Fi on both phones.</string>
+    <string name="link_permission_error">Nearby access is needed. Allow permissions, then try again.</string>
+    <string name="link_search_timeout">No connection made. Enable DeviceLink on your other phone and try again.</string>
+    <string name="link_connect_error">Could not connect. Enable DeviceLink on both phones and try again.</string>
+    <string name="link_transfer_error">Transfer interrupted. Please send the item again.</string>
+    <string name="link_protocol_error">The other device sent an invalid message. Connection closed.</string>
+    <string name="link_identity_error">Could not verify this device. Connection closed.</string>
+    <string name="link_disconnected">The other phone disconnected.</string>
+    <string name="link_pair_rejected">Pairing was declined on the other phone.</string>
+    <string name="link_invalid_code">This is not a valid DeviceLink pairing code.</string>
+    <string name="link_queue_full">Send up to 20 items at a time.</string>
+    <string name="link_text_size">Text must contain between 1 and 8,192 bytes.</string>
+    <string name="link_session_expired">Session ended. Start a new session to send more items.</string>
+    <string name="link_text_item">Text</string>
+    <string name="link_file_unavailable">Cannot read this file or determine its size. Choose a local file up to 10 GB.</string>
+    <string name="link_storage_full">There is not enough storage to receive this file.</string>
+    <string name="link_other_phone">Other phone</string>
+</resources>
