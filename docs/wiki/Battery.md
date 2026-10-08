@@ -31,5 +31,5 @@ thermal state and battery charge counter where available. USB charging makes
 battery percentage an unsuitable drain measurement. Use a controlled unplugged
 run or power instrumentation for credible mAh/hour numbers.
 
-See `../validation.md` in the code repository for actual evidence. No standby
+See the [validation report](https://git.oryxlabs.internal/ivan-antsimonau/device-link/blob/main/docs/validation.md) in the code repository for actual evidence. No standby
 drain percentage or all-day battery claim is made by this initial version.

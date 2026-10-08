@@ -37,7 +37,7 @@ sequenceDiagram
     B->>A: Hello commitment
     A->>B: Identity, fresh nonce, ephemeral key, display name
     B->>A: Identity, fresh nonce, ephemeral key, display name
-    Note over A,B: Check commitments; derive directional session keys
+    Note over A,B: Check commitments and derive directional session keys
     A->>B: Encrypted signed transcript proof
     B->>A: Encrypted signed transcript proof
     Note over A,B: New peer: compare six-digit code on BOTH phones

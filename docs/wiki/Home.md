@@ -12,6 +12,6 @@ It runs on normal Android phones without Fortress, root or Google Play services.
 The canonical pages live in the code repository under `docs/wiki/`. Keep those
 pages in the same commit as behavior changes, then publish the wiki copy.
 
-See the repository's `docs/validation.md` for measured device results and remaining
+See the repository's [validation report](https://git.oryxlabs.internal/ivan-antsimonau/device-link/blob/main/docs/validation.md) for measured device results and remaining
 validation work. Do not infer battery-life or radio-compatibility claims from
 unit test results.
