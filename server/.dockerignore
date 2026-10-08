@@ -1,0 +1,5 @@
+*
+!requirements.txt
+!relay/
+!relay/**
+relay/**/__pycache__/

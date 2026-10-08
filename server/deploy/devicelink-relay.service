@@ -1,0 +1,25 @@
+[Unit]
+Description=DeviceLink opaque envelope relay
+After=network.target
+
+[Service]
+Type=simple
+User=devicelink-relay
+Group=devicelink-relay
+WorkingDirectory=/opt/devicelink-relay
+ExecStart=/opt/devicelink-relay/.venv/bin/python -m relay
+Environment=RELAY_DATABASE=/var/lib/devicelink-relay/relay.sqlite3
+EnvironmentFile=-/etc/devicelink-relay/environment
+StateDirectory=devicelink-relay
+StateDirectoryMode=0700
+UMask=0077
+Restart=on-failure
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/devicelink-relay
+MemoryMax=1G
+
+[Install]
+WantedBy=multi-user.target
