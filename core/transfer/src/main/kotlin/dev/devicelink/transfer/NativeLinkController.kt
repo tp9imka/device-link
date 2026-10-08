@@ -13,7 +13,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
-import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
 import kotlinx.coroutines.sync.Mutex
@@ -24,14 +23,19 @@ import java.util.UUID
 /** All protocol state is serialized on Main; file IO is bounded and runs on IO. */
 class NativeLinkController(context: Context, private val scope: CoroutineScope) : LinkController {
     private val context = context.applicationContext
-    private val radio: WifiDirectRadio by lazy { WifiDirectRadio(this.context, scope, radioEvents) }
+    private val radioDelegate = lazy { WifiDirectRadio(this.context, scope, radioEvents) { identity.deviceName } }
+    private val radio: WifiDirectRadio by radioDelegate
     private val identity = IdentityStore(this.context)
     private val mutable = MutableStateFlow(LinkState(localName = identity.deviceName,
         trustedPeers = identity.trustedPeers(), transfers = identity.receivedFiles(this.context)))
     override val state: StateFlow<LinkState> = mutable.asStateFlow()
-    override val pairingCode: String get() = "dl1:" + Base64.encodeToString(JSONObject()
-        .put("fingerprint", TrustProof.fingerprint(identity.publicKey)).put("name", identity.deviceName).put("address", radio.localAddress.orEmpty())
-        .toString().toByteArray(), Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
+    override val pairingCode: String get() = PairingInvite(TrustProof.fingerprint(identity.publicKey), identity.deviceName,
+        if (radioDelegate.isInitialized()) radio.localAddress.orEmpty() else "").encode()
+    private val startupCleanup = scope.async(Dispatchers.IO) {
+        val retained = mutable.value.transfers.filter { it.kind == TransferKind.FILE }.map { it.id }.toSet()
+        File(this@NativeLinkController.context.filesDir, "incoming").listFiles()?.forEach { it.delete() }
+        File(this@NativeLinkController.context.filesDir, "received").listFiles()?.filter { it.name !in retained }?.forEach { it.delete() }
+    }
     private var endpoint: String? = null
     private var peerName = ""
     private var authenticationCode = ""
@@ -63,6 +67,8 @@ class NativeLinkController(context: Context, private val scope: CoroutineScope) 
     private val offers = mutableMapOf<String, WireMessage.Offer>()
     private val incomingStreams = mutableMapOf<String, FileOutputStream>()
     private val incomingCounts = mutableMapOf<String, Long>()
+    private val finalizing = mutableSetOf<String>()
+    private val receivedCommitter = ReceivedFileCommitter()
     private val copyJobs = mutableMapOf<String, Job>()
     private val pending = ArrayDeque<Pending>()
     private data class PreparedFile(val descriptor: ParcelFileDescriptor)
@@ -83,8 +89,6 @@ class NativeLinkController(context: Context, private val scope: CoroutineScope) 
             progressPublished[id] = now
         } else progressPublished.remove(id)
         mutable.update { current -> current.copy(transfers = current.transfers.map { if (it.id == id) next else it }) }
-        if (next.status == TransferStatus.COMPLETE && next.kind == TransferKind.FILE && next.direction == TransferDirection.INCOMING)
-            identity.saveFiles(mutable.value.transfers)
         updateWakeLock()
     }
     private fun append(transfer: Transfer) {
@@ -108,6 +112,8 @@ class NativeLinkController(context: Context, private val scope: CoroutineScope) 
         deadline = SystemClock.elapsedRealtime() + durationMinutes.coerceIn(1, 60) * 60_000L
         mutable.update { it.copy(phase = LinkPhase.SEARCHING, nearbyPeers = emptyList(), error = null,
             remainingSeconds = durationMinutes.coerceIn(1, 60) * 60L) }
+        startupCleanup.await()
+        if (session != generation || !mutable.value.enabled) return@main
         try { radio.start() }
         catch (_: SecurityException) { disconnectWithError(R.string.link_permission_error); return@main }
         catch (_: Exception) { disconnectWithError(R.string.link_radio_error); return@main }
@@ -129,9 +135,9 @@ class NativeLinkController(context: Context, private val scope: CoroutineScope) 
         if (transferWakeLock.isHeld) transferWakeLock.release()
         timer?.cancel(); searchTimer?.cancel(); handshakeTimer?.cancel()
         copyJobs.values.forEach { it.cancel() }; copyJobs.clear()
-        radio.stop()
+        if (radioDelegate.isInitialized()) radio.stop()
         outgoing.values.forEach { runCatching { it.descriptor.close() } }; outgoing.clear()
-        incomingStreams.forEach { (id, stream) -> runCatching { stream.close() }; File(context.filesDir, "received/$id").delete() }
+        incomingStreams.forEach { (id, stream) -> runCatching { stream.close() }; File(context.filesDir, "incoming/$id").delete() }
         incomingStreams.clear(); incomingCounts.clear(); offers.clear()
         agreement = null; secureChannel = null
         endpoint = null; localHello = null; remoteHello = null; remoteCommitment = null; proofVerified = false
@@ -146,7 +152,14 @@ class NativeLinkController(context: Context, private val scope: CoroutineScope) 
         override fun peers(peers: List<Peer>) {
             if (mutable.value.phase != LinkPhase.SEARCHING) return
             mutable.update { it.copy(nearbyPeers = peers) }
-            peers.firstOrNull { it.id == pinnedName }?.let { connect(it.id) }
+            peers.firstOrNull { it.id.equals(pinnedName, ignoreCase = true) }?.let { connect(it.id) }
+        }
+        override fun connecting() {
+            if (mutable.value.phase == LinkPhase.SEARCHING) {
+                searchTimer?.cancel()
+                mutable.update { it.copy(phase = LinkPhase.CONNECTING) }
+                startHandshakeTimeout()
+            }
         }
         override fun connected() {
             if (!mutable.value.enabled || expired()) { stopInternal(); return }
@@ -186,7 +199,7 @@ class NativeLinkController(context: Context, private val scope: CoroutineScope) 
         val peer = mutable.value.nearbyPeers.firstOrNull { it.id == endpointId } ?: return@main
         endpoint = endpointId; peerName = peer.name
         mutable.update { it.copy(phase = LinkPhase.CONNECTING, error = null) }
-        searchTimer?.cancel(); radio.stopDiscovery()
+        searchTimer?.cancel()
         runCatching { radio.connect(endpointId) }.onFailure { disconnectWithError(R.string.link_connect_error) }
         startHandshakeTimeout()
     }
@@ -279,16 +292,10 @@ class NativeLinkController(context: Context, private val scope: CoroutineScope) 
     }
     override fun pairWithCode(code: String) = main {
         if (mutable.value.phase !in listOf(LinkPhase.OFF, LinkPhase.SEARCHING)) { error(R.string.link_pair_busy); return@main }
-        val parsed = runCatching {
-            require(code.startsWith("dl1:") && code.length < 2048)
-            val json = JSONObject(String(Base64.decode(code.removePrefix("dl1:"), Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)))
-            val fingerprint = json.getString("fingerprint")
-            require(fingerprint.matches(Regex("[a-fA-F0-9]{64}")))
-            fingerprint to json.optString("address").take(48)
-        }.getOrNull()
+        val parsed = PairingInvite.decode(code)
         if (parsed == null) { error(R.string.link_invalid_code); return@main }
-        pinnedFingerprint = parsed.first; pinnedName = parsed.second
-        mutable.value.nearbyPeers.firstOrNull { it.id == parsed.second }?.let { connect(it.id) }
+        pinnedFingerprint = parsed.fingerprint; pinnedName = parsed.address
+        mutable.value.nearbyPeers.firstOrNull { it.id.equals(parsed.address, ignoreCase = true) }?.let { connect(it.id) }
     }
     private fun queue(item: Pending, count: Int) {
         if (mutable.value.pendingItems + count > 20) { error(R.string.link_queue_full); return }
@@ -363,7 +370,7 @@ class NativeLinkController(context: Context, private val scope: CoroutineScope) 
         val transfer = mutable.value.transfers.firstOrNull { it.id == id } ?: return@main
         if (transfer.direction != TransferDirection.INCOMING || transfer.status != TransferStatus.OFFERED) return@main
         if (context.filesDir.usableSpace < transfer.totalBytes + 10 * 1024 * 1024) { error(R.string.link_storage_full); return@main }
-        val file = File(context.filesDir, "received/$id")
+        val file = File(context.filesDir, "incoming/$id")
         try { file.parentFile!!.mkdirs(); check(file.createNewFile()); incomingStreams[id] = file.outputStream(); incomingCounts[id] = 0 }
         catch (_: Exception) { error(R.string.link_storage_full); return@main }
         updateTransfer(id) { it.copy(status = TransferStatus.TRANSFERRING) }; sendWire(WireMessage.Accept(id)); receiptTimeout(id)
@@ -406,21 +413,41 @@ class NativeLinkController(context: Context, private val scope: CoroutineScope) 
         if (decoded.bytes != null) {
             val count = (incomingCounts[offer.id] ?: 0) + decoded.bytes.size
             require(count <= offer.size)
-            withContext(Dispatchers.IO) { stream.write(decoded.bytes) }
-            if (session != generation) return
+            if (!receivingIo(offer.id, session) { stream.write(decoded.bytes) }) return
             incomingCounts[offer.id] = count
             updateTransfer(offer.id) { it.copy(transferredBytes = count) }
         } else {
             require(frame.size == 9 && incomingCounts[offer.id] == offer.size)
-            withContext(Dispatchers.IO) { stream.fd.sync(); stream.close() }
-            if (session != generation) return
+            if (!receivingIo(offer.id, session) { stream.fd.sync(); stream.close() }) return
             incomingStreams.remove(offer.id); incomingCounts.remove(offer.id)
             val file = File(context.filesDir, "received/${offer.id}")
             val uri = FileProvider.getUriForFile(context, "${context.packageName}.files", file).toString()
-            updateTransfer(offer.id) { it.copy(status = TransferStatus.COMPLETE, transferredBytes = offer.size, localUri = uri) }
-            offers.remove(offer.id); sendWire(WireMessage.Receipt(offer.id))
+            val completed = transfer.copy(status = TransferStatus.COMPLETE, transferredBytes = offer.size, localUri = uri)
+            finalizing.add(offer.id)
+            try {
+                val committed = receivedCommitter.commit(
+                    staged = File(context.filesDir, "incoming/${offer.id}"), destination = file,
+                    isCurrent = { isReceiving(offer.id, session) },
+                    persist = { identity.addReceivedFile(completed) },
+                    removeRecord = { identity.removeReceivedFile(offer.id) },
+                    publish = { updateTransfer(offer.id) { completed } },
+                )
+                if (committed) { offers.remove(offer.id); sendWire(WireMessage.Receipt(offer.id)) }
+            } finally {
+                finalizing.remove(offer.id)
+            }
         }
     }
+    private fun isReceiving(id: String, session: Long): Boolean = session == generation &&
+        mutable.value.transfers.any { it.id == id && it.status == TransferStatus.TRANSFERRING }
+
+    private suspend fun receivingIo(id: String, session: Long, action: () -> Unit): Boolean {
+        try { withContext(Dispatchers.IO) { action() } }
+        catch (cancelled: CancellationException) { throw cancelled }
+        catch (failure: Exception) { if (isReceiving(id, session)) throw failure else return false }
+        return isReceiving(id, session)
+    }
+
     private fun receiptTimeout(id: String) {
         val session = generation
         scope.launch(Dispatchers.Main.immediate) {
@@ -439,7 +466,7 @@ class NativeLinkController(context: Context, private val scope: CoroutineScope) 
         if (!TransferLifecycle.canTransition(item.status, status)) return
         offers.remove(id)
         if (status != TransferStatus.COMPLETE) {
-            incomingStreams.remove(id)?.let { runCatching { it.close() }; File(context.filesDir, "received/$id").delete() }
+            incomingStreams.remove(id)?.let { runCatching { it.close() }; File(context.filesDir, "incoming/$id").delete() }
             incomingCounts.remove(id)
             copyJobs.remove(id)?.cancel()
         }
@@ -456,9 +483,17 @@ class NativeLinkController(context: Context, private val scope: CoroutineScope) 
     }
     override fun clearTransfer(id: String) = main {
         val item = mutable.value.transfers.firstOrNull { it.id == id } ?: return@main
-        if (item.status in listOf(TransferStatus.OFFERED, TransferStatus.TRANSFERRING)) return@main
-        if (item.direction == TransferDirection.INCOMING && item.kind == TransferKind.FILE) File(context.filesDir, "received/$id").delete()
-        mutable.update { it.copy(transfers = it.transfers.filterNot { transfer -> transfer.id == id }) }; identity.saveFiles(mutable.value.transfers)
+        if (item.status in listOf(TransferStatus.OFFERED, TransferStatus.TRANSFERRING) || id in finalizing) return@main
+        if (item.direction == TransferDirection.INCOMING && item.kind == TransferKind.FILE) {
+            try {
+                withContext(Dispatchers.IO) {
+                    identity.removeReceivedFile(id)
+                    File(context.filesDir, "received/$id").delete()
+                }
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (_: Exception) { error(R.string.link_transfer_error); return@main }
+        }
+        mutable.update { it.copy(transfers = it.transfers.filterNot { transfer -> transfer.id == id }) }
     }
     override fun clearPending() = main { pending.clear(); mutable.update { it.copy(pendingItems = 0) } }
     override fun setDeviceName(name: String) = main {

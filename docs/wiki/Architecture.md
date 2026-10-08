@@ -23,7 +23,12 @@ transport implementations. The model module has no Android dependency.
 `NativeLinkController` serializes protocol state on Main and publishes immutable
 StateFlow snapshots. File reads/writes and socket IO run on IO dispatchers.
 `WifiDirectRadio` owns Android peer discovery, PBC connection negotiation, group
-owner/server selection and framed sockets. `IdentityStore` owns Android Keystore
+owner/server selection and framed sockets. DNS-SD filters the list to DeviceLink
+advertisements and requests both service and name records. On Android 13+, bounded
+scan/listen intervals make the receiving phone reachable. A selected peer is
+refreshed against Android's peer list before connecting; transient discovery
+`BUSY` during negotiation must not tear down the system consent prompt.
+`IdentityStore` owns Android Keystore
 identity and private metadata persistence.
 
 ## Connection and trust
@@ -61,7 +66,11 @@ Files begin as scoped Android content URIs from the Sharesheet or document picke
 DeviceLink reads metadata and opens a descriptor. The receiver sees an offer and
 must accept before file bytes are sent. Chunks are authenticated records associated
 with a particular accepted offer, with declared byte count enforced. Completion
-requires final-size verification and flushing the received file before a receipt.
+requires final-size verification, flushing the received file, moving it from
+private staging storage and durably recording its index before a receipt.
+Per-item index mutations protect concurrent removal and completion. Cancellation
+or failed persistence rolls back staging/index changes; startup removes abandoned
+partial files.
 Partial files are removed on cancellation/failure. Completed files use a scoped
 FileProvider URI for Open/Save/Share.
 

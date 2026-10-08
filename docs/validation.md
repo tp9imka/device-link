@@ -12,11 +12,17 @@ Date: 2026-10-08. This record separates executed checks from pending device work
 - Nearby-device and notification permission requests exercised on both phones.
 - KATIM appearance: light/dark, Iris accent, square corners and persistence across
   force-stop/relaunch verified. Font scale 1.5 checked for wrapping; restored1.0.
-- Wi-Fi Direct DNS-SD discovery filtered out non-DeviceLink peers. Samsung found
-  the KATIM advertisement; first connection still stalled before group formation.
+- Wi-Fi Direct DNS-SD discovery filtered out non-DeviceLink peers. Both phones
+  discovered each other, including the advertised DeviceLink names. Connection
+  attempts progressed to native group negotiation, but have not formed a group.
   Cryptographic pairing and payload transfer are not yet validated.
 - Samsung's active hotspot caused Android's Wi-Fi Direct conflict prompt. The user
   turned the hotspot off before further radio tests.
+- A later system-only test, with DeviceLink force-stopped on both phones, failed
+  with native negotiation status 11 and no visible invitation on KATIM. Samsung
+  subsequently showed the hotspot conflict prompt again. Further phone interaction
+  is paused pending confirmation that the phones are free and hotspot may be
+  disabled; the failure is not attributed conclusively to one cause.
 - Both architecture diagrams pass Mermaid 10.9.5 parsing after removing a
   semicolon that the sequence parser treated as a statement separator.
 - Repository Actions runs are queued. The repository runner API reports zero

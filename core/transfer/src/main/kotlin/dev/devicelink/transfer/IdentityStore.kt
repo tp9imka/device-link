@@ -58,12 +58,31 @@ internal class IdentityStore(context: Context) {
                 mimeType = item.getString("mime"), localUri = item.getString("uri"))
         }
     }.getOrDefault(emptyList())
-    fun saveFiles(files: List<Transfer>) {
-        prefs.edit().putString("received", JSONArray().apply {
-            files.filter { it.kind == TransferKind.FILE && it.direction == TransferDirection.INCOMING && it.status == TransferStatus.COMPLETE }
-                .forEach { put(JSONObject().put("id", it.id).put("name", it.name)
-                    .put("size", it.totalBytes).put("mime", it.mimeType).put("uri", it.localUri)) }
-        }.toString()).apply()
+    /** Atomic per-item mutations prevent a concurrent Clear from dropping a newly completed receipt. */
+    @Synchronized
+    fun addReceivedFile(file: Transfer) {
+        require(file.kind == TransferKind.FILE && file.direction == TransferDirection.INCOMING && file.status == TransferStatus.COMPLETE)
+        val next = receivedIndexWithout(file.id)
+        next.put(JSONObject().put("id", file.id).put("name", file.name)
+            .put("size", file.totalBytes).put("mime", file.mimeType).put("uri", file.localUri))
+        commitReceivedIndex(next)
+    }
+
+    @Synchronized
+    fun removeReceivedFile(id: String) = commitReceivedIndex(receivedIndexWithout(id))
+
+    private fun receivedIndexWithout(id: String): JSONArray {
+        val current = JSONArray(prefs.getString("received", "[]"))
+        return JSONArray().apply {
+            repeat(current.length()) { index ->
+                val item = current.getJSONObject(index)
+                if (item.getString("id") != id) put(item)
+            }
+        }
+    }
+
+    private fun commitReceivedIndex(index: JSONArray) {
+        check(prefs.edit().putString("received", index.toString()).commit()) { "Cannot persist received file index" }
     }
     private companion object { const val ALIAS = "devicelink.identity.v1" }
 }

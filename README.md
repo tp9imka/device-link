@@ -4,6 +4,10 @@
 links, photos and files between two nearby phones. Both phones install DeviceLink;
 neither needs Fortress, an account, Google Play services, or an internet connection.
 
+**Status:** initial implementation undergoing physical-device validation. Pairing
+and file transfer between the two test phones are not yet verified; see the
+[validation record](docs/validation.md) for current results and blockers.
+
 DeviceLink uses Android Wi-Fi Direct and an authenticated, encrypted channel.
 Start a temporary session, select the other phone, compare the pairing code once,
 and send through Android's Share menu or DeviceLink's clipboard/file actions.
