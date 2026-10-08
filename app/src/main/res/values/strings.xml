@@ -18,4 +18,9 @@
  <string name="scan_failed">Could not scan the code. Try again or connect from the nearby list.</string>
  <string name="tile_off">Off</string>
  <string name="tile_on">Available</string>
+ <string name="permission_settings_title">Allow nearby connections</string>
+ <string name="permission_settings_nearby">In Settings, open Permissions and allow Nearby devices so DeviceLink can connect your phones.</string>
+ <string name="permission_settings_location">In Settings, open Permissions and allow Location. Android requires this permission to discover nearby phones; DeviceLink does not collect your location.</string>
+ <string name="open_settings">Open settings</string>
+ <string name="not_now">Not now</string>
 </resources>

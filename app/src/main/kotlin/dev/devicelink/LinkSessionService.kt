@@ -62,7 +62,8 @@ class LinkSessionService : Service() {
             .addAction(0, getString(R.string.stop_session), stop).build()
     }
     override fun onDestroy() {
-        controller.stopSession()
+        // A failed/expired controller is already off; keep its pending share queue available for retry.
+        if (controller.state.value.enabled) controller.stopSession()
         scope.cancel()
         super.onDestroy()
     }
