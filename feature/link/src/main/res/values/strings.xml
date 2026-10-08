@@ -102,7 +102,49 @@
     <string name="dl_forget_title">Forget %1$s?</string>
     <string name="dl_forget_body">You will need to verify this phone again before exchanging data.</string>
     <string name="dl_privacy_title">Made for deliberate sharing</string>
-    <string name="dl_privacy_body">DeviceLink reads your clipboard only when you ask. It never replaces your clipboard automatically. Files stay in your transfer tray until you save or share them.</string>
+    <string name="dl_privacy_body">DeviceLink reads your clipboard only when you ask. During a paired session, copies from the sample screen can replace the other phone’s clipboard. Other received text stays in the tray until you choose Copy. Received files stay in the tray until you remove them.</string>
     <string name="dl_stop_title">End this session?</string>
     <string name="dl_stop_body">Active transfers will be cancelled. Your paired phones stay remembered.</string>
+    <string name="dl_samples_entry">Try copy &amp; paste</string>
+    <string name="dl_samples_title">Sample chat</string>
+    <string name="dl_samples_linked">Clipboard linked to %1$s</string>
+    <string name="dl_samples_linked_hint">This conversation stays on this phone. Copy a message or select text and choose Copy to put it on both phones’ clipboards. Then paste into the message field.</string>
+    <string name="dl_samples_local">Local conversation</string>
+    <string name="dl_samples_local_hint">Try copying a message and pasting it below. This sample conversation stays on this phone. Link your phones to share explicit message copies between their clipboards.</string>
+    <string name="dl_samples_selection_hint">Use a Copy button, or select part of a sample and choose Copy.</string>
+    <string name="dl_samples_paste">Paste playground</string>
+    <string name="dl_samples_paste_label">Message</string>
+    <string name="dl_samples_paste_placeholder">Paste a message</string>
+    <string name="dl_samples_paste_hint">Send adds a message on this phone only.</string>
+    <string name="dl_samples_send">Send</string>
+    <string name="dl_samples_saving">Saving…</string>
+    <string name="dl_samples_message_too_large">Message is too large. Limit: %1$d bytes; current: %2$d bytes. Shorten it to send.</string>
+    <string name="dl_samples_you">You</string>
+    <string name="dl_samples_alex">Alex · sample</string>
+    <string name="dl_samples_sender_kind">%1$s · %2$s</string>
+    <string name="dl_samples_copy_message">Copy message</string>
+    <string name="dl_samples_copy_full">Copy full message</string>
+    <string name="dl_samples_expand">Show more</string>
+    <string name="dl_samples_collapse">Show less</string>
+    <string name="dl_samples_clear">Clear field</string>
+    <string name="dl_samples_list">Try a sample</string>
+    <string name="dl_samples_synthetic">Made-up content for trying your device link.</string>
+    <string name="dl_sample_url">Web link</string>
+    <string name="dl_sample_url_content" translatable="false">https://example.com/device-link?from=phone&amp;sample=1</string>
+    <string name="dl_sample_address">Multiline address</string>
+    <string name="dl_sample_address_content" translatable="false">DeviceLink Sample Studio\n42 Example Avenue\nDemo City, 00000</string>
+    <string name="dl_sample_emoji">Emoji &amp; accents</string>
+    <string name="dl_sample_emoji_content" translatable="false">Hello 👋🏽 — café, résumé, naïve.\nFamily: 👨‍👩‍👧‍👦 · Launch: 🚀 · Done: ✅</string>
+    <string name="dl_sample_rtl">Arabic &amp; English</string>
+    <string name="dl_sample_rtl_content" translatable="false">مرحباً من هاتفك الآخر 👋\nDeviceLink — نسخ ولصق — 12345</string>
+    <string name="dl_sample_long">Long text</string>
+    <string name="dl_sample_long_content" translatable="false">DeviceLink sample: copy once, paste on your other phone. This is synthetic test content.\n</string>
+    <string name="dl_sample_long_hint">Preview of an 8,192-byte sample. The Copy button copies the complete text.</string>
+    <string name="dl_sample_copy">Copy %1$s</string>
+    <string name="dl_clip_applying">Applying to clipboard…</string>
+    <string name="dl_clip_waiting">Waiting for clipboard confirmation…</string>
+    <string name="dl_clip_copied">Already copied</string>
+    <string name="dl_clip_remote_copied">Copied on your other phone</string>
+    <string name="dl_clip_manual">Received · Tap Copy to paste</string>
+    <string name="dl_clip_remote_manual">Received · Copy from the other phone’s tray</string>
 </resources>

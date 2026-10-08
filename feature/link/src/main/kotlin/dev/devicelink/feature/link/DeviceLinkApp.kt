@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -75,6 +76,8 @@ import dev.devicelink.model.Transfer
 import dev.devicelink.model.TransferDirection
 import dev.devicelink.model.TransferKind
 import dev.devicelink.model.TransferStatus
+import dev.devicelink.model.TransferMode
+import dev.devicelink.model.ClipboardStatus
 
 data class LinkCallbacks(
     val onStartSession: (Int) -> Unit,
@@ -85,24 +88,29 @@ data class LinkCallbacks(
     val onOpenFile: (Transfer) -> Unit,
     val onSaveFile: (Transfer) -> Unit,
     val onShareFile: (Transfer) -> Unit,
+    val onCopySample: (String) -> Unit,
+    val onAddSampleMessage: suspend (String) -> Boolean,
 )
 
 @Composable
-fun DeviceLinkApp(state: LinkState, controller: LinkController, appearanceStore: AppearanceStore, callbacks: LinkCallbacks) {
+fun DeviceLinkApp(state: LinkState, controller: LinkController, appearanceStore: AppearanceStore, callbacks: LinkCallbacks, sampleMessages: List<SampleChatMessage> = emptyList()) {
     val appearance by appearanceStore.appearance.collectAsState()
     var settings by rememberSaveable { mutableStateOf(false) }
+    var samples by rememberSaveable { mutableStateOf(false) }
     var pairMenu by rememberSaveable { mutableStateOf(false) }
     var showQr by rememberSaveable { mutableStateOf(false) }
     var confirmStop by rememberSaveable { mutableStateOf(false) }
-    BackHandler(settings || pairMenu || showQr) {
-        when { showQr -> showQr = false; pairMenu -> pairMenu = false; else -> settings = false }
+    BackHandler(settings || samples || pairMenu || showQr) {
+        when { showQr -> showQr = false; pairMenu -> pairMenu = false; samples -> samples = false; else -> settings = false }
     }
     val stop = { if (state.hasActiveTransfers) confirmStop = true else controller.stopSession() }
     DeviceTheme(appearance) {
         val tokens = LocalDeviceTokens.current
         Scaffold(containerColor = MaterialTheme.colorScheme.background) { insets ->
-            Box(Modifier.fillMaxSize().padding(insets), contentAlignment = Alignment.TopCenter) {
-                if (settings) {
+            Box(Modifier.fillMaxSize().padding(insets).consumeWindowInsets(insets), contentAlignment = Alignment.TopCenter) {
+                if (samples) {
+                    ClipboardSamplesScreen(state, sampleMessages, callbacks.onCopySample, callbacks.onAddSampleMessage, onBack = { samples = false })
+                } else if (settings) {
                     SettingsScreen(state, appearance, appearanceStore::update, controller, onBack = { settings = false })
                 } else {
                     LazyColumn(
@@ -132,6 +140,7 @@ fun DeviceLinkApp(state: LinkState, controller: LinkController, appearanceStore:
                                 FlowRow(horizontalArrangement = Arrangement.spacedBy(tokens.small), verticalArrangement = Arrangement.spacedBy(tokens.small)) {
                                     Button(onClick = callbacks.onSendClipboard, enabled = state.phase == LinkPhase.CONNECTED) { Text(stringResource(R.string.dl_clipboard)) }
                                     OutlinedButton(onClick = callbacks.onPickFiles, enabled = state.phase == LinkPhase.CONNECTED) { Text(stringResource(R.string.dl_files)) }
+                                    TextButton(onClick = { samples = true }) { Text(stringResource(R.string.dl_samples_entry)) }
                                 }
                                 Text(stringResource(R.string.dl_send_hint), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
@@ -153,6 +162,9 @@ fun DeviceLinkApp(state: LinkState, controller: LinkController, appearanceStore:
                                     }
                                 }
                             }
+                        }
+                        if (state.phase != LinkPhase.CONNECTED) item {
+                            OutlinedButton(onClick = { samples = true }) { Text(stringResource(R.string.dl_samples_entry)) }
                         }
                         item { SectionHeading(stringResource(R.string.dl_tray), stringResource(R.string.dl_tray_subtitle)) }
                         if (state.transfers.isEmpty()) item {
@@ -262,7 +274,14 @@ private fun TransferCard(transfer: Transfer, controller: LinkController, callbac
         Text(when (transfer.status) {
             TransferStatus.OFFERED -> stringResource(if (incoming) R.string.dl_offer_incoming else R.string.dl_offer_outgoing)
             TransferStatus.TRANSFERRING -> stringResource(R.string.dl_transferring, (progress * 100).toInt())
-            TransferStatus.COMPLETE -> stringResource(if (incoming) R.string.dl_complete else R.string.dl_sent)
+            TransferStatus.COMPLETE -> if (transfer.mode == TransferMode.CLIPBOARD) {
+                stringResource(when (transfer.clipboardStatus) {
+                    ClipboardStatus.PENDING -> if (incoming) R.string.dl_clip_applying else R.string.dl_clip_waiting
+                    ClipboardStatus.COPIED -> if (incoming) R.string.dl_clip_copied else R.string.dl_clip_remote_copied
+                    ClipboardStatus.NOT_COPIED -> if (incoming) R.string.dl_clip_manual else R.string.dl_clip_remote_manual
+                    ClipboardStatus.NOT_REQUESTED -> if (incoming) R.string.dl_complete else R.string.dl_sent
+                })
+            } else stringResource(if (incoming) R.string.dl_complete else R.string.dl_sent)
             TransferStatus.REJECTED -> stringResource(R.string.dl_rejected)
             TransferStatus.CANCELLED -> stringResource(R.string.dl_cancelled)
             TransferStatus.FAILED -> stringResource(R.string.dl_failed)

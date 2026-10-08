@@ -19,8 +19,15 @@ is a human authentication step, not the encryption key or a password.
 
 ## Data permissions and bounds
 
-- Clipboard content leaves only after an explicit user action. Incoming text
-  remains in DeviceLink until the user taps Copy.
+- Clipboard content leaves only after an explicit user action. Ordinary incoming
+  `Text` remains in DeviceLink until the user taps Copy.
+- An explicit `Clip` from the authenticated peer requests replacement of the
+  receiver's clipboard during the active session. The application checks its
+  one-shot event and unexpired session immediately before the synchronous write.
+  Only an actual successful write is reported as Copied; stop/reconnect/cancel
+  invalidate pending delivery. No background clipboard monitoring is installed.
+- Chat-sample Send stores a local message only. Its private history retains at
+  most 50 messages, each bounded to 8,192 UTF-8 bytes; it is not synchronized.
 - Files are accessible through user-provided URI grants and the system picker;
   no all-files permission is requested.
 - Incoming file bytes require a matching accepted offer and declared size.

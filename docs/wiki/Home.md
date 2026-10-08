@@ -5,10 +5,13 @@ It runs on normal Android phones without Fortress, root or Google Play services.
 
 Validated on KATIM X3M and Samsung Galaxy S24: first pairing, remembered reconnect,
 two-way text and files, sharing a received file back, cancellation and receipt
-persistence. The validation report below records exact checks and remaining limits.
+persistence. The newer clipboard integration and local chat sample have focused
+automated coverage; their device checks are pending. The validation report below
+records exact checks and remaining limits.
 
 - [[Workflow]] - pair once, enable a session, send, receive and send back.
 - [[Architecture]] - module boundaries, radio, encryption and file flow.
+- [[Clipboard]] - explicit linked Copy and a private local chat sample.
 - [[Security]] - identity, consent, limits and remaining assumptions.
 - [[Battery]] - explicit availability and resource teardown.
 - [[Development]] - build, checks, customization and contribution workflow.

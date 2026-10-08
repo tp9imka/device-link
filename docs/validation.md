@@ -4,7 +4,8 @@ Date: 2026-10-08. This record separates executed checks from pending device work
 
 ## Executed
 
-- `./gradlew check`: passed locally. Includes 17 model/security tests and 9 transfer
+- Initial nearby-delivery baseline: `./gradlew check` passed locally, including
+  17 model/security tests and 9 transfer
   tests, architecture import guard, Android lint and debug APK assembly.
 - Debug APK installed and launched on KATIM X3M (Android 15/API 35, no Google Play
   services) and Samsung SM-S921B (Android 16/API 36). Installation used normal ADB;
@@ -48,6 +49,50 @@ Date: 2026-10-08. This record separates executed checks from pending device work
   semicolon that the sequence parser treated as a statement separator.
 - Repository Actions runs are queued. The repository runner API reports zero
   runners; remote CI has not executed. Local checks are the available evidence.
+
+## Clipboard extension: executed checks
+
+The current focused JUnit reports show **20 model tests and 12 transfer tests,
+zero failures**. This includes three new clipboard protocol tests protecting the
+ordinary Text golden bytes, distinct Clip/ClipResult types, UTF-8 limits and
+malformed messages. Three delivery-registry tests protect one-shot application,
+stale/cancelled/session-changed events and the bounded pending queue.
+
+`./gradlew check` also passed after final application wiring and composer byte-limit
+validation, including lint, architecture checks and APK assembly. The final APK
+was installed on both phones.
+
+- A separate temporary ordinary-permission debug app wrote a unique synthetic
+  clipboard value while its activity was backgrounded. Foreground reads after
+  window focus confirmed the value on both phones. The probe was uninstalled.
+- In DeviceLink, message Copy delivered Katim → Samsung with Samsung on Home.
+  Pasting through the receiver composer verified the URL without a tray Copy tap;
+  the sender composer could paste the same value locally.
+- Samsung copied a locally added message to Katim while Katim was on Home.
+  Katim displayed Already copied and pasted the exact synthetic message afterward.
+- Katim's normal selection-toolbar Copy delivered the selected URL to Samsung,
+  verified by pasting into its composer.
+- Ordinary Share text arrived in Samsung's tray but left its clipboard unchanged,
+  verified by another paste of the earlier clipboard value.
+- Chat Send created a Samsung-only message. Katim's tray still contained only the
+  earlier clipboard transfer until the new message was explicitly copied.
+  Samsung's private history retained that message across force-stop/relaunch.
+- With the session off, copying the RTL/emoji fixture still allowed local paste.
+  The disconnected send path is non-queuing by implementation review; reconnect
+  was exercised, but an isolated delayed-replay hardware test remains pending.
+- Copy full message delivered exactly 8,192 UTF-8 bytes. Pasting and appending one
+  ASCII character disabled composer Send and preserved the oversized draft.
+- Receiver tray labels showed Already copied and sender labels showed Copied on
+  your other phone. No outgoing echo appeared in the receiver's visible tray.
+
+Pending clipboard/chat checks:
+
+- Isolated no-replay-after-reconnect check, repeated background delivery under
+  sustained Doze, and selection Copy from the composer remaining local.
+- Forced OS write failure and 10-second receiver / 15-second sender timeout tests
+  on hardware. These paths have contract tests/review, not device fault injection.
+- History capacity eviction and storage-failure UX on hardware. Persistence and
+  the composer byte boundary were exercised; no exhaustive coverage is claimed.
 
 ## Pending at this checkpoint
 

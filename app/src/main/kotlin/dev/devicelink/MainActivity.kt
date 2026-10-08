@@ -35,7 +35,9 @@ import dev.devicelink.feature.link.DeviceLinkApp
 import dev.devicelink.feature.link.LinkCallbacks
 import dev.devicelink.model.Transfer
 import dev.devicelink.model.PairingInvite
+import dev.devicelink.model.ClipSendResult
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -97,6 +99,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             val state = app.controller.state.collectAsStateWithLifecycle().value
             val appearance = app.appearanceStore.appearance.collectAsStateWithLifecycle().value
+            val sampleMessages = app.sampleChatStore.messages.collectAsStateWithLifecycle().value
             val dark = when (appearance.mode) {
                 AppearanceMode.SYSTEM -> isSystemInDarkTheme()
                 AppearanceMode.DARK -> true
@@ -130,7 +133,16 @@ class MainActivity : ComponentActivity() {
                         if (saveSource != null) saveFile.launch(transfer.name) else message(R.string.file_unavailable)
                     },
                     onShareFile = ::shareFile,
+                    onCopySample = ::copySample,
+                    onAddSampleMessage = { text ->
+                        app.applicationScope.async {
+                            app.sampleChatStore.append(text).also { saved ->
+                                if (!saved) message(R.string.sample_message_not_saved)
+                            }
+                        }.await()
+                    },
                 ),
+                sampleMessages = sampleMessages,
             )
             if (showPermissionSettings) DeviceTheme(appearance) {
                 AlertDialog(
@@ -202,6 +214,25 @@ class MainActivity : ComponentActivity() {
             app.controller.sendText(text)
         }
         if (!app.controller.state.value.enabled) requestSession(app.appearanceStore.appearance.value.sessionMinutes)
+    }
+
+    private fun copySample(text: String) {
+        val copied = runCatching {
+            getSystemService(ClipboardManager::class.java).setPrimaryClip(
+                ClipData.newPlainText(getString(R.string.clipboard_label), text),
+            )
+        }.isSuccess
+        if (!copied) { message(R.string.sample_copy_failed); return }
+        app.applicationScope.launch {
+            val result = app.controller.sendClip(text)
+            message(when (result) {
+                ClipSendResult.SENT -> R.string.sample_copy_sent
+                ClipSendResult.NOT_CONNECTED -> R.string.sample_copy_local
+                ClipSendResult.EXPIRED -> R.string.sample_copy_expired
+                ClipSendResult.INVALID -> R.string.sample_copy_too_large
+                ClipSendResult.FAILED -> R.string.sample_copy_not_sent
+            })
+        }
     }
 
     @Suppress("DEPRECATION")

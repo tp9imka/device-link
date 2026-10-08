@@ -14,7 +14,10 @@ and is never committed.
 
 The root check command runs the same core gate locally and in CI: protocol,
 cryptographic and session tests, architecture guard, Android lint and app assembly.
-Physical two-phone tests remain an explicit integration tier. There is no 100%
+Clipboard contract tests distinguish `Clip` from unchanged ordinary `Text` bytes,
+validate UTF-8 and wire limits, and exercise malformed input. Transport tests
+protect one-shot delivery, cancellation/session invalidation and bounded pending
+capacity. Physical two-phone tests remain an explicit integration tier. There is no 100%
 coverage target, mutation threshold or mandatory test for every rendering branch.
 
 The GitHub Enterprise repository needs a runner matching the workflow's

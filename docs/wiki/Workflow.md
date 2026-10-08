@@ -21,7 +21,24 @@ scanning. No Google services or external QR app are required.
 From another app select Share > DeviceLink, or copy text, open DeviceLink and tap
 Send clipboard. Android permits clipboard access while DeviceLink is foreground.
 The receiving phone shows the text in its tray. Tap Copy there and paste into the
-app of your choice. Receiving never silently replaces an existing local clipboard.
+app of your choice. Ordinary text transfers never automatically replace an existing local clipboard.
+
+## Local chat and linked Copy
+
+Open the chat sample. Type or paste a message and press Send to add it to the
+local conversation. Up to 50 messages persist on this phone; Send does not
+transmit a message, change a clipboard or synchronize history.
+
+With the phones connected, tap Copy on a message, or select part of a message
+and choose Copy. The chosen text is copied locally and sent as a clipboard
+command. The peer writes its clipboard only while that authenticated session
+and event remain current. A clipboard result appears in the transfer tray after
+the write attempt. Paste into the other phone's composer or another app to use it.
+
+When disconnected, Copy remains local. It is never saved for later delivery.
+Copy inside the editable composer/paste field is also local; the integration
+is scoped to the sample's displayed message content. Both phones need the new
+clipboard-capable build. See [[Clipboard]] for acknowledgement and timeout rules.
 
 ## Photos and files
 
@@ -50,3 +67,5 @@ immediately. A phone that is off is not silently listening for a remote wake-up.
 - Interrupted transfer: select the source again. Partial files are discarded.
 - Lost trust/key changed: forget the pairing and compare a fresh code.
 - No app can open a file: use Save or Share to choose a suitable destination.
+- Clipboard not copied: confirm the link is still active, then use the explicit
+  Copy action again. Reconnecting never replays an earlier clipboard command.

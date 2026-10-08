@@ -1,4 +1,11 @@
 <resources>
+    <string name="sample_message_not_saved">Message was not saved. Use up to 8 KB of text and try again.</string>
+    <string name="sample_copy_failed">Could not copy this message.</string>
+    <string name="sample_copy_sent">Copied here and sent to your linked phone.</string>
+    <string name="sample_copy_local">Copied here. Connect your phones to copy there too.</string>
+    <string name="sample_copy_expired">Copied here. Your link expired; this copy was not sent.</string>
+    <string name="sample_copy_too_large">Copied here. Text over 8 KB cannot be sent.</string>
+    <string name="sample_copy_not_sent">Copied here, but could not send to your linked phone.</string>
  <string name="app_name">DeviceLink</string>
  <string name="channel_name">Active device link</string>
  <string name="session_active">DeviceLink is available</string>

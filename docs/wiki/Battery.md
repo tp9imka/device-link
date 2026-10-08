@@ -17,7 +17,11 @@ discovery ends after one minute without a connection, so an unsuccessful search
 does not scan for the entire session limit. Start another session to retry.
 Connection and pairing have a separate two-minute deadline. Session expiry does
 not cut off a transfer already in progress, but blocks new work. Explicit stop
-cancels immediately. The app does not keep the display awake and does not request
+cancels immediately. Linked clipboard delivery is event-driven and adds no
+clipboard polling. A receiver callback has a 10-second timeout; the sender waits
+up to 15 seconds for its clipboard-result acknowledgement. Expiry prevents a
+stale clipboard write even while another transfer is finishing.
+The app does not keep the display awake and does not request
 a blanket battery-optimization exemption.
 
 ## Measuring, not guessing

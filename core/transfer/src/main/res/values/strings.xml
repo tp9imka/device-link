@@ -13,6 +13,7 @@
     <string name="link_text_size">Text must contain between 1 and 8,192 bytes.</string>
     <string name="link_session_expired">Session ended. Start a new session to send more items.</string>
     <string name="link_text_item">Text</string>
+    <string name="link_clipboard_item">Clipboard</string>
     <string name="link_file_unavailable">Cannot read this file or determine its size. Choose a local file up to 10 GB.</string>
     <string name="link_storage_full">There is not enough storage to receive this file.</string>
     <string name="link_other_phone">Other phone</string>

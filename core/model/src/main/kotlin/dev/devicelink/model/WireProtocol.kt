@@ -28,6 +28,8 @@ sealed interface WireMessage {
     @Serializable @SerialName("reject") data class Reject(val id: String) : WireMessage
     @Serializable @SerialName("cancel") data class Cancel(val id: String) : WireMessage
     @Serializable @SerialName("text") data class Text(val id: String, val text: String) : WireMessage
+    @Serializable @SerialName("clip") data class Clip(val id: String, val text: String) : WireMessage
+    @Serializable @SerialName("clip_result") data class ClipResult(val id: String, val copied: Boolean) : WireMessage
     @Serializable @SerialName("receipt") data class Receipt(val id: String) : WireMessage
 }
 
@@ -97,6 +99,11 @@ object WireCodec {
                 validId(message.id)
                 require(message.text.toByteArray(Charsets.UTF_8).size in 1..MAX_TEXT_BYTES) { "Invalid text size" }
             }
+            is WireMessage.Clip -> {
+                validId(message.id)
+                require(message.text.toByteArray(Charsets.UTF_8).size in 1..MAX_TEXT_BYTES) { "Invalid clip size" }
+            }
+            is WireMessage.ClipResult -> validId(message.id)
             is WireMessage.Accept -> validId(message.id)
             is WireMessage.Reject -> validId(message.id)
             is WireMessage.Cancel -> validId(message.id)

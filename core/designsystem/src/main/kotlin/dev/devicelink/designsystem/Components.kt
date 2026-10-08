@@ -83,3 +83,20 @@ fun QuietMessage(title: String, body: String) {
         Text(body, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
+
+@Composable
+fun MessageBubble(outgoing: Boolean, sender: String, content: @Composable ColumnScope.() -> Unit) {
+    val tokens = LocalDeviceTokens.current
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = if (outgoing) Arrangement.End else Arrangement.Start) {
+        Surface(
+            modifier = Modifier.fillMaxWidth(tokens.messageWidthFraction), shape = MaterialTheme.shapes.medium,
+            color = if (outgoing) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerLow,
+            contentColor = if (outgoing) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface,
+        ) {
+            Column(Modifier.padding(tokens.inset), verticalArrangement = Arrangement.spacedBy(tokens.small)) {
+                Text(sender, style = MaterialTheme.typography.labelSmall)
+                content()
+            }
+        }
+    }
+}

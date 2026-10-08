@@ -10,6 +10,9 @@ import androidx.core.content.FileProvider
 import dev.devicelink.model.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
@@ -27,6 +30,9 @@ class NativeLinkController(context: Context, private val scope: CoroutineScope) 
     private val mutable = MutableStateFlow(LinkState(localName = identity.deviceName,
         trustedPeers = identity.trustedPeers(), transfers = identity.receivedFiles(this.context)))
     override val state: StateFlow<LinkState> = mutable.asStateFlow()
+    private val clipEvents = MutableSharedFlow<IncomingClip>(replay = 0, extraBufferCapacity = ClipboardDeliveries.MAX_PENDING)
+    override val incomingClips: Flow<IncomingClip> = clipEvents.asSharedFlow()
+    private val clipboardDeliveries = ClipboardDeliveries()
     override val pairingCode: String get() = PairingInvite(TrustProof.fingerprint(identity.publicKey), identity.deviceName,
         if (radioDelegate.isInitialized()) radio.localAddress.orEmpty() else "").encode()
     private val startupCleanup = scope.async(Dispatchers.IO) {
@@ -138,6 +144,7 @@ class NativeLinkController(context: Context, private val scope: CoroutineScope) 
         outgoing.values.forEach { runCatching { it.descriptor.close() } }; outgoing.clear()
         incomingStreams.forEach { (id, stream) -> runCatching { stream.close() }; File(context.filesDir, "incoming/$id").delete() }
         incomingStreams.clear(); incomingCounts.clear(); offers.clear()
+        clipboardDeliveries.clear()
         agreement = null; secureChannel = null
         endpoint = null; localHello = null; remoteHello = null; remoteCommitment = null; proofVerified = false
         localApproved = false; remoteApproved = false; authenticated = false
@@ -145,7 +152,8 @@ class NativeLinkController(context: Context, private val scope: CoroutineScope) 
         mutable.update { it.copy(phase = LinkPhase.OFF, nearbyPeers = emptyList(), verification = null,
             connectedPeerName = null, remainingSeconds = 0,
             transfers = it.transfers.map { transfer -> if (transfer.status in listOf(TransferStatus.OFFERED, TransferStatus.TRANSFERRING))
-                transfer.copy(status = TransferStatus.CANCELLED) else transfer }) }
+                transfer.copy(status = TransferStatus.CANCELLED,
+                    clipboardStatus = if (transfer.mode == TransferMode.CLIPBOARD) ClipboardStatus.NOT_COPIED else transfer.clipboardStatus) else transfer }) }
     }
     private val radioEvents: WifiDirectRadio.Events = object : WifiDirectRadio.Events {
         override fun peers(peers: List<Peer>) {
@@ -235,7 +243,7 @@ class NativeLinkController(context: Context, private val scope: CoroutineScope) 
             byteArrayOf(1) + requireNotNull(secureChannel).encrypt(plain)
         }
     }
-    private fun receive(wire: WireMessage) {
+    private suspend fun receive(wire: WireMessage) {
         when (wire) {
             is WireMessage.Commitment -> {
                 if (remoteCommitment != null || remoteHello != null || localHello == null) { disconnectWithError(R.string.link_protocol_error); return }
@@ -270,13 +278,15 @@ class NativeLinkController(context: Context, private val scope: CoroutineScope) 
                 if (!authenticated) { disconnectWithError(R.string.link_protocol_error); return }
                 when (wire) {
                     is WireMessage.Text -> receiveText(wire)
+                    is WireMessage.Clip -> receiveClip(wire)
+                    is WireMessage.ClipResult -> receiveClipResult(wire)
                     is WireMessage.Offer -> receiveOffer(wire)
                     is WireMessage.Accept -> sendAccepted(wire.id)
                     is WireMessage.Reject -> terminal(wire.id, TransferStatus.REJECTED)
                     is WireMessage.Cancel -> terminal(wire.id, TransferStatus.CANCELLED)
                     is WireMessage.Receipt -> {
                         val item = mutable.value.transfers.firstOrNull { it.id == wire.id }
-                        if (item?.direction == TransferDirection.OUTGOING && item.status == TransferStatus.TRANSFERRING) terminal(wire.id, TransferStatus.COMPLETE)
+                        if (item?.direction == TransferDirection.OUTGOING && item.mode == TransferMode.STANDARD && item.status == TransferStatus.TRANSFERRING) terminal(wire.id, TransferStatus.COMPLETE)
                     }
                 }
             }
@@ -317,6 +327,78 @@ class NativeLinkController(context: Context, private val scope: CoroutineScope) 
             TransferStatus.TRANSFERRING, totalBytes = text.toByteArray().size.toLong(), text = text))
         sendWire(WireMessage.Text(id, text))
         receiptTimeout(id)
+    }
+
+    override suspend fun sendClip(text: String): ClipSendResult = withContext(Dispatchers.Main.immediate) {
+        if (!authenticated || mutable.value.phase != LinkPhase.CONNECTED) return@withContext ClipSendResult.NOT_CONNECTED
+        if (expired()) return@withContext ClipSendResult.EXPIRED
+        val id = UUID.randomUUID().toString()
+        val bytes = runCatching { WireCodec.encode(WireMessage.Clip(id, text)) }.getOrNull()
+            ?: return@withContext ClipSendResult.INVALID
+        val session = generation
+        append(Transfer(id, message(R.string.link_clipboard_item), TransferKind.TEXT, TransferDirection.OUTGOING,
+            TransferStatus.TRANSFERRING, totalBytes = text.toByteArray().size.toLong(), text = text,
+            mode = TransferMode.CLIPBOARD, clipboardStatus = ClipboardStatus.PENDING))
+        try {
+            frameWrites.write(session) {
+                check(session == generation && authenticated && mutable.value.phase == LinkPhase.CONNECTED)
+                check(!expired())
+                byteArrayOf(1) + requireNotNull(secureChannel).encrypt(byteArrayOf(1) + bytes)
+            }
+            if (session != generation) return@withContext ClipSendResult.FAILED
+            scope.launch(Dispatchers.Main.immediate) {
+                delay(15_000)
+                if (session == generation) {
+                    val item = mutable.value.transfers.firstOrNull { it.id == id }
+                    if (item?.status == TransferStatus.TRANSFERRING) {
+                        terminal(id, TransferStatus.FAILED)
+                        sendWire(WireMessage.Cancel(id))
+                    }
+                }
+            }
+            ClipSendResult.SENT
+        } catch (cancelled: CancellationException) {
+            if (session == generation) { terminal(id, TransferStatus.CANCELLED); sendWire(WireMessage.Cancel(id)) }
+            throw cancelled
+        } catch (_: Exception) {
+            terminal(id, TransferStatus.FAILED)
+            if (session == generation && expired()) ClipSendResult.EXPIRED else ClipSendResult.FAILED
+        }
+    }
+
+    private suspend fun receiveClip(clip: WireMessage.Clip) {
+        if (mutable.value.transfers.any { it.id == clip.id }) { disconnectWithError(R.string.link_protocol_error); return }
+        if (expired()) { sendWire(WireMessage.ClipResult(clip.id, false)); return }
+        val event = clipboardDeliveries.offer(clip.id, clip.text, generation)
+        if (event == null) { sendWire(WireMessage.ClipResult(clip.id, false)); return }
+        val size = clip.text.toByteArray().size.toLong()
+        append(Transfer(clip.id, message(R.string.link_clipboard_item), TransferKind.TEXT, TransferDirection.INCOMING,
+            TransferStatus.TRANSFERRING, totalBytes = size, transferredBytes = size, text = clip.text,
+            mode = TransferMode.CLIPBOARD, clipboardStatus = ClipboardStatus.PENDING))
+        scope.launch(Dispatchers.Main.immediate) {
+            delay(10_000)
+            completeClipboard(event, false)
+        }
+        clipEvents.emit(event)
+    }
+
+    override fun isClipCurrent(event: IncomingClip): Boolean = !expired() &&
+        clipboardDeliveries.isPending(event, generation, authenticated && mutable.value.phase == LinkPhase.CONNECTED)
+
+    override fun clipboardApplied(event: IncomingClip, success: Boolean) = main { completeClipboard(event, success) }
+
+    private fun completeClipboard(event: IncomingClip, success: Boolean) {
+        if (!clipboardDeliveries.consume(event, generation, authenticated && mutable.value.phase == LinkPhase.CONNECTED)) return
+        updateTransfer(event.id) { it.copy(status = TransferStatus.COMPLETE,
+            clipboardStatus = if (success) ClipboardStatus.COPIED else ClipboardStatus.NOT_COPIED) }
+        sendWire(WireMessage.ClipResult(event.id, success))
+    }
+
+    private fun receiveClipResult(result: WireMessage.ClipResult) {
+        val item = mutable.value.transfers.firstOrNull { it.id == result.id } ?: return
+        if (item.direction != TransferDirection.OUTGOING || item.mode != TransferMode.CLIPBOARD || item.status != TransferStatus.TRANSFERRING) return
+        updateTransfer(result.id) { it.copy(status = TransferStatus.COMPLETE, transferredBytes = it.totalBytes,
+            clipboardStatus = if (result.copied) ClipboardStatus.COPIED else ClipboardStatus.NOT_COPIED) }
     }
     private fun receiveText(text: WireMessage.Text) {
         if (expired()) { sendWire(WireMessage.Reject(text.id)); return }
@@ -479,6 +561,7 @@ class NativeLinkController(context: Context, private val scope: CoroutineScope) 
     private fun terminal(id: String, status: TransferStatus) {
         val item = mutable.value.transfers.firstOrNull { it.id == id } ?: return
         if (!TransferLifecycle.canTransition(item.status, status)) return
+        clipboardDeliveries.discard(id)
         offers.remove(id)
         if (status != TransferStatus.COMPLETE) {
             incomingStreams.remove(id)?.let { runCatching { it.close() }; File(context.filesDir, "incoming/$id").delete() }
@@ -487,6 +570,7 @@ class NativeLinkController(context: Context, private val scope: CoroutineScope) 
         }
         outgoing.remove(id)?.descriptor?.let { runCatching { it.close() } }
         updateTransfer(id) { it.copy(status = status, transferredBytes = if (status == TransferStatus.COMPLETE) it.totalBytes else it.transferredBytes,
+            clipboardStatus = if (it.mode == TransferMode.CLIPBOARD && status != TransferStatus.COMPLETE) ClipboardStatus.NOT_COPIED else it.clipboardStatus,
             error = if (status == TransferStatus.FAILED) message(R.string.link_transfer_error) else null) }
     }
     override fun rejectTransfer(id: String) = main { if (authenticated) sendWire(WireMessage.Reject(id)); terminal(id, TransferStatus.REJECTED) }

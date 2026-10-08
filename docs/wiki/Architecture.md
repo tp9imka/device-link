@@ -60,7 +60,19 @@ available; it does not grant file or clipboard access by itself.
 ## Data path
 
 Text is a bounded encrypted message. The receiver adds it to the tray and sends
-a receipt; it never writes the system clipboard automatically.
+a receipt; ordinary `Text` never writes the system clipboard automatically.
+
+Explicit linked copy uses separate `Clip` and `ClipResult` messages. A one-shot
+`IncomingClip` event carries its session token to the application's Main-thread
+collector. The collector checks that the event and unexpired session are still
+current, performs the OS clipboard write, then reports success/failure. Only that
+callback updates clipboard outcome and sends the peer's result. Ordinary receipts
+cannot complete a clipboard operation. Stop, cancellation and reconnect invalidate
+pending events. See [[Clipboard]] for limits, timeouts and compatibility.
+
+The chat sample's Send action persists a local message through the application;
+it does not invoke transport. Only message Copy actions use linked copy. Local
+history is app-private, bounded to 50 messages and never synchronized.
 
 Files begin as scoped Android content URIs from the Sharesheet or document picker.
 DeviceLink reads metadata and opens a descriptor. The receiver sees an offer and

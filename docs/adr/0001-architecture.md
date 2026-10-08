@@ -27,7 +27,9 @@ New pairing requires matching channel authentication code on both phones, or an
 authenticated QR binding. No user payload before identity verification.
 File offers precede payloads; receiver acceptance authorizes a bounded transfer.
 Persist received files privately, expose them through scoped content URIs.
-Never overwrite local clipboard automatically. Process death closes sessions.
+Ordinary Text never overwrites the local clipboard automatically. Explicit Clip
+commands may write it only within the current authenticated session; see
+[ADR 0002](0002-explicit-clipboard-integration.md). Process death closes sessions.
 Off performs no discovery or polling. Deadline prevents new work, allows existing
 transfers to finish, then tears down transport; explicit stop cancels immediately.
 
