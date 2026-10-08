@@ -16,7 +16,6 @@ import kotlinx.coroutines.flow.update
 import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
-import java.nio.ByteBuffer
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.security.SecureRandom
@@ -39,6 +38,13 @@ class NativeLinkController(context: Context, private val scope: CoroutineScope) 
     private var agreement: EphemeralAgreement? = null
     private var secureChannel: SecureChannel? = null
     private val sendLock = Mutex()
+    private val transferWakeLock = (this.context.getSystemService(Context.POWER_SERVICE) as android.os.PowerManager)
+        .newWakeLock(android.os.PowerManager.PARTIAL_WAKE_LOCK, "DeviceLink:transfer").apply { setReferenceCounted(false) }
+    private fun updateWakeLock() {
+        if (activeCount() > 0) {
+            if (!transferWakeLock.isHeld) transferWakeLock.acquire(10 * 60_000L)
+        } else if (transferWakeLock.isHeld) transferWakeLock.release()
+    }
     private var localHello: WireMessage.Hello? = null
     private var remoteCommitment: String? = null
     private var remoteHello: WireMessage.Hello? = null
@@ -66,11 +72,30 @@ class NativeLinkController(context: Context, private val scope: CoroutineScope) 
     private fun error(id: Int) { mutable.update { it.copy(error = message(id)) } }
     private fun activeCount() = mutable.value.transfers.count { it.status == TransferStatus.TRANSFERRING }
     private fun expired() = SessionPolicy.expired(deadline, SystemClock.elapsedRealtime())
+    private val progressPublished = mutableMapOf<String, Long>()
     private fun updateTransfer(id: String, transform: (Transfer) -> Transfer) {
-        mutable.update { current -> current.copy(transfers = current.transfers.map { if (it.id == id) transform(it) else it }) }
-        identity.saveFiles(mutable.value.transfers)
+        val previous = mutable.value.transfers.firstOrNull { it.id == id } ?: return
+        val next = transform(previous)
+        val now = SystemClock.elapsedRealtime()
+        if (previous.status == TransferStatus.TRANSFERRING && next.status == TransferStatus.TRANSFERRING &&
+            previous.copy(transferredBytes = next.transferredBytes) == next) {
+            if (now - (progressPublished[id] ?: 0) < 150) return
+            progressPublished[id] = now
+        } else progressPublished.remove(id)
+        mutable.update { current -> current.copy(transfers = current.transfers.map { if (it.id == id) next else it }) }
+        if (next.status == TransferStatus.COMPLETE && next.kind == TransferKind.FILE && next.direction == TransferDirection.INCOMING)
+            identity.saveFiles(mutable.value.transfers)
+        updateWakeLock()
     }
-    private fun append(transfer: Transfer) { mutable.update { it.copy(transfers = listOf(transfer) + it.transfers) } }
+    private fun append(transfer: Transfer) {
+        mutable.update { current ->
+            var completedTexts = 0
+            current.copy(transfers = (listOf(transfer) + current.transfers).filter {
+                if (it.kind == TransferKind.TEXT && it.status !in listOf(TransferStatus.OFFERED, TransferStatus.TRANSFERRING)) ++completedTexts <= 200 else true
+            })
+        }
+        updateWakeLock()
+    }
     private fun disconnectWithError(id: Int) { stopInternal(); error(id) }
 
     override fun startSession(durationMinutes: Int) = main {
@@ -98,9 +123,10 @@ class NativeLinkController(context: Context, private val scope: CoroutineScope) 
             if (generation == session && mutable.value.phase == LinkPhase.SEARCHING) disconnectWithError(R.string.link_search_timeout)
         }
     }
-    override fun stopSession() = main { stopInternal() }
+    override fun stopSession() = main { pending.clear(); mutable.update { it.copy(pendingItems = 0) }; stopInternal() }
     private fun stopInternal() {
         generation++
+        if (transferWakeLock.isHeld) transferWakeLock.release()
         timer?.cancel(); searchTimer?.cancel(); handshakeTimer?.cancel()
         copyJobs.values.forEach { it.cancel() }; copyJobs.clear()
         radio.stop()
@@ -128,7 +154,7 @@ class NativeLinkController(context: Context, private val scope: CoroutineScope) 
             endpoint = endpoint ?: "incoming"
             mutable.update { it.copy(phase = LinkPhase.CONNECTING, nearbyPeers = emptyList()) }
             agreement = EphemeralAgreement()
-            localHello = WireMessage.Hello(identity.publicKey, Base64.encodeToString(ByteArray(32).apply { SecureRandom().nextBytes(this) }, Base64.NO_WRAP), agreement!!.publicKey)
+            localHello = WireMessage.Hello(identity.publicKey, Base64.encodeToString(ByteArray(32).apply { SecureRandom().nextBytes(this) }, Base64.NO_WRAP), agreement!!.publicKey, identity.deviceName)
             startHandshakeTimeout(); sendWire(WireMessage.Commitment(TrustProof.commitment(localHello!!)))
         }
         override suspend fun frame(bytes: ByteArray) {
@@ -150,7 +176,8 @@ class NativeLinkController(context: Context, private val scope: CoroutineScope) 
                         else -> error("Invalid frame")
                     }
                 }
-            } catch (_: Exception) { if (session == generation && mutable.value.enabled) disconnectWithError(R.string.link_protocol_error) }
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (_: Exception) { if (session == generation && mutable.value.enabled) disconnectWithError(R.string.link_protocol_error) }
         }
         override fun failed() { if (mutable.value.enabled) disconnectWithError(R.string.link_connect_error) }
     }
@@ -184,7 +211,7 @@ class NativeLinkController(context: Context, private val scope: CoroutineScope) 
     private suspend fun sendFileFrame(payloadId: Long, bytes: ByteArray?, session: Long) {
         sendLock.withLock {
             check(session == generation)
-            val plain = ByteBuffer.allocate(9 + (bytes?.size ?: 0)).put(if (bytes == null) 3.toByte() else 2.toByte()).putLong(payloadId).apply { if (bytes != null) put(bytes) }.array()
+            val plain = FileFrames.encode(payloadId, bytes)
             radio.send(byteArrayOf(1) + requireNotNull(secureChannel).encrypt(plain))
         }
     }
@@ -199,6 +226,7 @@ class NativeLinkController(context: Context, private val scope: CoroutineScope) 
                 val fingerprint = runCatching { TrustProof.fingerprint(wire.publicKey) }.getOrNull()
                 if (fingerprint == null || (pinnedFingerprint != null && pinnedFingerprint != fingerprint)) { disconnectWithError(R.string.link_identity_error); return }
                 remoteHello = wire
+                peerName = wire.displayName
                 secureChannel = agreement!!.establish(localHello!!, wire)
                 authenticationCode = TrustProof.authenticationCode(localHello!!, wire)
                 sendWire(WireMessage.Proof(identity.sign(TrustProof.transcript(localHello!!, wire))))
@@ -230,7 +258,6 @@ class NativeLinkController(context: Context, private val scope: CoroutineScope) 
                         val item = mutable.value.transfers.firstOrNull { it.id == wire.id }
                         if (item?.direction == TransferDirection.OUTGOING && item.status == TransferStatus.TRANSFERRING) terminal(wire.id, TransferStatus.COMPLETE)
                     }
-                    else -> disconnectWithError(R.string.link_protocol_error)
                 }
             }
         }
@@ -251,6 +278,7 @@ class NativeLinkController(context: Context, private val scope: CoroutineScope) 
         queued.forEach { when (it) { is Pending.Text -> sendText(it.text); is Pending.Files -> sendFiles(it.uris) } }
     }
     override fun pairWithCode(code: String) = main {
+        if (mutable.value.phase !in listOf(LinkPhase.OFF, LinkPhase.SEARCHING)) { error(R.string.link_pair_busy); return@main }
         val parsed = runCatching {
             require(code.startsWith("dl1:") && code.length < 2048)
             val json = JSONObject(String(Base64.decode(code.removePrefix("dl1:"), Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)))
@@ -259,7 +287,6 @@ class NativeLinkController(context: Context, private val scope: CoroutineScope) 
             fingerprint to json.optString("address").take(48)
         }.getOrNull()
         if (parsed == null) { error(R.string.link_invalid_code); return@main }
-        if (!mutable.value.enabled) startSession()
         pinnedFingerprint = parsed.first; pinnedName = parsed.second
         mutable.value.nearbyPeers.firstOrNull { it.id == parsed.second }?.let { connect(it.id) }
     }
@@ -337,7 +364,7 @@ class NativeLinkController(context: Context, private val scope: CoroutineScope) 
         if (transfer.direction != TransferDirection.INCOMING || transfer.status != TransferStatus.OFFERED) return@main
         if (context.filesDir.usableSpace < transfer.totalBytes + 10 * 1024 * 1024) { error(R.string.link_storage_full); return@main }
         val file = File(context.filesDir, "received/$id")
-        try { file.parentFile!!.mkdirs(); incomingStreams[id] = file.outputStream(); incomingCounts[id] = 0 }
+        try { file.parentFile!!.mkdirs(); check(file.createNewFile()); incomingStreams[id] = file.outputStream(); incomingCounts[id] = 0 }
         catch (_: Exception) { error(R.string.link_storage_full); return@main }
         updateTransfer(id) { it.copy(status = TransferStatus.TRANSFERRING) }; sendWire(WireMessage.Accept(id)); receiptTimeout(id)
     }
@@ -371,15 +398,15 @@ class NativeLinkController(context: Context, private val scope: CoroutineScope) 
     private suspend fun receiveFileFrame(frame: ByteArray) {
         val session = generation
         require(authenticated && frame.size >= 9)
-        val buffer = ByteBuffer.wrap(frame); val type = buffer.get().toInt(); val payloadId = buffer.long
+        val decoded = FileFrames.decode(frame); val payloadId = decoded.payloadId
         val offer = offers.values.firstOrNull { it.payloadId == payloadId } ?: return // Frames already in flight after a cancel.
         val transfer = mutable.value.transfers.firstOrNull { it.id == offer.id } ?: error("Missing offer")
         require(transfer.direction == TransferDirection.INCOMING && transfer.status == TransferStatus.TRANSFERRING)
         val stream = incomingStreams[offer.id] ?: error("Not accepted")
-        if (type == 2) {
-            val count = (incomingCounts[offer.id] ?: 0) + buffer.remaining()
+        if (decoded.bytes != null) {
+            val count = (incomingCounts[offer.id] ?: 0) + decoded.bytes.size
             require(count <= offer.size)
-            withContext(Dispatchers.IO) { stream.write(frame, 9, frame.size - 9) }
+            withContext(Dispatchers.IO) { stream.write(decoded.bytes) }
             if (session != generation) return
             incomingCounts[offer.id] = count
             updateTransfer(offer.id) { it.copy(transferredBytes = count) }
@@ -409,8 +436,8 @@ class NativeLinkController(context: Context, private val scope: CoroutineScope) 
     }
     private fun terminal(id: String, status: TransferStatus) {
         val item = mutable.value.transfers.firstOrNull { it.id == id } ?: return
-        if (item.status !in listOf(TransferStatus.OFFERED, TransferStatus.TRANSFERRING)) return
-        val offer = offers.remove(id)
+        if (!TransferLifecycle.canTransition(item.status, status)) return
+        offers.remove(id)
         if (status != TransferStatus.COMPLETE) {
             incomingStreams.remove(id)?.let { runCatching { it.close() }; File(context.filesDir, "received/$id").delete() }
             incomingCounts.remove(id)
@@ -435,7 +462,7 @@ class NativeLinkController(context: Context, private val scope: CoroutineScope) 
     }
     override fun clearPending() = main { pending.clear(); mutable.update { it.copy(pendingItems = 0) } }
     override fun setDeviceName(name: String) = main {
-        val safe = name.trim().filterNot { it.isISOControl() }.take(48)
+        val safe = name.trim().filterNot { it.isISOControl() || Character.getType(it) == Character.FORMAT.toInt() }.take(48)
         if (safe.isEmpty()) return@main
         identity.deviceName = safe; mutable.update { it.copy(localName = safe) }
     }

@@ -12,7 +12,7 @@ object SessionPolicy {
 object TransferLifecycle {
     fun canTransition(from: TransferStatus, to: TransferStatus): Boolean = when (from) {
         TransferStatus.OFFERED -> to in setOf(TransferStatus.TRANSFERRING, TransferStatus.REJECTED, TransferStatus.CANCELLED, TransferStatus.FAILED)
-        TransferStatus.TRANSFERRING -> to in setOf(TransferStatus.COMPLETE, TransferStatus.CANCELLED, TransferStatus.FAILED)
+        TransferStatus.TRANSFERRING -> to in setOf(TransferStatus.COMPLETE, TransferStatus.REJECTED, TransferStatus.CANCELLED, TransferStatus.FAILED)
         TransferStatus.COMPLETE, TransferStatus.REJECTED, TransferStatus.CANCELLED, TransferStatus.FAILED -> false
     }
 }

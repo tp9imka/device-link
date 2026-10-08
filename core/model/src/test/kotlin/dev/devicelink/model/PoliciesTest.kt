@@ -16,6 +16,7 @@ class PoliciesTest {
         assertTrue(TransferLifecycle.canTransition(TransferStatus.OFFERED, TransferStatus.TRANSFERRING))
         assertTrue(TransferLifecycle.canTransition(TransferStatus.TRANSFERRING, TransferStatus.COMPLETE))
         assertTrue(TransferLifecycle.canTransition(TransferStatus.OFFERED, TransferStatus.REJECTED))
+        assertTrue(TransferLifecycle.canTransition(TransferStatus.TRANSFERRING, TransferStatus.REJECTED))
         assertFalse(TransferLifecycle.canTransition(TransferStatus.OFFERED, TransferStatus.COMPLETE))
         assertFalse(TransferLifecycle.canTransition(TransferStatus.COMPLETE, TransferStatus.TRANSFERRING))
         assertFalse(TransferLifecycle.canTransition(TransferStatus.CANCELLED, TransferStatus.COMPLETE))

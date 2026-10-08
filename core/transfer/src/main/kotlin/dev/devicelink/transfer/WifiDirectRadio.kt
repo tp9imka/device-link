@@ -54,7 +54,7 @@ internal class WifiDirectRadio(private val context: Context, private val scope: 
                         connectionJob = scope.launch(Dispatchers.IO) {
                             try {
                                 val link = if (info.isGroupOwner) {
-                                    ServerSocket().apply { reuseAddress = true; bind(InetSocketAddress(PORT)); soTimeout = 120_000; server = this }.accept()
+                                    ServerSocket().apply { reuseAddress = true; bind(InetSocketAddress(info.groupOwnerAddress, PORT)); soTimeout = 120_000; server = this }.accept()
                                 } else {
                                     var connected: Socket? = null
                                     repeat(15) {
@@ -123,7 +123,7 @@ internal class WifiDirectRadio(private val context: Context, private val scope: 
         runCatching { socket?.close() }; socket = null
         runCatching { server?.close() }; server = null; output = null
         channel?.let { ch ->
-            runCatching { manager.stopPeerDiscovery(ch, null); manager.cancelConnect(ch, null); manager.removeGroup(ch, null); ch.close() }
+            runCatching { manager.stopPeerDiscovery(ch, null); manager.cancelConnect(ch, null); manager.removeGroup(ch, null); if (android.os.Build.VERSION.SDK_INT >= 27) ch.close() }
         }
         channel = null
         if (registered) { runCatching { context.unregisterReceiver(receiver) }; registered = false }

@@ -16,6 +16,8 @@ class DeviceLinkTileService : TileService() {
             updateTile()
         }
     }
+    // API 26-33 expose only the Intent overload; API 34+ use PendingIntent below.
+    @android.annotation.SuppressLint("StartActivityAndCollapseDeprecated")
     override fun onClick() {
         super.onClick()
         val controller = (application as DeviceLinkApplication).controller

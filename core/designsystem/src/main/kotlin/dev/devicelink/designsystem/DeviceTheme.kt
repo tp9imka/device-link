@@ -63,17 +63,24 @@ fun DeviceTheme(appearance: Appearance, content: @Composable () -> Unit) {
     } else if (dark) darkColorScheme(
         primary = seed, onPrimary = Color(0xFF082F2B), primaryContainer = container,
         onPrimaryContainer = Color(0xFFE4FFF8), secondary = Color(0xFFBACBC6),
-        background = Color(0xFF101513), surface = Color(0xFF101513),
+        onSecondary = Color(0xFF253E35), secondaryContainer = Color(0xFF384D42),
+        onSecondaryContainer = Color(0xFFDCEADF),
+        background = Color(0xFF101513), onBackground = Color(0xFFE0E8E1), surface = Color(0xFF101513),
         surfaceContainer = Color(0xFF1C2420), surfaceContainerLow = Color(0xFF171D1A),
         surfaceContainerHigh = Color(0xFF27312C), onSurface = Color(0xFFE0E8E1),
-        onSurfaceVariant = Color(0xFFBFC9C1), outlineVariant = Color(0xFF3F4A43),
+        surfaceContainerLowest = Color(0xFF0A100D), surfaceContainerHighest = Color(0xFF303A34),
+        surfaceVariant = Color(0xFF3F4A43), surfaceBright = Color(0xFF363F39), surfaceDim = Color(0xFF101513),
+        onSurfaceVariant = Color(0xFFBFC9C1), outline = Color(0xFF89958C), outlineVariant = Color(0xFF3F4A43),
     ) else lightColorScheme(
         primary = seed, onPrimary = Color.White, primaryContainer = container,
         onPrimaryContainer = Color(0xFF102C26), secondary = Color(0xFF4C635B),
-        background = Color(0xFFF5F8F4), surface = Color(0xFFF5F8F4),
+        onSecondary = Color.White, secondaryContainer = Color(0xFFD8E7DC), onSecondaryContainer = Color(0xFF263E31),
+        background = Color(0xFFF5F8F4), onBackground = Color(0xFF19231D), surface = Color(0xFFF5F8F4),
         surfaceContainer = Color(0xFFEBF0E9), surfaceContainerLow = Color(0xFFFFFFFF),
         surfaceContainerHigh = Color(0xFFE2E9E1), onSurface = Color(0xFF19231D),
-        onSurfaceVariant = Color(0xFF4C5B51), outlineVariant = Color(0xFFCED8CF),
+        surfaceContainerLowest = Color.White, surfaceContainerHighest = Color(0xFFDBE3DA),
+        surfaceVariant = Color(0xFFDBE3DA), surfaceBright = Color(0xFFF5F8F4), surfaceDim = Color(0xFFD7DFD6),
+        onSurfaceVariant = Color(0xFF4C5B51), outline = Color(0xFF738075), outlineVariant = Color(0xFFCED8CF),
     )
     val radius = when (appearance.corners) { Corners.SOFT -> 20.dp; Corners.ROUND -> 32.dp; Corners.SQUARE -> 6.dp }
     val shapes = Shapes(

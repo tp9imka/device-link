@@ -14,6 +14,7 @@ class ProtocolTest {
         reject { WireCodec.decode("""{"version":1,"message":{"type":"accept","id":"x","admin":true}}""".toByteArray()) }
         reject { WireCodec.decode(byteArrayOf(0xC3.toByte(), 0x28)) }
         reject { WireCodec.decode(ByteArray(WireCodec.MAX_WIRE_BYTES + 1)) }
+        reject { WireCodec.decode(("[".repeat(10_000) + "]".repeat(10_000)).toByteArray()) }
         reject { WireCodec.encode(WireMessage.Accept("")) }
     }
 

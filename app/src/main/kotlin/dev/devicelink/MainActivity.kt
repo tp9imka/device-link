@@ -14,6 +14,10 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
+import androidx.core.view.WindowCompat
+import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.runtime.SideEffect
+import dev.devicelink.designsystem.AppearanceMode
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
 import com.journeyapps.barcodescanner.ScanContract
@@ -70,6 +74,19 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         setContent {
             val state = app.controller.state.collectAsStateWithLifecycle().value
+            val appearance = app.appearanceStore.appearance.collectAsStateWithLifecycle().value
+            val dark = when (appearance.mode) {
+                AppearanceMode.SYSTEM -> isSystemInDarkTheme()
+                AppearanceMode.DARK -> true
+                AppearanceMode.LIGHT -> false
+            }
+            SideEffect {
+                WindowCompat.getInsetsController(window, window.decorView).apply {
+                    isAppearanceLightStatusBars = !dark
+                    isAppearanceLightNavigationBars = !dark
+                }
+                requestedDuration = appearance.sessionMinutes
+            }
             DeviceLinkApp(
                 state = state,
                 controller = app.controller,
@@ -113,6 +130,7 @@ class MainActivity : ComponentActivity() {
         requestedDuration = minutes
         val required = mutableListOf(if (Build.VERSION.SDK_INT >= 33) Manifest.permission.NEARBY_WIFI_DEVICES else Manifest.permission.ACCESS_FINE_LOCATION)
         if (Build.VERSION.SDK_INT >= 33) required += Manifest.permission.POST_NOTIFICATIONS
+        else required += Manifest.permission.ACCESS_COARSE_LOCATION
         val missing = required.filter { ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED }
         if (missing.isEmpty()) startServiceSession() else permissions.launch(missing.toTypedArray())
     }

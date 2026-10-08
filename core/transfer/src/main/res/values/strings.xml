@@ -16,4 +16,5 @@
     <string name="link_file_unavailable">Cannot read this file or determine its size. Choose a local file up to 10 GB.</string>
     <string name="link_storage_full">There is not enough storage to receive this file.</string>
     <string name="link_other_phone">Other phone</string>
+    <string name="link_pair_busy">End the current connection before scanning another pairing code.</string>
 </resources>

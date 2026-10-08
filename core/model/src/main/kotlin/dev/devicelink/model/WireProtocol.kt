@@ -58,6 +58,7 @@ object WireCodec {
                 .onMalformedInput(CodingErrorAction.REPORT)
                 .onUnmappableCharacter(CodingErrorAction.REPORT)
                 .decode(ByteBuffer.wrap(bytes)).toString()
+            validateNesting(text)
             json.decodeFromString<Envelope>(text)
         } catch (error: Exception) {
             throw IllegalArgumentException("Malformed control message", error)
@@ -102,6 +103,24 @@ object WireCodec {
             is WireMessage.Receipt -> validId(message.id)
             WireMessage.PairApproved, WireMessage.PairRejected -> Unit
         }
+    }
+
+    private fun validateNesting(text: String) {
+        var depth = 0
+        var quoted = false
+        var escaped = false
+        for (char in text) {
+            if (quoted) {
+                if (escaped) escaped = false
+                else if (char == '\\') escaped = true
+                else if (char == '"') quoted = false
+            } else when (char) {
+                '"' -> quoted = true
+                '{', '[' -> { depth++; require(depth <= 4) { "Control message nesting exceeds limit" } }
+                '}', ']' -> { depth--; require(depth >= 0) { "Invalid control message nesting" } }
+            }
+        }
+        require(depth == 0 && !quoted) { "Incomplete control message" }
     }
 
     private fun validId(id: String) = require(idPattern.matches(id)) { "Invalid transfer ID" }

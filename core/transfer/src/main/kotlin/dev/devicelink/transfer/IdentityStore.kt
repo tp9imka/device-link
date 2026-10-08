@@ -61,7 +61,7 @@ internal class IdentityStore(context: Context) {
     fun saveFiles(files: List<Transfer>) {
         prefs.edit().putString("received", JSONArray().apply {
             files.filter { it.kind == TransferKind.FILE && it.direction == TransferDirection.INCOMING && it.status == TransferStatus.COMPLETE }
-                .take(100).forEach { put(JSONObject().put("id", it.id).put("name", it.name)
+                .forEach { put(JSONObject().put("id", it.id).put("name", it.name)
                     .put("size", it.totalBytes).put("mime", it.mimeType).put("uri", it.localUri)) }
         }.toString()).apply()
     }
