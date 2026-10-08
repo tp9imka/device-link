@@ -17,6 +17,11 @@ cryptographic and session tests, architecture guard, Android lint and app assemb
 Physical two-phone tests remain an explicit integration tier. There is no 100%
 coverage target, mutation threshold or mandatory test for every rendering branch.
 
+The GitHub Enterprise repository needs a runner matching the workflow's
+`ubuntu-latest` label. As of the initial validation, no runner is available and
+Actions runs remain queued. Run the local gate until a runner is provisioned;
+queued CI does not count as a passing check.
+
 ## Changes
 
 Branch from main; use conventional commits; update architecture/workflow docs in
