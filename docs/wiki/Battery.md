@@ -12,7 +12,10 @@ stored while transport is off; remembering a device does not require scanning.
 | Transferring | File IO and a bounded CPU wake lock; progress updates are throttled |
 | Stopped | Timers/jobs cancelled, streams/sockets closed, discovery/group removed |
 
-The default session is 15 minutes; Settings offers 5 and 30 minutes. Expiry does
+The default session limit is 15 minutes; Settings offers 5 and 30 minutes. Initial
+discovery ends after one minute without a connection, so an unsuccessful search
+does not scan for the entire session limit. Start another session to retry.
+Connection and pairing have a separate two-minute deadline. Session expiry does
 not cut off a transfer already in progress, but blocks new work. Explicit stop
 cancels immediately. The app does not keep the display awake and does not request
 a blanket battery-optimization exemption.

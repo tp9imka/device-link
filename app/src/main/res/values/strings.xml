@@ -2,7 +2,7 @@
  <string name="app_name">DeviceLink</string>
  <string name="channel_name">Active device link</string>
  <string name="session_active">DeviceLink is available</string>
- <string name="session_remaining">%1$d minutes remaining · Tap to manage</string>
+ <string name="session_remaining">Session limit: %1$d min · Tap to manage</string>
  <string name="session_finishing">Finishing your transfer</string>
  <string name="stop_session">Turn off</string>
  <string name="permission_required">Allow nearby devices to connect your phones.</string>

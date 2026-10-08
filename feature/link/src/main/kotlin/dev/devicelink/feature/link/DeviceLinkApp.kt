@@ -212,6 +212,7 @@ fun DeviceLinkApp(state: LinkState, controller: LinkController, appearanceStore:
 private fun SessionPanel(state: LinkState, duration: Int, start: (Int) -> Unit, stop: () -> Unit) {
     val tokens = LocalDeviceTokens.current
     val sessionLabel = stringResource(R.string.dl_session)
+    val waitingForApproval = state.phase == LinkPhase.VERIFYING && state.verification == null
     LinkPanel(emphasized = state.enabled) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(tokens.inset)) {
             DeviceMark(linked = state.phase == LinkPhase.CONNECTED, large = !state.enabled)
@@ -228,16 +229,18 @@ private fun SessionPanel(state: LinkState, duration: Int, start: (Int) -> Unit, 
             LinkPhase.OFF -> stringResource(R.string.dl_off_title)
             LinkPhase.SEARCHING -> stringResource(R.string.dl_searching)
             LinkPhase.CONNECTING -> stringResource(R.string.dl_connecting)
-            LinkPhase.VERIFYING -> stringResource(R.string.dl_verifying)
+            LinkPhase.VERIFYING -> stringResource(if (waitingForApproval) R.string.dl_waiting_approval else R.string.dl_verifying)
             LinkPhase.CONNECTED -> stringResource(R.string.dl_connected, state.connectedPeerName.orEmpty())
         }, style = if (state.enabled) MaterialTheme.typography.titleLarge else MaterialTheme.typography.headlineMedium)
         Text(stringResource(when (state.phase) {
             LinkPhase.OFF -> R.string.dl_off_body
             LinkPhase.CONNECTED -> R.string.dl_connected_body
-            else -> R.string.dl_search_body
+            LinkPhase.CONNECTING -> R.string.dl_connecting_body
+            LinkPhase.VERIFYING -> if (waitingForApproval) R.string.dl_waiting_approval_body else R.string.dl_verifying_body
+            LinkPhase.SEARCHING -> R.string.dl_search_body
         }), style = if (state.enabled) MaterialTheme.typography.bodyMedium else MaterialTheme.typography.bodyLarge)
         if (!state.enabled) Button(onClick = { start(duration) }) { Text(stringResource(R.string.dl_start, duration)) }
-        if (state.phase == LinkPhase.SEARCHING || state.phase == LinkPhase.CONNECTING) LinearProgressIndicator(Modifier.fillMaxWidth())
+        if (state.phase == LinkPhase.SEARCHING || state.phase == LinkPhase.CONNECTING || waitingForApproval) LinearProgressIndicator(Modifier.fillMaxWidth())
     }
 }
 

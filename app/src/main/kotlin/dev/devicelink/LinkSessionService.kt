@@ -33,8 +33,9 @@ class LinkSessionService : Service() {
         }
         val manager = getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(NotificationChannel(CHANNEL, getString(R.string.channel_name), NotificationManager.IMPORTANCE_LOW))
-        startForeground(NOTIFICATION_ID, notification(15))
-        controller.startSession(intent.getIntExtra(EXTRA_DURATION, 15))
+        val duration = intent.getIntExtra(EXTRA_DURATION, 15).coerceIn(1, 60)
+        startForeground(NOTIFICATION_ID, notification(duration.toLong()))
+        controller.startSession(duration)
         if (!observing) {
             observing = true
             scope.launch {
