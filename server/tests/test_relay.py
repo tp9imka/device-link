@@ -151,9 +151,9 @@ def test_remove_peer_revokes_and_discards_mail(setup):
 
 @pytest.mark.parametrize("changes", [
     {"id": "../bad"}, {"sequence": -1}, {"sequence": 0}, {"sequence": True}, {"sequence": 2**63},
-    {"version": 2}, {"version": True},
+    {"version": 3}, {"version": True},
     {"createdAt": 1_800_000_060_001}, {"expiresAt": 1_800_000_000_000},
-    {"expiresAt": 1_800_086_400_001}, {"ciphertext": "not base64"}, {"signature": ""},
+    {"expiresAt": 1_800_086_400_001}, {"expiresAt": 1_800_000_600_001}, {"ciphertext": "not base64"}, {"signature": ""},
     {"unknown": "field"}, {"recipientId": "not a fingerprint"},
 ])
 def test_malformed_envelope_rejected_without_payload_echo(setup, changes):

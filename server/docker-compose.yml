@@ -1,0 +1,27 @@
+# Local relay, optionally exposed through a Cloudflare tunnel:
+#   cp .env.example .env   # fill in values
+#   docker compose up -d                    # relay on http://127.0.0.1:8000 only
+#   docker compose --profile tunnel up -d   # plus cloudflared (route your hostname to http://relay:8000)
+services:
+  relay:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      RELAY_BIND: 0.0.0.0
+    volumes:
+      - relay-data:/data
+    ports:
+      - "127.0.0.1:8000:8000"
+  tunnel:
+    profiles: ["tunnel"]
+    # Pin a reviewed cloudflared release for long-running deployments.
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN}
+    depends_on:
+      - relay
+volumes:
+  relay-data:
