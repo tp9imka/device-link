@@ -147,7 +147,7 @@ class DeviceLinkKeyboard : InputMethodService(), KeyboardView.Listener {
         val labels = KeyLabels(getString(R.string.kb_mode_symbols), getString(R.string.kb_mode_letters),
             getString(R.string.kb_mode_more), getString(R.string.kb_space))
         view.shift = shift.mode
-        view.rows = Layouts.build(mode, shift.mode, labels, shouldOfferSwitchingToNextInputMethod())
+        view.rows = Layouts.build(mode, shift.mode, labels, offersNextKeyboard())
     }
 
     private fun updateEnterLabel(info: EditorInfo) {
@@ -247,6 +247,11 @@ class DeviceLinkKeyboard : InputMethodService(), KeyboardView.Listener {
         if (action != null) currentInputConnection?.performEditorAction(action) else sendKeyChar('\n')
         lastSpaceAt = 0
     }
+
+    private fun offersNextKeyboard(): Boolean =
+        if (Build.VERSION.SDK_INT >= 28) shouldOfferSwitchingToNextInputMethod()
+        else @Suppress("DEPRECATION") getSystemService(InputMethodManager::class.java)
+            .shouldOfferSwitchingToNextInputMethod(window.window?.attributes?.token)
 
     private fun nextKeyboard() {
         if (Build.VERSION.SDK_INT >= 28) { if (!switchToNextInputMethod(false)) getSystemService(InputMethodManager::class.java).showInputMethodPicker() }
