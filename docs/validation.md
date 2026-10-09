@@ -22,6 +22,10 @@ Executed in a Linux container (no phones, no emulator):
   with aapt2-generated R classes). Full Gradle/AGP `check` (lint, assembly) runs in CI only: Google's
   Maven repository is not reachable from the container.
 - iOS app targets are compiled only in CI (`xcodebuild`, simulator, unsigned).
+- GitHub Actions on PR #1 (head `effce78`): `./gradlew check` (all Android modules incl. lint and debug
+  assembly of both new apps), relay pytest, Swift tests, live interop job and the iOS `xcodebuild` job
+  all passed. CI found two issues the container could not: an App Intents dialog type error and an
+  Android lint Orientation error; both fixed.
 
 Pending on real devices (not claimed):
 

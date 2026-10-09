@@ -29,8 +29,7 @@ Decisions taken without the user (they asked for autonomy):
 
 ## Next
 
-1. Get PR CI fully green (Android lint may flag things that were not checkable offline; iOS job compiles
-   the apps for the first time).
+1. CI is green on the PR (Android check/lint, relay, Swift, live interop, iOS xcodebuild).
 2. Two-device validation on hardware (list in `docs/validation.md` → Link v2 → Pending).
 3. Run the relay behind a named Cloudflare tunnel (`docs/wiki/Hosting.md`), then build apps with that URL.
 4. Optional: iOS Notification Service Extension to decrypt previews; Android battery measurement of the
