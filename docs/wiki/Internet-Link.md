@@ -35,8 +35,8 @@ or turn chat Send into a network action.
 
 | Content | Sender action | Receiving behavior | Lifetime |
 | --- | --- | --- | --- |
-| Ordinary text/link | Share or Send clipboard | Tray item; manual Copy | Up to 24 hours |
-| Ordinary file | Share or Choose files | Explicit Receive/Reject offer | Up to 24 hours |
+| Ordinary text/link | Share or Send clipboard | Tray item; manual Copy | Up to 10 minutes |
+| Ordinary file | Share or Choose files | Explicit Receive/Reject offer | Up to 10 minutes |
 | Clipboard text | Copy displayed sample message/selection | Automatic only when receiver opted in; otherwise manual Copy | 60 seconds |
 | Clipboard image | Explicit image Copy | Real content URI; automatic only when opted in | 60 seconds |
 | Delivery result | Automatic encrypted receipt | Updates sender outcome | 60 seconds |
@@ -61,7 +61,7 @@ encrypted result only after processing or after its clipboard write callback.
 If that result is lost, the sender may time out even though processing succeeded.
 
 Ordinary incoming text persists privately and expired records are filtered when
-history loads or new text is saved. Its envelope lasts at most 24 hours; this is
+history loads or new text is saved. Its envelope lasts at most 10 minutes (relay cap); this is
 not a background timed-erasure guarantee. Clipboard text remains ephemeral. Accepted files use the common durable
 private-file index. File offers awaiting a decision persist as encrypted local
 envelopes; polling excludes those IDs without acknowledging them, and offers can

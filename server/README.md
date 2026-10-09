@@ -1,6 +1,6 @@
 # DeviceLink relay
 
-A small, single-process FastAPI relay for opaque encrypted envelopes. It stores public device identities, directional recipient allowlists, replay nonces, delivery metadata and ciphertext in SQLite. It cannot decrypt envelope contents. Payload type, clipboard text, filenames and private keys are never submitted in the public envelope. Signing and decrypting the end-to-end envelope remain client responsibilities.
+A small, single-process FastAPI relay — the "sandbox" — for opaque encrypted envelopes. It stores public device identities, directional recipient allowlists, replay nonces, one-time QR pairing rendezvous, delivery metadata and ciphertext in SQLite. Items live at most `max_ttl_ms` (default 10 minutes; clients use 5) and are deleted on acknowledgement or expiry. An operator dashboard is served at `/admin` (see [Hosting](../docs/wiki/Hosting.md)). Link v2 endpoints and pairing are specified in [docs/protocol/link-v2.md](../docs/protocol/link-v2.md). It cannot decrypt envelope contents. Payload type, clipboard text, filenames and private keys are never submitted in the public envelope. Signing and decrypting the end-to-end envelope remain client responsibilities.
 
 ## Run locally
 
@@ -29,16 +29,22 @@ Use a dedicated service user and HTTPS reverse proxy. `deploy/devicelink-relay.s
 
 Set an enrollment token on public deployments. Provision that token into allowed clients through their relay settings. Keep it outside git in a root-readable environment file, for example `/etc/devicelink-relay/environment`; rotate it to stop new enrollments with a compromised token. Rotation does not revoke already enrolled device identities.
 
-Supported environment variables:
+Configuration comes from an optional TOML file named by `RELAY_CONFIG` (see `config.example.toml`) and `RELAY_<KEY>` environment variables, which win. Unknown keys are rejected. Main settings:
 
-| Variable | Default | Meaning |
+| Key / variable | Default | Meaning |
 | --- | --- | --- |
-| `RELAY_BIND` | `127.0.0.1` | HTTP listen address |
-| `RELAY_PORT` | `8000` | HTTP listen port |
-| `RELAY_DATABASE` | `data/relay.sqlite3` | Durable database path |
-| `RELAY_ENROLLMENT_TOKEN` | unset | Optional token required only during registration |
-| `RELAY_MAILBOX_BYTES` | `67108864` | Pending serialized bytes per recipient |
-| `RELAY_GLOBAL_BYTES` | `268435456` | Pending serialized bytes globally |
+| `RELAY_BIND`, `RELAY_PORT` (env only) | `127.0.0.1`, `8000` | HTTP listen address and port |
+| `database` | `data/relay.sqlite3` | Durable database path |
+| `enrollment_token` | unset | Token for registering without a pairing code (first device / builds with a built-in relay). Scanning a valid pairing QR enrolls without it. |
+| `public_url` | derived from request | Public base URL used in admin setup QR codes |
+| `max_ttl_ms` | `600000` | Sandbox lifetime cap (clients default to 5 minutes) |
+| `max_poll_wait` | `50` | Longest mailbox long poll in seconds; keep below proxy idle timeouts |
+| `admin_username`, `admin_password_hash` / `admin_password` | `admin`, unset | Dashboard credentials; dashboard disabled until a password is set. Hash with `python -m relay.passwd`. |
+| `session_secret` | random per start | HMAC key for admin sessions; set it to keep sessions across restarts |
+| `apns_key_path`, `apns_key_id`, `apns_team_id` | unset | Optional APNs token auth for content-free iPhone wake-ups |
+| `android_app_links`, `apple_app_ids` | unset | Optional `/.well-known` app-link verification files |
+| `mailbox_bytes`, `global_bytes`, `mailbox_count`, `max_peers`, `max_devices` | 64 MiB, 256 MiB, 20, 100, 10,000 | Quotas |
+| `event_retention_ms`, `max_events` | 7 days, 50,000 | Metadata-only activity log retention |
 
 Docker build and loopback-only publication:
 
@@ -86,10 +92,17 @@ SHA256_HEX_BODY
 | `PUT /v1/peers/{senderId}` | Recipient-signed body `{}`. Allows that sender to place envelopes in the caller's mailbox; returns 204. The sender can enroll later. |
 | `DELETE /v1/peers/{senderId}` | Recipient-signed. Removes allowlist entry and all pending envelopes from that sender atomically; returns 204. |
 | `POST /v1/messages` | Sender-signed envelope JSON. Returns `201 {"id":"…"}` for a new item, 200 for an exact-body retry. |
-| `GET /v1/messages?wait=25` | Recipient-signed. Returns an array immediately if any envelopes are available, otherwise waits up to 25 seconds and returns `[]`. Omit `wait` for immediate read. |
+| `GET /v1/messages?wait=25` | Recipient-signed. Returns an array immediately if any envelopes are available, otherwise waits up to `wait` seconds (maximum `max_poll_wait`, default 50) and returns `[]`. Omit `wait` for immediate read. |
 | `GET /v1/messages?wait=25&exclude=id1,id2` | Ignores up to 20 distinct canonical UUIDs while polling; useful for locally offered files awaiting explicit user acceptance. Exclusion does not acknowledge, extend expiry or free quota. |
 | `GET /v1/messages?wait=25&limit=1` | Optional `limit=1..20` (default 20), applied after exclusions. Android requests one item to bound peak decode/decryption memory. |
 | `DELETE /v1/messages/{id}` | Recipient acknowledgement. Deletes only the caller's item; always 204 for a valid UUID, without exposing another mailbox's item existence. |
+| `GET /v1/info` | Unauthenticated: version, `maxLifetimeSeconds`, enrollment mode, push providers. |
+| `POST /v1/pairings` | Body `{"id":"<32 hex>","expiresAt":ms}`; at most 5 open per device. |
+| `POST /v1/pairings/{id}/join` | Body `{"sealed":"<Base64>"}`; exactly one joiner. `X-Pairing-Id` on `/v1/register` admits a joiner without the enrollment token while the pairing is open. |
+| `GET /v1/pairings/{id}?wait=0..25` | Creator or joiner only: `{"state","joinerId","sealed"}`; long-polls for the next state. |
+| `POST /v1/pairings/{id}/confirm` | Creator; records the link and allows the joiner into the creator's mailbox. |
+| `DELETE /v1/pairings/{id}` | Cancel. |
+| `PUT /v1/push`, `DELETE /v1/push` | Register/remove an APNs token (`provider`, `token`, `environment`, `topic`). |
 
 The allowlist is directional; both phones allow each other for bidirectional messages/receipts. Registering is independent of pairing. A client must establish a trusted peer identity and encryption key before allowing or sending to it. There is no public device directory, server-side key replacement or identity recovery endpoint.
 
@@ -109,7 +122,7 @@ The envelope has exactly these fields (field ordering is not significant on init
 }
 ```
 
-The HTTP caller must match `senderId`; recipient must be a different, registered identity that has allowed the sender. IDs are canonical lowercase UUIDs. Sequence is a positive signed 64-bit integer. Timestamps are nonnegative signed 64-bit millisecond values. Creation may be at most 60 seconds in the future; expiry must be in the future and at most 24 hours after creation. The server does not inspect encrypted payload type and cannot enforce the client's shorter clipboard lifetime itself.
+The HTTP caller must match `senderId`; recipient must be a different, registered identity that has allowed the sender. IDs are canonical lowercase UUIDs. Sequence is a positive signed 64-bit integer. Timestamps are nonnegative signed 64-bit millisecond values. `version` is 1 (legacy Android Internet Link) or 2 (Link v2). Creation may be at most 60 seconds in the future; expiry must be in the future and at most `max_ttl_ms` (default 10 minutes) after creation. The server does not inspect encrypted payload type and cannot enforce the client's shorter clipboard lifetime itself.
 
 Envelope signatures are opaque to the relay, but must be Base64 of 8–80 bytes. Ciphertext must decode to 16 bytes–16 MiB. The full request limit is 24 MiB. Duplicate JSON keys, unknown fields, wrong scalar types and malformed Base64 are rejected with a generic error containing no submitted value. Receivers must independently validate end-to-end signatures, decrypt, enforce payload limits/expiry and apply their replay/sequence policy. Listing does not acknowledge messages. Results sort by sender ID, then descending sender sequence, then message ID; there is no cross-sender semantic ordering.
 

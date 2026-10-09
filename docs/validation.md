@@ -1,6 +1,41 @@
 # Validation record
 
-Date: 2026-10-08. This record separates executed checks from pending device work.
+## Link v2 (2026-10-09)
+
+Executed in a Linux container (no phones, no emulator):
+
+- Relay: 48 pytest contract tests (32 original + 16 Link v2: pairing rendezvous, single use, expiry,
+  QR enrollment without token, long-poll wake, lifetime cap, metadata validation, APNs payload and
+  token cleanup with a fake transport, admin login/CSRF/throttle, dashboard data without content,
+  block/unlink/purge, expiry events, setup link, landing-page CSP, TOML/env settings).
+- Dashboard rendered with seeded synthetic data in headless Chromium, light and dark themes; no
+  console errors.
+- Kotlin `sdk/core`: 24 JVM tests, including the RFC 9180 A.2.1 HPKE vector (independent reference
+  implementation cross-checked against Tink output both ways) and RFC 5869 HKDF case 3.
+- Swift `DeviceLinkKit`: 7 XCTest cases on Linux (swift-crypto), including RFC 9180 A.2.1.
+- Cross-language vectors: Swift opens Kotlin envelopes/pairing blobs/request signatures and vice
+  versa (`docs/protocol/vectors`). This caught one real defect (omitted default fields) before release.
+- Live: `scripts/interop_e2e.sh` against the real relay with an enrollment token — Kotlin shows a code,
+  Swift CLI joins with no token; text both ways, 150 KB image (SHA-256 verified), receipts; then the
+  Swift CLI shows a code and a second Kotlin device joins. Passed. A Kotlin-only live test also passed.
+- Android: `sdk/android`, `apps/receiver`, `apps/sample` compiled (Kotlin against `android.jar` API 37
+  with aapt2-generated R classes). Full Gradle/AGP `check` (lint, assembly) runs in CI only: Google's
+  Maven repository is not reachable from the container.
+- iOS app targets are compiled only in CI (`xcodebuild`, simulator, unsigned).
+
+Pending on real devices (not claimed):
+
+- Android receiver: background clipboard writes from the foreground service on Android 10–16 and
+  OEM skins, Doze/idle delivery latency, battery cost of the 25 s long poll, notification Share/Open/Copy,
+  text-selection *Send to device*, Quick Settings tile, boot restore.
+- iPhone: clipboard writes while foreground and in the 25 s grace period, APNs alert end to end,
+  *Get DeviceLink clip* from Back Tap with the app closed, share extension with photos/files, VisionKit
+  scanning, camera-app QR → landing page → app hand-off.
+- Cloudflare tunnel in front of the relay over cellular; 5-minute expiry seen from a real offline phone.
+
+## Nearby app and v1 Internet Link (2026-10-08)
+
+This record separates executed checks from pending device work.
 
 ## Executed
 

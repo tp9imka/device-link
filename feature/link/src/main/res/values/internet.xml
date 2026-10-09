@@ -20,7 +20,7 @@
     <string name="internet_pair_hint">Save the same relay address on both phones, then connect them nearby once to exchange their verified encryption keys.</string>
     <string name="internet_revoke">Remove internet access</string>
     <string name="internet_revoke_body">Remove %1$s from internet sharing? Connect nearby again to exchange keys if you want to add it back.</string>
-    <string name="internet_file_limit">Files up to 8 MiB. The receiving phone can accept them within 24 hours. Nearby transfers support larger files.</string>
+    <string name="internet_file_limit">Files up to 8 MiB. The receiving phone can accept them within 10 minutes. Nearby transfers support larger files.</string>
     <string name="internet_text">Text</string>
     <string name="internet_file_offer">Waiting for you to receive this file</string>
     <string name="internet_delivery_failed">Delivery failed or expired</string>

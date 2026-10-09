@@ -69,7 +69,7 @@ operator retaining copies or filesystem recovery.
 
 Client ID deduplication is durable; clipboard sequence state rejects older actions
 per sender. Encrypted clipboard/receipt payloads expire after 60 seconds, ordinary
-text/files after 24 hours. Automatic internet clipboard writes require the
+text/files after 10 minutes (relay cap). Automatic internet clipboard writes require the
 receiver's explicit setting (default off), active session and a final freshness
 check. File offers require explicit Receive. Release URLs require platform-validated
 HTTPS; debug allows plaintext only to exactly `127.0.0.1` for ADB-reversed tests.

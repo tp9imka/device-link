@@ -48,7 +48,7 @@ bundleSignedBytes = field("DeviceLink/key-bundle/v2") || field(identityKey DER)
                  || field(encryptionKey raw) || field(name) || field(platform)
 ```
 
-`name` is 1–48 Unicode characters without control/format characters. `platform`
+`name` is 1–48 UTF-16 code units, not blank, without control (Cc) or format (Cf) characters. `platform`
 matches `[a-z]{1,16}` (`android`, `ios`, `desktop`, …). Bundle `id` is the device
 ID derived from `identityKey`. Receivers verify the signature before use.
 
