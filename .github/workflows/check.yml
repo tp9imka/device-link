@@ -14,7 +14,7 @@ jobs:
           # The action's default also requests the removed 'tools' package, which fails sdkmanager.
           packages: platform-tools
       - uses: gradle/actions/setup-gradle@v4
-      - run: ./gradlew check --no-daemon
+      - run: ./gradlew check --no-daemon --continue
   relay:
     runs-on: ubuntu-latest
     defaults:
