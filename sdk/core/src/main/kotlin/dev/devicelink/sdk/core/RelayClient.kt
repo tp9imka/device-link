@@ -133,6 +133,9 @@ class RelayClient(
     suspend fun poll(waitSeconds: Int, limit: Int = 1): List<Envelope> =
         Envelope.decodeList(call("GET", "/v1/messages?wait=$waitSeconds&limit=$limit", timeoutMillis = (waitSeconds + 20) * 1000))
 
+    /** One waiting envelope by ID (notification previews). Does not acknowledge it. */
+    suspend fun fetch(id: String): Envelope = Envelope.decode(String(call("GET", "/v1/messages/$id"), Charsets.UTF_8))
+
     suspend fun acknowledge(id: String) { call("DELETE", "/v1/messages/$id") }
 
     suspend fun registerPush(token: String, environment: String, topic: String) {

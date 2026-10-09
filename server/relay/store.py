@@ -190,6 +190,12 @@ class Store:
                 (recipient, *excluded, limit),
             )]
 
+    def message_for(self, recipient, message, now):
+        """One waiting envelope for its recipient (notification previews); does not acknowledge."""
+        with self.transaction() as db:
+            row = db.execute("SELECT body FROM messages WHERE id=? AND recipient=? AND expires>?", (message, recipient, now)).fetchone()
+            return row and row[0]
+
     def acknowledge(self, recipient, message, now=0):
         with self.transaction() as db:
             # Idempotent and does not reveal existence/ownership of other messages.

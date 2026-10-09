@@ -77,7 +77,7 @@ class PushSender:
                 headers["authorization"] = "bearer " + await run_in_threadpool(self._jwt)
             payload = {
                 "aps": {"alert": {"title": "DeviceLink", "body": "New item from a linked device"},
-                        "sound": "default", "mutable-content": 1, "thread-id": "devicelink"},
+                        "sound": "default", "mutable-content": 1, "thread-id": "devicelink", "category": "DEVICELINK_ITEM"},
                 "m": message_id,
             }
             url = f"{HOSTS[target['environment']]}/3/device/{target['token']}"

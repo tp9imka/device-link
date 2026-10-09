@@ -351,6 +351,17 @@ def create_app(settings=None, clock=None, push_transport=None):
         finally:
             runtime.polling.discard(identity.id)
 
+    @app.get("/v1/messages/{message}")
+    async def fetch_one(message: str, request: Request):
+        identity, _ = await signed(request)
+        if not uuid_string(message):
+            raise RelayError(400, "invalid_message")
+        body = await run_in_threadpool(store.message_for, identity.id, message, clock())
+        if body is None:
+            # Same answer for "not yours", "delivered" and "expired".
+            raise RelayError(404, "message_not_found")
+        return Response(body, media_type="application/json")
+
     @app.delete("/v1/messages/{message}")
     async def acknowledge(message: str, request: Request):
         identity, _ = await signed(request)

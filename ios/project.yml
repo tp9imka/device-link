@@ -26,6 +26,7 @@ targets:
       - package: DeviceLinkKit
         product: DeviceLinkKit
       - target: DeviceLinkShare
+      - target: DeviceLinkNotify
     info:
       path: DeviceLink/Info.plist
       properties:
@@ -90,6 +91,34 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: $(DL_BUNDLE_PREFIX).ios.share
+  DeviceLinkNotify:
+    # Decrypts push previews on the device ("From Pixel: …") and adds the Copy action.
+    type: app-extension
+    platform: iOS
+    sources: [NotificationService, Shared/LinkEnvironment.swift]
+    dependencies:
+      - package: DeviceLinkKit
+        product: DeviceLinkKit
+    info:
+      path: NotificationService/Info.plist
+      properties:
+        CFBundleDisplayName: DeviceLink
+        DLRelayScheme: $(DEVICELINK_RELAY_SCHEME)
+        DLRelayHost: $(DEVICELINK_RELAY_HOST)
+        DLEnrollmentToken: $(DEVICELINK_ENROLLMENT_TOKEN)
+        DLAppGroup: $(DL_APP_GROUP)
+        DLKeychainGroup: $(AppIdentifierPrefix)$(DL_BUNDLE_PREFIX).ios.shared
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.usernotifications.service
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).NotificationService
+    entitlements:
+      path: NotificationService/DeviceLinkNotify.entitlements
+      properties:
+        com.apple.security.application-groups: [$(DL_APP_GROUP)]
+        keychain-access-groups: [$(AppIdentifierPrefix)$(DL_BUNDLE_PREFIX).ios.shared]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(DL_BUNDLE_PREFIX).ios.notify
   DeviceLinkSample:
     type: application
     platform: iOS

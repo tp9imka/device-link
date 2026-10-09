@@ -114,6 +114,9 @@ public struct RelayClient: Sendable {
     public func poll(wait: Int, limit: Int = 1) async throws -> [Envelope] {
         try Envelope.decodeList(try await call("GET", "/v1/messages?wait=\(wait)&limit=\(limit)", timeout: TimeInterval(wait + 20)))
     }
+    /// One waiting envelope by ID (notification previews). Does not acknowledge it.
+    public func fetch(_ id: String) async throws -> Envelope { try Envelope.decode(try await call("GET", "/v1/messages/\(id)")) }
+
     public func acknowledge(_ id: String) async throws { _ = try await call("DELETE", "/v1/messages/\(id)") }
 
     public func registerPush(token: String, environment: String, topic: String) async throws {

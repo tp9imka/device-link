@@ -33,6 +33,11 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
 
     func application(_ application: UIApplication, didFinishLaunchingWithOptions options: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         UNUserNotificationCenter.current().delegate = self
+        // "Copy" on the push applies the waiting item without opening the app.
+        let copy = UNNotificationAction(identifier: "COPY", title: "Copy", options: [])
+        UNUserNotificationCenter.current().setNotificationCategories([
+            UNNotificationCategory(identifier: "DEVICELINK_ITEM", actions: [copy], intentIdentifiers: [], options: []),
+        ])
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { granted, _ in
             if granted { DispatchQueue.main.async { application.registerForRemoteNotifications() } }
         }
@@ -51,6 +56,17 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
     }
 
     /// Keeps receiving for ~25 s after leaving the app so a clip copied right then still lands.
+    /// Notification tap opens the app (the receive loop copies); the Copy action fetches and copies in the background.
+    func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
+        guard response.actionIdentifier == "COPY" else { return }
+        guard let client = try? await MainActor.run(body: { try LinkEnvironment.makeClient() }) else { return }
+        let store = await MainActor.run { ClipStore.shared }
+        for _ in 0..<10 {
+            let received = (try? await client.receiveOnce(wait: 0) { item in await MainActor.run { store.apply(item) } }) ?? 0
+            if received == 0 { break }
+        }
+    }
+
     @MainActor func finishInBackground(_ model: LinkModel) {
         var task: UIBackgroundTaskIdentifier = .invalid
         func end() {

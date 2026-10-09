@@ -191,10 +191,12 @@ Request signing is unchanged from v1 (`X-Device-Key`, `X-Device-Time`,
 | `PUT/DELETE /v1/peers/{id}` | Directional allowlist (recipient-owned) |
 | `POST /v1/messages` | Upload envelope (version 1 or 2) |
 | `GET /v1/messages?wait=0..50&limit=1..20&exclude=…` | Long-poll mailbox |
+| `GET /v1/messages/{id}` | Recipient fetches one waiting envelope (notification previews); does not acknowledge |
 | `DELETE /v1/messages/{id}` | Acknowledge |
 | `PUT /v1/push` / `DELETE /v1/push` | Register / remove an APNs device token (`{"provider":"apns","token":"<hex>","environment":"sandbox"\|"production","topic":"<bundle id>"}`) |
 
 When APNs is configured, the relay sends an alert push without content
-(`"New item from a linked device"`, `mutable-content: 1`, `m: <envelope id>`) so
-the iPhone can fetch and decrypt it. Android receivers keep a visible foreground
+(`"New item from a linked device"`, `mutable-content: 1`, category `DEVICELINK_ITEM`,
+`m: <envelope id>`). The iOS notification service extension fetches that envelope, decrypts it on the
+device and rewrites the alert to "From <device>: <preview>" with a **Copy** action. Android receivers keep a visible foreground
 service with a long poll instead of using Google push.

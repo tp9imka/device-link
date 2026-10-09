@@ -272,3 +272,19 @@ def test_settings_from_toml_and_environment(tmp_path):
     path.write_text('unknown_key = 1\n')
     with pytest.raises(ValueError):
         Settings.environment({"RELAY_CONFIG": str(path)})
+
+
+def test_recipient_can_fetch_one_waiting_item_for_previews(relay):
+    _, now, client = relay
+    sender, recipient, other = Device(), Device(), Device()
+    for device in (sender, recipient, other):
+        register(client, device, now[0])
+    request(client, recipient, now[0], "PUT", f"/v1/peers/{sender.id}", {})
+    item = envelope(sender, recipient, now[0], version=2)
+    request(client, sender, now[0], "POST", "/v1/messages", item)
+    assert request(client, recipient, now[0], "GET", f"/v1/messages/{item['id']}").json() == item
+    assert request(client, other, now[0], "GET", f"/v1/messages/{item['id']}").status_code == 404
+    # Fetching does not acknowledge; the item still waits in the mailbox.
+    assert request(client, recipient, now[0], "GET", "/v1/messages").json() == [item]
+    request(client, recipient, now[0], "DELETE", f"/v1/messages/{item['id']}")
+    assert request(client, recipient, now[0], "GET", f"/v1/messages/{item['id']}").status_code == 404

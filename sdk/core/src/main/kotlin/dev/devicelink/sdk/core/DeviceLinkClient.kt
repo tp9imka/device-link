@@ -406,6 +406,18 @@ class DeviceLinkClient(
         }
     }
 
+    /**
+     * Decrypts one waiting item for a notification preview without consuming it; the receive loop still
+     * applies and acknowledges it. Null for unknown senders, receipts/unlink notices or undecryptable items.
+     */
+    suspend fun preview(messageId: String): IncomingItem? {
+        val envelope = registered { it.fetch(messageId) }
+        val peer = store.load().peers.firstOrNull { it.id == envelope.senderId } ?: return null
+        val payload = runCatching { crypto.open(envelope, peer.bundle, clock()) }.getOrNull() ?: return null
+        if (payload.kind !in setOf(PayloadKind.TEXT, PayloadKind.IMAGE, PayloadKind.FILE)) return null
+        return IncomingItem(payload.group ?: envelope.id, peer, payload, envelope.expiresAt, stale = false)
+    }
+
     /** Long-polls until cancelled, with jittered backoff. Cancel the calling job to stop (Off = no polling). */
     suspend fun runReceiver(handler: suspend (IncomingItem) -> ReceiptStatus) {
         var backoff = 1_000L

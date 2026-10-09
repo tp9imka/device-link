@@ -69,6 +69,8 @@ private class FakeRelay(private val clock: () -> Long) : HttpTransport {
                 val mine = mailbox.filter { it.recipientId == caller }.sortedByDescending { it.sequence }.take(1)
                 ok("[" + mine.joinToString(",") { it.encode().toString(Charsets.UTF_8) } + "]")
             }
+            path.size == 3 && path[1] == "messages" && method == "GET" ->
+                mailbox.firstOrNull { it.id == path[2] && it.recipientId == caller }?.let { ok(it.encode().toString(Charsets.UTF_8)) } ?: error(404, "message_not_found")
             path.size == 3 && path[1] == "messages" && method == "DELETE" -> { mailbox.removeAll { it.id == path[2] && it.recipientId == caller }; HttpResponse(204, ByteArray(0)) }
             else -> error(404, "not_found")
         }
@@ -248,6 +250,14 @@ class DeviceLinkClientTest {
         relay.devices.clear()
         runCatching { iphone.receiveOnce { ReceiptStatus.COPIED } }
         assertFalse(iphone.diagnostics.value.toString().contains("secret"))
+    }
+
+    @Test fun `preview decrypts a waiting item without consuming it`() = runBlocking {
+        linked()
+        val sent = android.send(OutgoingContent.Text("peek")).single()
+        assertEquals("peek", iphone.preview(sent.itemId!!)!!.text)
+        assertEquals(1, relay.mailbox.size)
+        assertEquals(1, iphone.receiveOnce { ReceiptStatus.COPIED })
     }
 
     @Test fun `unlink all forgets every peer`() = runBlocking {

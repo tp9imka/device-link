@@ -479,6 +479,16 @@ public actor DeviceLinkClient {
         }
     }
 
+    /// Decrypts one waiting item for a notification preview without consuming it: the app's receive
+    /// loop still applies and acknowledges it. Returns nil for unknown senders, receipts or expired items.
+    public func preview(messageId: String) async throws -> IncomingItem? {
+        let envelope = try await registered { try await $0.fetch(messageId) }
+        guard let peer = peers.first(where: { $0.id == envelope.senderId }),
+              let payload = try? crypto.open(envelope, from: peer.bundle, now: clock()),
+              [.text, .image, .file].contains(payload.kind) else { return nil }
+        return IncomingItem(id: payload.group ?? envelope.id, peer: peer, payload: payload, expiresAt: envelope.expiresAt, stale: false)
+    }
+
     /// Long-polls until the calling task is cancelled (Off = no polling), with jittered backoff.
     public func runReceiver(handler: @escaping @Sendable (IncomingItem) async -> ReceiptStatus) async {
         var backoff: UInt64 = 1_000
