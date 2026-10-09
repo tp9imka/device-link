@@ -70,6 +70,7 @@ class MainActivity : Activity() {
             startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("*/*"), PICK_FILE)
         }
         header.findViewById<Button>(R.id.clear).setOnClickListener { link.clearHistory() }
+        findViewById<Button>(R.id.diagnostics).setOnClickListener { showDiagnostics() }
 
         scope.launch { combine(link.peers, link.status) { peers, status -> peers to status }.collect { (peers, status) -> render(peers, status) } }
         scope.launch { link.history.collect { records ->
@@ -94,7 +95,9 @@ class MainActivity : Activity() {
         header.findViewById<View>(R.id.linked).visibility = if (peers.isEmpty()) View.GONE else View.VISIBLE
         receive.visibility = if (peers.isEmpty()) View.GONE else View.VISIBLE
         receive.isChecked = link.receiverEnabled
-        findViewById<TextView>(R.id.status).setText(when {
+        val targets = link.sendTargets
+        findViewById<TextView>(R.id.status).text = if (targets.isNotEmpty() && peers.size > 1)
+            getString(R.string.sending_to, peers.filter { it.id in targets }.joinToString { it.name }) else getString(when {
             peers.isEmpty() -> if (link.client.isConfigured) R.string.status_idle else R.string.status_setup
             !link.receiverEnabled -> R.string.status_off
             status == ReceiverStatus.ONLINE -> R.string.status_online
@@ -114,9 +117,60 @@ class MainActivity : Activity() {
                 minHeight = (40 * density).toInt()
                 setPadding((14 * density).toInt(), 0, (14 * density).toInt(), 0)
                 contentDescription = peer.name
-                setOnClickListener { confirmUnlink(peer) }
+                setOnClickListener { peerMenu(this, peer) }
             }, android.widget.LinearLayout.LayoutParams(-2, -2).apply { marginEnd = (8 * density).toInt(); topMargin = (8 * density).toInt() })
         }
+    }
+
+    private fun peerMenu(anchor: View, peer: LinkedPeer) {
+        PopupMenu(this, anchor).apply {
+            if (link.peers.value.size > 1) {
+                menu.add(0, 1, 0, getString(R.string.send_only_to, peer.name))
+                if (link.sendTargets.isNotEmpty()) menu.add(0, 2, 1, R.string.send_to_all)
+            }
+            menu.add(0, 3, 2, R.string.unlink)
+            setOnMenuItemClickListener {
+                when (it.itemId) {
+                    1 -> link.sendTargets = setOf(peer.id)
+                    2 -> link.sendTargets = emptySet()
+                    else -> confirmUnlink(peer)
+                }
+                render(link.peers.value, link.status.value)
+                true
+            }
+        }.show()
+    }
+
+    /** Relay, registration, last poll/receive/send and last error, plus a test clip and a full reset. */
+    private fun showDiagnostics() {
+        AlertDialog.Builder(this).setTitle(R.string.diagnostics_title).setMessage(link.diagnosticsReport())
+            .setPositiveButton(R.string.diagnostics_copy) { _, _ ->
+                getSystemService(ClipboardManager::class.java).setPrimaryClip(android.content.ClipData.newPlainText("DeviceLink diagnostics", link.diagnosticsReport()))
+                Toast.makeText(this, R.string.diagnostics_copied, Toast.LENGTH_SHORT).show()
+            }
+            .setNeutralButton(R.string.diagnostics_test) { _, _ ->
+                scope.launch {
+                    val stamp = java.text.DateFormat.getTimeInstance().format(java.util.Date())
+                    val outcomes = runCatching { link.sendText(getString(R.string.test_clip, stamp)) }.getOrDefault(emptyList())
+                    Toast.makeText(this@MainActivity, if (outcomes.isNotEmpty() && outcomes.all { it.accepted })
+                        getString(dev.devicelink.sdk.R.string.dl_send_ok, link.peers.value.joinToString { it.name })
+                        else getString(dev.devicelink.sdk.R.string.dl_send_failed), Toast.LENGTH_SHORT).show()
+                }
+            }
+            .setNegativeButton(R.string.diagnostics_reset) { _, _ -> confirmReset() }
+            .show()
+    }
+
+    private fun confirmReset() {
+        AlertDialog.Builder(this).setTitle(R.string.reset_title).setMessage(R.string.reset_body)
+            .setPositiveButton(R.string.diagnostics_reset) { _, _ ->
+                scope.launch {
+                    link.resetDevice()
+                    Toast.makeText(this@MainActivity, R.string.reset_done, Toast.LENGTH_LONG).show()
+                    recreate()
+                }
+            }
+            .setNegativeButton(android.R.string.cancel, null).show()
     }
 
     private fun platformGlyph(platform: String) = when (platform) { "ios" -> "📱"; "android" -> "🤖"; else -> "💻" }
@@ -159,7 +213,7 @@ class MainActivity : Activity() {
 
     private fun pasteLink() {
         val input = EditText(this).apply {
-            hint = "https://…/pair#v2…"
+            setHint(R.string.paste_link_hint)
             getSystemService(ClipboardManager::class.java).primaryClip?.getItemAt(0)?.text?.let { setText(it) }
         }
         AlertDialog.Builder(this).setTitle(R.string.paste_link_title).setView(input)

@@ -5,7 +5,9 @@ import android.content.ClipDescription
 import android.content.ClipboardManager
 import android.content.Context
 import android.net.Uri
+import android.os.Build
 import android.os.Handler
+import android.os.PersistableBundle
 import android.os.Looper
 import dev.devicelink.sdk.core.Encoding
 import java.util.concurrent.CountDownLatch
@@ -23,8 +25,14 @@ internal class ClipboardBridge(context: Context) {
     @Volatile var lastWrittenSignature: String? = null
         private set
 
-    fun writeText(text: String): Boolean = write(ClipData(ClipDescription(LABEL, arrayOf(ClipDescription.MIMETYPE_TEXT_PLAIN)),
-        ClipData.Item(text)), signature(text))
+    fun writeText(text: String, html: String? = null, sensitive: Boolean = false): Boolean {
+        val clip = if (html != null) ClipData.newHtmlText(LABEL, text, html) else ClipData.newPlainText(LABEL, text)
+        // Android 13+ hides sensitive clips from the copy confirmation and keyboard suggestions.
+        if (sensitive && Build.VERSION.SDK_INT >= 33) {
+            clip.description.extras = PersistableBundle().apply { putBoolean(ClipDescription.EXTRA_IS_SENSITIVE, true) }
+        }
+        return write(clip, signature(text))
+    }
 
     fun writeUri(uri: Uri, mime: String): Boolean =
         write(ClipData(ClipDescription(LABEL, arrayOf(mime)), ClipData.Item(uri)), "uri:$uri")

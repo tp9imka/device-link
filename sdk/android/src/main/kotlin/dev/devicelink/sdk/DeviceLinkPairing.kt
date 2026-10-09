@@ -67,8 +67,8 @@ object DeviceLinkPairing {
                 dialog.setOnCancelListener { CoroutineScope(Dispatchers.IO).launch { session.cancel() } }
                 val peer = session.awaitPeer()
                 link.receiverEnabled = true
-                Toast.makeText(activity.applicationContext, activity.getString(R.string.dl_pair_linked, peer.name), Toast.LENGTH_LONG).show()
                 dialog.dismiss()
+                showLinked(activity, peer)
                 onLinked(peer)
             } catch (cancelled: CancellationException) {
                 throw cancelled
@@ -126,13 +126,34 @@ object DeviceLinkPairing {
             try {
                 val peer = link.join(text)
                 progress.dismiss()
-                Toast.makeText(activity.applicationContext, activity.getString(R.string.dl_pair_linked, peer.name), Toast.LENGTH_LONG).show()
+                showLinked(activity, peer)
                 onLinked(peer)
             } catch (failure: Exception) {
                 progress.dismiss()
                 showError(activity, failure)
             }
         }
+    }
+
+    /**
+     * One-time confirmation after linking: both screens show the same six digits. Nothing is asked
+     * again afterwards; the devices trust each other's keys until unlinked.
+     */
+    private fun showLinked(activity: Activity, peer: LinkedPeer) {
+        if (activity.isFinishing) {
+            Toast.makeText(activity.applicationContext, activity.getString(R.string.dl_pair_linked, peer.name), Toast.LENGTH_LONG).show()
+            return
+        }
+        val code = peer.pairingCode?.let { it.take(3) + " " + it.drop(3) }
+        val builder = AlertDialog.Builder(activity).setTitle(activity.getString(R.string.dl_pair_linked, peer.name))
+            .setPositiveButton(android.R.string.ok, null)
+        if (code != null) {
+            builder.setMessage(activity.getString(R.string.dl_pair_code_body, code))
+                .setNegativeButton(R.string.dl_pair_code_mismatch) { _, _ ->
+                    CoroutineScope(Dispatchers.Main).launch { runCatching { DeviceLink.get(activity).unlink(peer.id) } }
+                }
+        }
+        builder.show()
     }
 
     private fun progressDialog(activity: Activity): Dialog {

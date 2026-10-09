@@ -12,6 +12,7 @@ struct ContentView: View {
     @State private var photo: PhotosPickerItem?
     @State private var importing = false
     @State private var shareItem: ShareItem?
+    @State private var showingDiagnostics = false
 
     var body: some View {
         NavigationStack {
@@ -26,7 +27,12 @@ struct ContentView: View {
                 }
             }
             .navigationTitle("DeviceLink")
+            .modifier(LinkedConfirmation(model: model))
+            .sheet(isPresented: $showingDiagnostics) { DiagnosticsSheet(model: model) }
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button { showingDiagnostics = true } label: { Image(systemName: "info.circle") }.accessibilityLabel("Diagnostics")
+                }
                 if !model.peers.isEmpty {
                     ToolbarItem(placement: .primaryAction) {
                         Menu {
@@ -102,8 +108,21 @@ struct ContentView: View {
     private var devicesSection: some View {
         Section("Linked devices") {
             ForEach(model.peers) { peer in
-                Label(peer.name, systemImage: peer.platform == "ios" ? "iphone" : peer.platform == "android" ? "candybarphone" : "laptopcomputer")
-                    .swipeActions { Button("Unlink", role: .destructive) { model.unlink(peer) } }
+                HStack {
+                    Label(peer.name, systemImage: peer.platform == "ios" ? "iphone" : peer.platform == "android" ? "candybarphone" : "laptopcomputer")
+                    Spacer()
+                    if model.peers.count > 1 && (model.sendTargets.isEmpty || model.sendTargets.contains(peer.id)) {
+                        Image(systemName: "paperplane.fill").foregroundStyle(.secondary).accessibilityLabel("Sends go here")
+                    }
+                }
+                .contextMenu {
+                    if model.peers.count > 1 {
+                        Button("Send only to \(peer.name)") { model.sendTargets = [peer.id] }
+                        if !model.sendTargets.isEmpty { Button("Send to all devices") { model.sendTargets = [] } }
+                    }
+                    Button("Unlink", role: .destructive) { model.unlink(peer) }
+                }
+                .swipeActions { Button("Unlink", role: .destructive) { model.unlink(peer) } }
             }
         }
     }
@@ -151,7 +170,7 @@ struct ClipRow: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text("\(record.direction == .received ? "From" : "To") \(record.peerName) · \(record.at, style: .relative) ago")
                     .font(.caption).foregroundStyle(.secondary)
-                Text(record.text ?? record.fileName ?? "Image").lineLimit(3)
+                Text(record.sensitive ? "Sensitive content" : record.text ?? record.fileName ?? "Image").lineLimit(3)
                 Text(stateText).font(.caption).foregroundStyle(record.state == .failed ? .orange : record.state == .copied || record.state == .delivered ? .green : .secondary)
             }
         }

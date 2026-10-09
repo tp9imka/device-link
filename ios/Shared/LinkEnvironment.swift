@@ -29,6 +29,8 @@ enum Keychain {
         return SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess ? result as? Data : nil
     }
 
+    static func delete(_ account: String) { SecItemDelete(query(account) as CFDictionary) }
+
     static func write(_ account: String, _ data: Data) throws {
         var item = query(account)
         item[kSecValueData as String] = data

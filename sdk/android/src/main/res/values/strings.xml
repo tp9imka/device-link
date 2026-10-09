@@ -35,4 +35,6 @@
  <string name="dl_setup_applied">Relay configured. You can now show a code to link devices.</string>
  <string name="dl_error_network">The relay could not be reached. Check the internet connection.</string>
  <string name="dl_error_generic">Something went wrong. Try again.</string>
+ <string name="dl_pair_code_body">Confirmation code %1$s should match the other screen. This is only shown once: from now on clips just go through.</string>
+ <string name="dl_pair_code_mismatch">Codes differ: unlink</string>
 </resources>

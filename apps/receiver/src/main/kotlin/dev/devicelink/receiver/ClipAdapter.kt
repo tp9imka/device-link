@@ -29,7 +29,8 @@ class ClipAdapter(private val context: Context) : BaseAdapter() {
         val received = record.direction == ClipDirection.RECEIVED
         val time = DateUtils.getRelativeTimeSpanString(record.at, System.currentTimeMillis(), DateUtils.MINUTE_IN_MILLIS)
         view.findViewById<TextView>(R.id.meta).text = context.getString(if (received) R.string.from else R.string.to, record.peerName) + " · " + time
-        view.findViewById<TextView>(R.id.content).text = record.text ?: record.name ?: context.getString(R.string.image)
+        view.findViewById<TextView>(R.id.content).text = if (record.sensitive) context.getString(R.string.sensitive_hidden)
+            else record.text ?: record.name ?: context.getString(R.string.image)
         val thumb = view.findViewById<ImageView>(R.id.thumb)
         val image = record.uri?.takeIf { record.mime?.startsWith("image/") == true }
         thumb.visibility = if (image != null) View.VISIBLE else View.GONE

@@ -28,6 +28,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -72,6 +73,9 @@ object DeviceLink {
 
     @JvmStatic
     fun get(context: Context): DeviceLinkInstance = instance ?: init(context)
+
+    /** After [DeviceLinkInstance.resetDevice] the next [get] builds a fresh identity. */
+    internal fun forget(old: DeviceLinkInstance) = synchronized(this) { if (instance === old) instance = null }
 }
 
 class DeviceLinkInstance internal constructor(private val context: Context, val options: DeviceLinkOptions) {
@@ -133,13 +137,25 @@ class DeviceLinkInstance internal constructor(private val context: Context, val 
 
     // ----- sending -------------------------------------------------------------------------------
 
-    suspend fun sendText(text: String): List<SendOutcome> = record(client.send(OutgoingContent.Text(text)), "text", text = text)
+    /**
+     * Devices that sends go to; empty means every linked device. Persisted, so the choice survives restarts.
+     */
+    var sendTargets: Set<String>
+        get() = prefs.getStringSet("targets", emptySet()).orEmpty().filter { id -> client.peers.value.any { it.id == id } }.toSet()
+        set(value) { prefs.edit().putStringSet("targets", value).apply() }
+
+    private fun targets(): Set<String>? = sendTargets.takeIf { it.isNotEmpty() }
+
+    /** [html] is an optional rich-text alternative; [sensitive] hides previews on the other device. */
+    @JvmOverloads
+    suspend fun sendText(text: String, html: String? = null, sensitive: Boolean = false): List<SendOutcome> =
+        record(client.send(OutgoingContent.Text(text, html, sensitive), targets()), "text", text = text, sensitive = sensitive)
 
     /** Sends a content/file URI: images go to the other clipboard, other files arrive as a share prompt. */
     suspend fun sendUri(uri: Uri, mimeHint: String? = null): List<SendOutcome> {
         val (name, mime, bytes) = withContext(Dispatchers.IO) { readUri(uri, mimeHint) }
         val content = if (mime in Limits.IMAGE_MIMES) OutgoingContent.Image(name, mime, bytes) else OutgoingContent.File(name, mime, bytes)
-        return record(client.send(content), if (content is OutgoingContent.Image) "image" else "file", name = name, mime = mime, uri = uri.toString())
+        return record(client.send(content, targets()), if (content is OutgoingContent.Image) "image" else "file", name = name, mime = mime, uri = uri.toString())
     }
 
     /** Sends whatever a ClipData holds: first text item, otherwise its first URI. */
@@ -148,16 +164,18 @@ class DeviceLinkInstance internal constructor(private val context: Context, val 
         val item = clip.getItemAt(0)
         item.uri?.let { return sendUri(it, clip.description.takeIf { it.mimeTypeCount > 0 }?.getMimeType(0)) }
         val text = item.coerceToText(context)?.toString().orEmpty()
-        return if (text.isBlank()) emptyList() else sendText(text)
+        val sensitive = android.os.Build.VERSION.SDK_INT >= 33 &&
+            clip.description.extras?.getBoolean(android.content.ClipDescription.EXTRA_IS_SENSITIVE) == true
+        return if (text.isBlank()) emptyList() else sendText(text, item.htmlText?.takeIf { it.isNotBlank() }, sensitive)
     }
 
     private fun record(outcomes: List<SendOutcome>, kind: String, text: String? = null, name: String? = null,
-                       mime: String? = null, uri: String? = null): List<SendOutcome> {
+                       mime: String? = null, uri: String? = null, sensitive: Boolean = false): List<SendOutcome> {
         val names = client.peers.value.associate { it.id to it.name }
         outcomes.forEach { outcome ->
             clipHistory.add(ClipRecord(outcome.itemId ?: java.util.UUID.randomUUID().toString(), ClipDirection.SENT,
                 names[outcome.peerId] ?: "", kind, text = text, uri = uri, mime = mime, name = name, at = System.currentTimeMillis(),
-                state = if (outcome.accepted) ClipState.PENDING else ClipState.FAILED))
+                state = if (outcome.accepted) ClipState.PENDING else ClipState.FAILED, sensitive = sensitive))
         }
         return outcomes
     }
@@ -178,7 +196,7 @@ class DeviceLinkInstance internal constructor(private val context: Context, val 
             while (true) {
                 val count = input.read(buffer)
                 if (count < 0) break
-                require(output.size() + count <= Limits.MAX_CONTENT_BYTES) { "File is larger than 10 MB" }
+                require(output.size() + count <= Limits.MAX_FILE_BYTES) { "File is larger than ${Limits.MAX_FILE_BYTES / (1024 * 1024)} MB" }
                 output.write(buffer, 0, count)
             }
             output.toByteArray()
@@ -206,8 +224,8 @@ class DeviceLinkInstance internal constructor(private val context: Context, val 
         return when (item.kind) {
             PayloadKind.TEXT -> {
                 val text = requireNotNull(item.text)
-                val copied = options.autoCopy && !item.stale && clipboard.writeText(text)
-                finish(base.copy(text = text), copied)
+                val copied = options.autoCopy && !item.stale && clipboard.writeText(text, item.html, item.sensitive)
+                finish(base.copy(text = text, html = item.html, sensitive = item.sensitive), copied)
             }
             PayloadKind.IMAGE, PayloadKind.FILE -> {
                 val name = item.fileName ?: "file.${Mime.extension(item.mime)}"
@@ -230,7 +248,7 @@ class DeviceLinkInstance internal constructor(private val context: Context, val 
     /** Re-copies a history entry (history screen, notification action). */
     fun copyToClipboard(record: ClipRecord): Boolean {
         val copied = when {
-            record.text != null -> clipboard.writeText(record.text)
+            record.text != null -> clipboard.writeText(record.text, record.html, record.sensitive)
             record.uri != null && record.mime != null -> clipboard.writeUri(Uri.parse(record.uri), record.mime)
             else -> false
         }
@@ -256,4 +274,40 @@ class DeviceLinkInstance internal constructor(private val context: Context, val 
      * point for host apps; the receiver app offers Share/selection/tile actions instead.
      */
     fun enableAutoShare(application: Application) = AutoShare.install(application, this)
+
+    /** Content-free status for debug screens: relay, registration, last poll/receive/send, last error. */
+    val diagnostics get() = client.diagnostics
+
+    /** Plain-text diagnostics a user can copy into a bug report. Contains no clipboard content or names. */
+    fun diagnosticsReport(): String {
+        val d = client.diagnostics.value
+        fun at(time: Long?) = time?.let { java.text.DateFormat.getDateTimeInstance().format(java.util.Date(it)) } ?: "never"
+        return buildString {
+            appendLine("DeviceLink ${options.appVersion} on Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT}), ${Build.MANUFACTURER} ${Build.MODEL}")
+            appendLine("Device ID: ${d.deviceId.take(16)}…")
+            appendLine("Relay: ${d.relayUrl.ifEmpty { "not configured" }} · registered: ${d.registered}")
+            appendLine("Linked devices: ${d.peers} · receiver on: $receiverEnabled · status: ${client.status.value}")
+            appendLine("Last poll: ${at(d.lastPollAt)} · last receive: ${at(d.lastReceiveAt)} · last send: ${at(d.lastSendAt)}")
+            appendLine("Received: ${d.received} · sent: ${d.sent} (since app start)")
+            append("Last error: ${d.lastError ?: "none"}${d.lastErrorAt?.let { " at " + at(it) } ?: ""}")
+        }
+    }
+
+    /**
+     * Unlinks every device (telling each one), deletes this device's keys and history, and starts
+     * over with a fresh identity. Use when a phone is handed on or keys may be compromised.
+     */
+    suspend fun resetDevice() {
+        runCatching { client.unlinkAll() }
+        stopReceiver()
+        clearHistory()
+        withContext(Dispatchers.IO) {
+            KeystoreIdentity.delete()
+            WrappedEncryptionKey.delete(context)
+            java.io.File(context.noBackupFilesDir, "devicelink/links.json").delete()
+            prefs.edit().clear().apply()
+        }
+        scope.cancel()
+        DeviceLink.forget(this)
+    }
 }

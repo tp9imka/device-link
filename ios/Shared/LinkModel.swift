@@ -18,6 +18,13 @@ final class LinkModel: ObservableObject {
     private var events: Task<Void, Never>?
 
     @Published private(set) var relayConfigured = false
+    @Published private(set) var diagnostics: Diagnostics?
+    /// Shown once right after linking; both screens show the same six digits.
+    @Published var linkedConfirmation: LinkedPeer?
+    /// Devices sends go to; empty = all linked devices. Persisted.
+    @Published var sendTargets: Set<String> = Set(UserDefaults.standard.stringArray(forKey: "sendTargets") ?? []) {
+        didSet { UserDefaults.standard.set(Array(sendTargets), forKey: "sendTargets") }
+    }
 
     init() {
         do {
@@ -36,6 +43,8 @@ final class LinkModel: ObservableObject {
         guard let client else { return }
         peers = await client.peers
         relayConfigured = await client.isConfigured
+        diagnostics = await client.currentDiagnostics()
+        sendTargets = sendTargets.filter { id in peers.contains { $0.id == id } }
         clips.reload()
     }
 
@@ -76,7 +85,7 @@ final class LinkModel: ObservableObject {
                 pairingExpiresAt = Date(timeIntervalSince1970: TimeInterval(session.expiresAt) / 1000)
                 let peer = try await client.awaitPeer(session)
                 pairingURI = nil
-                message = "Linked with \(peer.name)"
+                linkedConfirmation = peer
                 await refresh()
                 setActive(true)
             } catch is CancellationError {
@@ -98,7 +107,7 @@ final class LinkModel: ObservableObject {
             do {
                 if try await client.applySetupLink(link) { message = "Relay configured"; return }
                 let peer = try await client.join(link)
-                message = "Linked with \(peer.name)"
+                linkedConfirmation = peer
                 await refresh()
                 setActive(true)
             } catch {
@@ -117,7 +126,7 @@ final class LinkModel: ObservableObject {
         guard let client else { return }
         Task {
             do {
-                let outcomes = try await client.send(content)
+                let outcomes = try await client.send(content, to: sendTargets.isEmpty ? nil : sendTargets)
                 let names = Dictionary(uniqueKeysWithValues: peers.map { ($0.id, $0.name) })
                 for outcome in outcomes {
                     clips.add(ClipRecord(id: outcome.itemId ?? UUID().uuidString.lowercased(), direction: .sent,
@@ -154,6 +163,51 @@ final class LinkModel: ObservableObject {
         Task {
             guard let info = try? await client.relayInfo(), info.push?.contains("apns") == true else { return }
             try? await client.registerPush(token: hex, environment: environment, topic: topic)
+        }
+    }
+
+    /// Plain-text report for bug reports. Contains no clipboard content or device names.
+    var diagnosticsReport: String {
+        guard let d = diagnostics else { return "No diagnostics yet" }
+        func at(_ time: Int64?) -> String {
+            time.map { DateFormatter.localizedString(from: Date(timeIntervalSince1970: TimeInterval($0) / 1000), dateStyle: .short, timeStyle: .medium) } ?? "never"
+        }
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
+        return """
+        DeviceLink \(version) on iOS \(UIDevice.current.systemVersion), \(LinkEnvironment.model)
+        Device ID: \(d.deviceId.prefix(16))…
+        Relay: \(d.relayURL.isEmpty ? "not configured" : d.relayURL) · registered: \(d.registered)
+        Linked devices: \(d.peers) · status: \(status.rawValue)
+        Last poll: \(at(d.lastPollAt)) · last receive: \(at(d.lastReceiveAt)) · last send: \(at(d.lastSendAt))
+        Received: \(d.received) · sent: \(d.sent) (since app start)
+        Last error: \(d.lastError ?? "none")\(d.lastErrorAt.map { " at " + at($0) } ?? "")
+        """
+    }
+
+    func sendTestClip() {
+        sendText("DeviceLink test clip · \(DateFormatter.localizedString(from: Date(), dateStyle: .none, timeStyle: .medium))")
+    }
+
+    /// Unlinks everything (telling each device), deletes keys and history, and starts with a new identity.
+    func resetDevice() {
+        guard let client else { return }
+        Task {
+            try? await client.unlinkAll()
+            setActive(false)
+            clips.clear()
+            Keychain.delete("identity.se"); Keychain.delete("identity.sw"); Keychain.delete("encryption.x25519")
+            try? FileManager.default.removeItem(at: LinkEnvironment.container.appendingPathComponent("DeviceLink/links.json"))
+            sendTargets = []
+            do {
+                let fresh = try LinkEnvironment.makeClient()
+                self.client = fresh
+                events?.cancel()
+                events = Task { [weak self] in for await event in await fresh.events() { await self?.handle(event) } }
+                await refresh()
+                message = "Device reset. Show or scan a code to link again."
+            } catch {
+                message = "Reset failed: \(error)"
+            }
         }
     }
 

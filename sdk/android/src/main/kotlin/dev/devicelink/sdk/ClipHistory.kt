@@ -23,6 +23,9 @@ data class ClipRecord(
     val name: String? = null,
     val at: Long,
     val state: ClipState,
+    val html: String? = null,
+    /** Sender marked it sensitive: never shown in notifications, masked in lists. */
+    val sensitive: Boolean = false,
 )
 
 internal class ClipHistory(context: Context, private val limit: Int = 50) {
@@ -58,8 +61,10 @@ internal class ClipHistory(context: Context, private val limit: Int = 50) {
 
     private fun ClipRecord.toJson() = JSONObject().put("id", id).put("direction", direction.name).put("peer", peerName)
         .put("kind", kind).put("text", text).put("uri", uri).put("mime", mime).put("name", name).put("at", at).put("state", state.name)
+        .put("html", html).put("sensitive", sensitive)
 
     private fun JSONObject.toRecord() = ClipRecord(getString("id"), ClipDirection.valueOf(getString("direction")), getString("peer"),
         getString("kind"), optString("text").takeIf { has("text") }, optString("uri").takeIf { has("uri") },
-        optString("mime").takeIf { has("mime") }, optString("name").takeIf { has("name") }, getLong("at"), ClipState.valueOf(getString("state")))
+        optString("mime").takeIf { has("mime") }, optString("name").takeIf { has("name") }, getLong("at"), ClipState.valueOf(getString("state")),
+        optString("html").takeIf { has("html") }, optBoolean("sensitive", false))
 }

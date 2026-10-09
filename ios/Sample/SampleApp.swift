@@ -134,6 +134,7 @@ struct SampleView: View {
                 }
             }
             .navigationTitle("DeviceLink Sample")
+            .modifier(LinkedConfirmation(model: model))
             .sheet(isPresented: $showingCode) { PairingCodeSheet(model: model) }
             .sheet(isPresented: $scanning) { ScannerSheet { model.open($0) } }
             .alert(model.message ?? "", isPresented: Binding(get: { model.message != nil }, set: { if !$0 { model.message = nil } })) {

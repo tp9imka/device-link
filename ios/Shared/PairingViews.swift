@@ -114,3 +114,51 @@ struct QRScanner: UIViewControllerRepresentable {
         }
     }
 }
+
+
+/// One-time confirmation after linking: both screens show the same six digits. Never asked again.
+struct LinkedConfirmation: ViewModifier {
+    @ObservedObject var model: LinkModel
+
+    func body(content: Content) -> some View {
+        content.alert(model.linkedConfirmation.map { "Linked with \($0.name)" } ?? "",
+                      isPresented: Binding(get: { model.linkedConfirmation != nil }, set: { if !$0 { model.linkedConfirmation = nil } }),
+                      presenting: model.linkedConfirmation) { peer in
+            Button("OK", role: .cancel) {}
+            Button("Codes differ: unlink", role: .destructive) { model.unlink(peer) }
+        } message: { peer in
+            if let code = peer.pairingCode {
+                Text("Confirmation code \(code.prefix(3)) \(code.suffix(3)) should match the other screen. This is only shown once: from now on clips just go through.")
+            }
+        }
+    }
+}
+
+/// Relay, registration, last poll/receive/send and last error; test clip; reset device.
+struct DiagnosticsSheet: View {
+    @ObservedObject var model: LinkModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var confirmReset = false
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section { Text(model.diagnosticsReport).font(.footnote.monospaced()).textSelection(.enabled) }
+                Section {
+                    Button("Copy report") { UIPasteboard.general.string = model.diagnosticsReport }
+                    Button("Send test clip") { model.sendTestClip() }.disabled(model.peers.isEmpty)
+                    Button("Reset device", role: .destructive) { confirmReset = true }
+                } footer: { Text("The report contains no clipboard content or device names.") }
+            }
+            .navigationTitle("Diagnostics")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
+            .task { await model.refresh() }
+            .confirmationDialog("Reset this device?", isPresented: $confirmReset, titleVisibility: .visible) {
+                Button("Reset device", role: .destructive) { model.resetDevice(); dismiss() }
+            } message: {
+                Text("Unlinks every device, deletes this device's keys and clip history, and creates a new identity.")
+            }
+        }
+    }
+}

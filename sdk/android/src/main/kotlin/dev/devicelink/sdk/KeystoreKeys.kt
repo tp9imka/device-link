@@ -39,6 +39,8 @@ internal class KeystoreIdentity : DeviceIdentity {
     companion object {
         const val PROVIDER = "AndroidKeyStore"
         private const val ALIAS = "devicelink.v2.identity"
+
+        fun delete() { KeyStore.getInstance(PROVIDER).apply { load(null) }.deleteEntry(ALIAS) }
     }
 }
 
@@ -58,6 +60,11 @@ internal object WrappedEncryptionKey {
         temporary.writeBytes(wrap(pair.privateKeyBytes()))
         check(temporary.renameTo(file)) { "Cannot store encryption key" }
         return pair
+    }
+
+    fun delete(context: Context) {
+        File(context.noBackupFilesDir, "devicelink/encryption.key").delete()
+        KeyStore.getInstance(KeystoreIdentity.PROVIDER).apply { load(null) }.deleteEntry(ALIAS)
     }
 
     private fun key(): SecretKey {

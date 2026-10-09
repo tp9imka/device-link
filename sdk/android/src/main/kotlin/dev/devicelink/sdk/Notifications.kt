@@ -57,7 +57,8 @@ internal object Notifications {
     /** Quiet confirmation that something is ready to paste; removes itself after a short while. */
     fun copied(context: Context, record: ClipRecord) {
         val title = context.getString(R.string.dl_copied_from, record.peerName)
-        val body = record.text?.let(::preview) ?: record.name ?: context.getString(R.string.dl_image)
+        val body = if (record.sensitive) context.getString(R.string.dl_hidden_content)
+            else record.text?.let(::preview) ?: record.name ?: context.getString(R.string.dl_image)
         val notification = builder(context, COPIED).setContentTitle(title).setContentText(body)
             .setStyle(Notification.BigTextStyle().bigText(body)).setAutoCancel(true).setTimeoutAfter(20_000)
             .setVisibility(Notification.VISIBILITY_PRIVATE).setPublicVersion(publicVersion(context, title))
@@ -71,7 +72,8 @@ internal object Notifications {
      */
     fun shareNeeded(context: Context, record: ClipRecord) {
         val title = context.getString(R.string.dl_received_from, record.peerName)
-        val body = record.text?.let(::preview) ?: record.name ?: context.getString(R.string.dl_file)
+        val body = if (record.sensitive) context.getString(R.string.dl_hidden_content)
+            else record.text?.let(::preview) ?: record.name ?: context.getString(R.string.dl_file)
         val builder = builder(context, ACTION).setContentTitle(title).setContentText(body)
             .setStyle(Notification.BigTextStyle().bigText(body)).setAutoCancel(true)
             .setVisibility(Notification.VISIBILITY_PRIVATE).setPublicVersion(publicVersion(context, title))

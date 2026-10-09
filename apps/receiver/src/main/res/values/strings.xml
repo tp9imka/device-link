@@ -40,4 +40,19 @@
  <string name="paste_link_title">Paste a DeviceLink link</string>
  <string name="clipboard_empty">The clipboard is empty</string>
  <string name="image">Image</string>
+ <string name="diagnostics">Info</string>
+ <string name="diagnostics_title">Diagnostics</string>
+ <string name="diagnostics_copy">Copy report</string>
+ <string name="diagnostics_test">Send test clip</string>
+ <string name="diagnostics_reset">Reset device</string>
+ <string name="diagnostics_copied">Report copied</string>
+ <string name="test_clip">DeviceLink test clip · %1$s</string>
+ <string name="reset_title">Reset this device?</string>
+ <string name="reset_body">Unlinks every device, deletes this phone\'s keys and clip history, and creates a new identity. Link again afterwards.</string>
+ <string name="reset_done">Device reset. Show or scan a code to link again.</string>
+ <string name="send_only_to">Send only to %1$s</string>
+ <string name="send_to_all">Send to all devices</string>
+ <string name="sending_to">Sending to: %1$s</string>
+ <string name="sensitive_hidden">Sensitive content</string>
+ <string name="paste_link_hint">https://…/pair#v2…</string>
 </resources>
