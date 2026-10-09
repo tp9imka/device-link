@@ -260,8 +260,8 @@ class DeviceLinkInstance internal constructor(private val context: Context, val 
     fun forget(record: ClipRecord) = clipHistory.remove(record.id)
     fun clearHistory() { clipHistory.clear(); scope.launch(Dispatchers.IO) { ReceivedFiles.clear(context) } }
 
-    /** True when the current clipboard change was written by DeviceLink itself (echo suppression). */
-    internal fun isOwnClip(clip: ClipData): Boolean {
+    /** True when the clip was written by DeviceLink itself (echo suppression for auto-share and keyboards). */
+    fun isOwnClip(clip: ClipData): Boolean {
         if (clip.description.label?.toString() == ClipboardBridge.LABEL) return true
         val item = clip.takeIf { it.itemCount > 0 }?.getItemAt(0) ?: return false
         val signature = item.uri?.let { "uri:$it" } ?: item.text?.toString()?.let(ClipboardBridge::signature)

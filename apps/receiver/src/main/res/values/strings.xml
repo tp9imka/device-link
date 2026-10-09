@@ -55,4 +55,10 @@
  <string name="sending_to">Sending to: %1$s</string>
  <string name="sensitive_hidden">Sensitive content</string>
  <string name="paste_link_hint">https://…/pair#v2…</string>
+ <string name="keyboard_name">DeviceLink keyboard</string>
+ <string name="kb_paste">Paste last clip</string>
+ <string name="kb_send">Send clipboard</string>
+ <string name="kb_auto">Auto-send copies</string>
+ <string name="kb_switch">Keyboard ⌨</string>
+ <string name="kb_nothing_received">No clip received yet</string>
 </resources>

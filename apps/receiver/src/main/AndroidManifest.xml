@@ -12,6 +12,12 @@
    <intent-filter><action android:name="android.intent.action.VIEW" /><category android:name="android.intent.category.DEFAULT" />
     <category android:name="android.intent.category.BROWSABLE" /><data android:scheme="https" android:host="*" android:path="/pair" /></intent-filter>
   </activity>
+  <!-- Optional keyboard: while it is active, copies made in any app are sent automatically. -->
+  <service android:name=".DeviceLinkKeyboard" android:exported="true" android:label="@string/keyboard_name"
+   android:permission="android.permission.BIND_INPUT_METHOD">
+   <intent-filter><action android:name="android.view.InputMethod" /></intent-filter>
+   <meta-data android:name="android.view.im" android:resource="@xml/method" />
+  </service>
   <service android:name=".SendClipboardTile" android:exported="true" android:label="@string/tile_send" android:icon="@drawable/ic_tile"
    android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
    <intent-filter><action android:name="android.service.quicksettings.action.QS_TILE" /></intent-filter>
