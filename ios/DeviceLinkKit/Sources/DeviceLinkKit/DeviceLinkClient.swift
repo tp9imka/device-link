@@ -24,6 +24,8 @@ public struct LinkConfig: Sendable {
 
 public enum OutgoingContent: Sendable {
     case text(String)
+    /// Text with an optional rich-text alternative; `sensitive` hides previews and expires the clip where possible.
+    case styledText(String, html: String?, sensitive: Bool)
     case image(name: String, mime: String, data: Data)
     case file(name: String, mime: String, data: Data)
 }
@@ -36,12 +38,62 @@ public struct IncomingItem: Sendable, Identifiable {
     public let expiresAt: Int64
     /// A newer clip from the same peer was already applied; list it, do not overwrite the clipboard.
     public let stale: Bool
+    /// Reassembled content of a chunked file; nil for single-envelope items.
+    let assembled: Data?
+
+    init(id: String, peer: LinkedPeer, payload: Payload, expiresAt: Int64, stale: Bool, assembled: Data? = nil) {
+        self.id = id; self.peer = peer; self.payload = payload; self.expiresAt = expiresAt; self.stale = stale; self.assembled = assembled
+    }
 
     public var kind: PayloadKind { payload.kind }
     public var text: String? { payload.text }
+    public var html: String? { payload.html }
+    public var sensitive: Bool { payload.sensitive == true }
     public var fileName: String? { payload.name }
     public var mime: String { payload.mime ?? "text/plain" }
-    public func bytes() -> Data? { try? payload.dataBytes() }
+    public func bytes() -> Data? { assembled ?? (try? payload.dataBytes()) }
+}
+
+/// Snapshot for debug screens. Never contains content.
+public struct Diagnostics: Sendable, Equatable {
+    public var deviceId: String
+    public var relayURL: String = ""
+    public var registered = false
+    public var peers = 0
+    public var lastPollAt: Int64?
+    public var lastReceiveAt: Int64?
+    public var lastSendAt: Int64?
+    public var lastError: String?
+    public var lastErrorAt: Int64?
+    public var received = 0
+    public var sent = 0
+}
+
+/// Collects chunked-file parts per sender; bounded to 3 files in flight, dropped at envelope expiry.
+struct ChunkAssembler {
+    private struct Pending { var parts: Int; var size: Int64; var expiresAt: Int64; var data: [Data?] }
+    private var pending: [String: Pending] = [:]
+    private var order: [String] = []
+
+    mutating func add(peerId: String, payload: Payload, expiresAt: Int64, now: Int64) -> Data? {
+        for key in pending.keys where pending[key]!.expiresAt <= now { pending[key] = nil; order.removeAll { $0 == key } }
+        guard let group = payload.group, let parts = payload.parts, let part = payload.part, let size = payload.size,
+              let chunk = try? payload.dataBytes() else { return nil }
+        let key = "\(peerId)/\(group)"
+        if pending[key] == nil {
+            while order.count >= 3 { pending[order.removeFirst()] = nil }
+            pending[key] = Pending(parts: parts, size: size, expiresAt: expiresAt, data: Array(repeating: nil, count: parts))
+            order.append(key)
+        }
+        guard var entry = pending[key], entry.parts == parts, entry.size == size else { pending[key] = nil; return nil }
+        entry.data[part] = chunk
+        pending[key] = entry
+        guard entry.data.allSatisfy({ $0 != nil }) else { return nil }
+        pending[key] = nil
+        order.removeAll { $0 == key }
+        let whole = entry.data.reduce(into: Data()) { $0.append($1!) }
+        return Int64(whole.count) == size ? whole : nil
+    }
 }
 
 public struct SendOutcome: Sendable {
@@ -71,6 +123,8 @@ public actor DeviceLinkClient {
     let transport: HTTPTransport
     let clock: @Sendable () -> Int64
     private var listeners: [UUID: AsyncStream<LinkEvent>.Continuation] = [:]
+    private var chunks = ChunkAssembler()
+    public private(set) var diagnostics: Diagnostics
     public private(set) var status: ReceiverStatus = .idle
 
     public init(identity: DeviceIdentity, encryption: EncryptionKeyPair, store: LinkStore, config: LinkConfig,
@@ -84,6 +138,7 @@ public actor DeviceLinkClient {
         self.config = config
         self.transport = transport
         self.clock = clock
+        self.diagnostics = Diagnostics(deviceId: identity.deviceId)
         var state = store.load()
         if state.relayUrl.isEmpty, !config.defaultRelayURL.isEmpty {
             state.relayUrl = try RelayURL.normalize(config.defaultRelayURL, allowInsecure: config.allowInsecureRelay)
@@ -108,6 +163,26 @@ public actor DeviceLinkClient {
 
     private func removeListener(_ id: UUID) { listeners[id] = nil }
     private func emit(_ event: LinkEvent) { listeners.values.forEach { $0.yield(event) } }
+    private func note(_ change: (inout Diagnostics) -> Void) {
+        let state = store.load()
+        change(&diagnostics)
+        diagnostics.relayURL = state.relayUrl
+        diagnostics.peers = state.peers.count
+        diagnostics.registered = !state.relayUrl.isEmpty && state.registeredRelay == state.relayUrl
+    }
+
+    private func noteFailure(_ error: Error) {
+        let text: String
+        switch error {
+        case DeviceLinkError.relay(let status, let code): text = "relay \(status) \(code)"
+        case is URLError: text = "network: \((error as! URLError).code.rawValue)"
+        default: text = String(describing: type(of: error))
+        }
+        note { $0.lastError = text; $0.lastErrorAt = clock() }
+    }
+
+    public func currentDiagnostics() -> Diagnostics { note { _ in }; return diagnostics }
+
     private func setStatus(_ value: ReceiverStatus) { if status != value { status = value; emit(.status(value)) } }
 
     @discardableResult
@@ -202,7 +277,7 @@ public actor DeviceLinkClient {
                 let bundle = try session.invite.openJoin(status.sealed ?? "")
                 guard bundle.id == status.joinerId, bundle.id != deviceId else { throw DeviceLinkError.pairing("Pairing data does not match joiner") }
                 try await relay.allow(bundle.id)
-                let peer = try addPeer(bundle)
+                let peer = try addPeer(bundle, code: session.invite.confirmationCode(joinerId: bundle.id))
                 try await relay.confirmPairing(session.invite.pairingId, sealed: try session.invite.sealConfirm(localBundle))
                 emit(.peerLinked(peer))
                 return peer
@@ -240,7 +315,7 @@ public actor DeviceLinkClient {
                 let bundle = try invite.openConfirm(status.sealed ?? "")
                 guard bundle.id == invite.inviterId else { throw DeviceLinkError.pairing("Inviter identity does not match the code") }
                 try await relay.allow(bundle.id)
-                let peer = try addPeer(bundle)
+                let peer = try addPeer(bundle, code: invite.confirmationCode(joinerId: deviceId))
                 emit(.peerLinked(peer))
                 return peer
             default: throw DeviceLinkError.pairing("Pairing \(status.state)")
@@ -249,8 +324,8 @@ public actor DeviceLinkClient {
         throw DeviceLinkError.pairing("The other device did not confirm in time")
     }
 
-    private func addPeer(_ bundle: KeyBundle) throws -> LinkedPeer {
-        let peer = LinkedPeer(bundle: bundle, linkedAt: clock())
+    private func addPeer(_ bundle: KeyBundle, code: String) throws -> LinkedPeer {
+        let peer = LinkedPeer(bundle: bundle, linkedAt: clock(), pairingCode: code)
         try update { state in
             state.peers.removeAll { $0.id == bundle.id }
             state.peers.append(peer)
@@ -271,6 +346,9 @@ public actor DeviceLinkClient {
         try? await flushRevocations()
     }
 
+    /// "Remove this device everywhere": tells every peer, revokes them on the relay, forgets them locally.
+    public func unlinkAll() async throws { for peer in peers { try await unlink(peer.id) } }
+
     private func flushRevocations() async throws {
         for id in store.load().pendingRevocations {
             try await registered { try await $0.revoke(id) }
@@ -283,20 +361,30 @@ public actor DeviceLinkClient {
     /// Encrypts separately for each target peer (all linked peers by default).
     public func send(_ content: OutgoingContent, to peerIds: Set<String>? = nil) async throws -> [SendOutcome] {
         let now = clock()
-        let payload: Payload
+        let payloads: [Payload]
         switch content {
-        case .text(let text): payload = .text(text, now: now)
-        case .image(let name, let mime, let data): payload = .image(name: name, mime: mime, bytes: data, now: now)
-        case .file(let name, let mime, let data): payload = .file(name: name, mime: mime, bytes: data, now: now)
+        case .text(let text): payloads = [.text(text, now: now)]
+        case .styledText(let text, let html, let sensitive): payloads = [.text(text, now: now, html: html, sensitive: sensitive)]
+        case .image(let name, let mime, let data):
+            payloads = data.count <= Limits.maxContentBytes ? [.image(name: name, mime: mime, bytes: data, now: now)]
+                : try Payload.chunks(kind: .image, name: name, mime: mime, bytes: data, now: now)
+        case .file(let name, let mime, let data):
+            payloads = data.count <= Limits.maxContentBytes ? [.file(name: name, mime: mime, bytes: data, now: now)]
+                : try Payload.chunks(kind: .file, name: name, mime: mime, bytes: data, now: now)
         }
-        try payload.validate()
+        for payload in payloads { try payload.validate() }
         var outcomes: [SendOutcome] = []
         for peer in peers where peerIds?.contains(peer.id) ?? true {
             do {
-                outcomes.append(SendOutcome(peerId: peer.id, itemId: try await deliver(payload, to: peer), error: nil))
+                var id = ""
+                for payload in payloads { id = try await deliver(payload, to: peer) }
+                note { $0.lastSendAt = clock(); $0.sent += 1 }
+                outcomes.append(SendOutcome(peerId: peer.id, itemId: payloads[0].group ?? id, error: nil))
             } catch DeviceLinkError.relay(_, let code) {
+                noteFailure(DeviceLinkError.relay(status: 0, code: code))
                 outcomes.append(SendOutcome(peerId: peer.id, itemId: nil, error: code))
             } catch {
+                noteFailure(error)
                 outcomes.append(SendOutcome(peerId: peer.id, itemId: nil, error: String(describing: error)))
             }
         }
@@ -307,14 +395,20 @@ public actor DeviceLinkClient {
         let sequence = try update { $0.sequence += 1 }.sequence
         let envelope = try crypto.seal(payload, to: peer.bundle, now: clock(), sequence: sequence, lifetimeMillis: config.lifetimeMillis)
         var attempt = 0
+        let deadline = clock() + 90_000
         while true {
             do {
+                // Retries resend the exact same envelope: the relay treats it as idempotent.
                 try await registered { try await $0.upload(envelope) }
                 return envelope.id
             } catch let error as URLError {
                 attempt += 1
                 if attempt >= 3 { throw error }
                 try await Task.sleep(nanoseconds: UInt64(attempt) * 500_000_000)
+            } catch DeviceLinkError.relay(let status, "mailbox_full") where clock() < deadline {
+                // The receiver drains its mailbox as it acknowledges; large chunked files rely on this.
+                _ = status
+                try await Task.sleep(nanoseconds: 2_000_000_000)
             }
         }
     }
@@ -326,9 +420,15 @@ public actor DeviceLinkClient {
     @discardableResult
     public func receiveOnce(wait: Int? = nil, handler: @Sendable (IncomingItem) async -> ReceiptStatus) async throws -> Int {
         let waitSeconds = wait ?? config.pollWaitSeconds
-        let envelopes = try await registered { try await $0.poll(wait: waitSeconds, limit: 1) }
+        note { $0.lastPollAt = clock() }
+        let envelopes: [Envelope]
+        do { envelopes = try await registered { try await $0.poll(wait: waitSeconds, limit: 1) } } catch {
+            if !(error is CancellationError) { noteFailure(error) }
+            throw error
+        }
         var delivered = 0
         for envelope in envelopes where try await process(envelope, handler: handler) { delivered += 1 }
+        if delivered > 0 { note { $0.lastReceiveAt = clock(); $0.received += delivered } }
         return delivered
     }
 
@@ -358,11 +458,23 @@ public actor DeviceLinkClient {
             try? await flushRevocations()
             return false
         case .text, .image, .file:
+            var itemId = envelope.id
+            var item: IncomingItem
             let stale = payload.kind != .file && envelope.sequence <= (recorded.lastClip[peer.id] ?? 0)
-            let status = await handler(IncomingItem(id: envelope.id, peer: peer, payload: payload, expiresAt: envelope.expiresAt, stale: stale))
+            if payload.isChunk, let group = payload.group {
+                try await relay.acknowledge(envelope.id)
+                guard let whole = chunks.add(peerId: peer.id, payload: payload, expiresAt: envelope.expiresAt, now: clock()) else { return false }
+                itemId = group
+                var meta = payload
+                meta.data = nil; meta.part = nil; meta.parts = nil
+                item = IncomingItem(id: group, peer: peer, payload: meta, expiresAt: envelope.expiresAt, stale: stale, assembled: whole)
+            } else {
+                item = IncomingItem(id: envelope.id, peer: peer, payload: payload, expiresAt: envelope.expiresAt, stale: stale)
+            }
+            let status = await handler(item)
             if status == .copied { try update { $0.lastClip[peer.id] = max($0.lastClip[peer.id] ?? 0, envelope.sequence) } }
-            try await relay.acknowledge(envelope.id)
-            _ = try? await deliver(.receipt(envelope.id, status), to: peer)
+            if !payload.isChunk { try await relay.acknowledge(envelope.id) }
+            _ = try? await deliver(.receipt(itemId, status), to: peer)
             return true
         }
     }

@@ -25,7 +25,7 @@ import org.junit.Test
 class InteropVectorsTest {
     @Serializable data class Party(val identityPrivate: String, val encryptionPrivate: String, val bundle: KeyBundle)
     @Serializable data class Item(val now: Long, val envelope: Envelope, val payload: Payload)
-    @Serializable data class Pairing(val uri: String, val pairingId: String, val joinSealed: String, val confirmSealed: String)
+    @Serializable data class Pairing(val uri: String, val pairingId: String, val joinSealed: String, val confirmSealed: String, val code: String)
     @Serializable data class Request(val method: String, val path: String, val body: String, val headers: Map<String, String>)
     @Serializable data class VectorFile(val producer: String, val sender: Party, val recipient: Party, val items: List<Item>,
         val pairing: Pairing, val request: Request)
@@ -69,6 +69,7 @@ class InteropVectorsTest {
         assertEquals(file.pairing.pairingId, invite.pairingId)
         assertEquals(file.recipient.bundle, invite.openJoin(file.pairing.joinSealed))
         assertEquals(file.sender.bundle, invite.openConfirm(file.pairing.confirmSealed))
+        assertEquals(file.pairing.code, invite.confirmationCode(file.recipient.bundle.id))
         val h = file.request.headers
         val canonical = "DeviceLink relay request v1\n${file.request.method}\n${file.request.path}\n${h["X-Device-Time"]}\n${h["X-Device-Nonce"]}\n" +
             Encoding.hex(Encoding.sha256(file.request.body.toByteArray()))
@@ -84,7 +85,10 @@ class InteropVectorsTest {
         val crypto = EnvelopeCrypto(senderIdentity, senderKeys)
         val payloads = listOf(Payload.text("Hello from kotlin — ünïcødé 📋", now),
             Payload.image("pixel.png", "image/png", ByteArray(64) { it.toByte() }, now),
-            Payload.receipt("6f0d3c9e-6a45-4b8e-9b51-2f4c1b4e0a11", ReceiptStatus.COPIED))
+            Payload.receipt("6f0d3c9e-6a45-4b8e-9b51-2f4c1b4e0a11", ReceiptStatus.COPIED),
+            Payload.text("Rich", now, html = "<b>Rich</b>", sensitive = true),
+            Payload(PayloadKind.FILE, name = "part.bin", mime = "application/octet-stream", data = Encoding.b64(ByteArray(16) { 7 }), sentAt = now,
+                group = "0b6c2f4e-1d2a-4c3b-8e9f-0a1b2c3d4e5f", part = 1, parts = 3, size = 9_000_000))
         val items = payloads.mapIndexed { index, payload -> Item(now, crypto.seal(payload, recipient, now, index + 1L), payload) }
         val invite = PairingInvite.create("https://relay.example", sender.id)
         val path = "/v1/peers/${recipient.id}"
@@ -92,7 +96,7 @@ class InteropVectorsTest {
         return VectorFile("kotlin",
             Party(Encoding.b64(raw(senderIdentity)), Encoding.b64(senderKeys.privateKeyBytes()), sender),
             Party(Encoding.b64(raw(recipientIdentity)), Encoding.b64(recipientKeys.privateKeyBytes()), recipient),
-            items, Pairing(invite.uri, invite.pairingId, invite.sealJoin(recipient), invite.sealConfirm(sender)),
+            items, Pairing(invite.uri, invite.pairingId, invite.sealJoin(recipient), invite.sealConfirm(sender), invite.confirmationCode(recipient.id)),
             Request("PUT", path, "{}", headers))
     }
 }

@@ -65,6 +65,14 @@ public struct PairingInvite: Sendable {
         return try KeyBundle.decode(plaintext)
     }
 
+    /// Six-digit code both screens show after linking (see the protocol document).
+    public func confirmationCode(joinerId: String) -> String {
+        let bytes = Encoding.hkdf(secret, info: "DeviceLink/pairing-code/v2|\(inviterId)|\(joinerId)", length: 4)
+        let value = bytes.reduce(UInt64(0)) { ($0 << 8) | UInt64($1) }
+        let code = String(value % 1_000_000)
+        return String(repeating: "0", count: 6 - code.count) + code
+    }
+
     public func sealJoin(_ bundle: KeyBundle) throws -> String { try seal(joinKey, "join", bundle) }
     public func openJoin(_ sealed: String) throws -> KeyBundle { try open(joinKey, "join", sealed) }
     public func sealConfirm(_ bundle: KeyBundle) throws -> String { try seal(confirmKey, "confirm", bundle) }

@@ -97,6 +97,17 @@ with `info = context`.
   notified, clipboard not possible), `failed`.
 - `unlink`: the sender removed this link; the receiver forgets the sender.
 
+Optional fields (all encrypted, all ignorable by older decoders):
+
+- `html` (text only, ≤ 256 KiB): rich-text alternative; `text` stays the plain fallback.
+- `sensitive: true`: receivers hide previews in notifications and history, and expire the clip from
+  the clipboard where the platform supports it (iOS: 2 minutes).
+- Chunked files: content over 10 MiB is split into up to 10 chunks of ≤ 4 MiB (`MAX_FILE_BYTES` 40 MiB).
+  Each chunk is its own envelope with the same `name`/`mime` plus `group` (UUID), `part` (0-based),
+  `parts` (2–10) and `size` (total bytes). Receivers acknowledge each chunk, reassemble when all parts
+  are present and the total equals `size`, and send one receipt for `group`. Senders retry the same
+  sealed envelope on network errors and wait (up to 90 s) on `429 mailbox_full` while the receiver drains.
+
 Decoders ignore unknown fields so future versions can add optional data.
 `name` follows the bundle name character rules but may be 120 characters and
 must not contain `/`, `\`, or be `.`/`..`.
@@ -152,6 +163,11 @@ Flow:
 4. Joiner long-polls the same pairing, opens the inviter bundle, checks that its
    ID equals the ID in the QR, pins it and allows it. The relay records the link
    for the admin dashboard and deletes the pairing.
+
+Confirmation code (display only, first setup only): both devices show
+`HKDF(s, "DeviceLink/pairing-code/v2|" + inviterId + "|" + joinerId, 4 bytes)` as a big-endian integer
+mod 1,000,000, zero-padded to six digits, on the "Linked" confirmation. Matching codes show that the
+two screens belong to the same pairing; it is never asked for again after linking.
 
 Possession of the QR is the authorization: anyone who can read the code within
 its 5-minute lifetime can link once. Inviters display the joiner's name after

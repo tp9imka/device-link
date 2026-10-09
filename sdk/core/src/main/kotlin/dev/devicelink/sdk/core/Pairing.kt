@@ -29,6 +29,17 @@ class PairingInvite private constructor(
     /** Custom-scheme form used by the relay landing page to hand the invite to the app. */
     val appUri: String get() = "devicelink://pair?relay=${URLEncoder.encode(relayUrl, "UTF-8")}#$fragment"
 
+    /**
+     * Six-digit code both screens show after linking. Equal codes prove both devices hold the same
+     * QR secret and see the same two identities, so a photographed QR used by someone else shows up.
+     */
+    fun confirmationCode(joinerId: String): String {
+        val bytes = Encoding.hkdf(secret, "DeviceLink/pairing-code/v2|$inviterId|$joinerId", 4)
+        val value = ((bytes[0].toLong() and 0xff) shl 24) or ((bytes[1].toLong() and 0xff) shl 16) or
+            ((bytes[2].toLong() and 0xff) shl 8) or (bytes[3].toLong() and 0xff)
+        return (value % 1_000_000).toString().padStart(6, '0')
+    }
+
     fun sealJoin(bundle: KeyBundle): String = seal(joinKey, "join", bundle.encode())
     fun openJoin(sealed: String): KeyBundle = KeyBundle.decode(open(joinKey, "join", sealed))
     fun sealConfirm(bundle: KeyBundle): String = seal(confirmKey, "confirm", bundle.encode())

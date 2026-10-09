@@ -5,7 +5,7 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 
 @Serializable
-data class LinkedPeer(val bundle: KeyBundle, val linkedAt: Long) {
+data class LinkedPeer(val bundle: KeyBundle, val linkedAt: Long, val pairingCode: String? = null) {
     val id: String get() = bundle.id
     val name: String get() = bundle.name
     val platform: String get() = bundle.platform

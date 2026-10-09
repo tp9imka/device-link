@@ -18,6 +18,11 @@ object Limits {
     const val MAX_CLOCK_SKEW_MILLIS = 60_000L
     const val MAX_NAME_CHARS = 48
     const val MAX_FILE_NAME_CHARS = 120
+    const val MAX_HTML_BYTES = 256 * 1024
+    /** Files above [MAX_CONTENT_BYTES] are split into chunks of this size (one envelope each). */
+    const val CHUNK_BYTES = 4 * 1024 * 1024
+    const val MAX_PARTS = 10
+    const val MAX_FILE_BYTES = CHUNK_BYTES * MAX_PARTS
     val IMAGE_MIMES = setOf("image/png", "image/jpeg", "image/webp", "image/gif", "image/heic")
 }
 
@@ -158,17 +163,35 @@ data class Payload(
     val receiptFor: String? = null,
     val status: ReceiptStatus? = null,
     val sentAt: Long? = null,
+    /** Rich-text alternative for [text] (text stays the plain fallback). */
+    val html: String? = null,
+    /** Hide previews and keep it off clipboard history / let it expire where the platform can. */
+    val sensitive: Boolean? = null,
+    /** Chunked file: all parts share [group] (also the item ID receipts refer to). */
+    val group: String? = null,
+    val part: Int? = null,
+    val parts: Int? = null,
+    val size: Long? = null,
 ) {
     fun dataBytes(): ByteArray? = data?.let { Encoding.unb64(it, Limits.MAX_CONTENT_BYTES) }
+    val isChunk: Boolean get() = group != null
 
     fun validate() {
         when (kind) {
             PayloadKind.TEXT -> {
                 require(text != null && text.toByteArray(Charsets.UTF_8).size in 1..Limits.MAX_TEXT_BYTES) { "Invalid text" }
                 require(name == null && mime == null && data == null && receiptFor == null && status == null)
+                require(html == null || html.toByteArray(Charsets.UTF_8).size in 1..Limits.MAX_HTML_BYTES) { "Invalid HTML" }
+                require(group == null && part == null && parts == null && size == null)
             }
             PayloadKind.IMAGE, PayloadKind.FILE -> {
-                require(text == null && receiptFor == null && status == null)
+                require(text == null && receiptFor == null && status == null && html == null)
+                if (group != null || part != null || parts != null || size != null) {
+                    require(UUID.fromString(requireNotNull(group)).toString() == group) { "Invalid chunk group" }
+                    require(requireNotNull(parts) in 2..Limits.MAX_PARTS && requireNotNull(part) in 0 until parts) { "Invalid chunk index" }
+                    require(requireNotNull(size) in 1..Limits.MAX_FILE_BYTES.toLong()) { "Invalid file size" }
+                    require(requireNotNull(dataBytes()).size <= Limits.CHUNK_BYTES) { "Chunk too large" }
+                }
                 require(validFileName(requireNotNull(name))) { "Invalid file name" }
                 require(requireNotNull(mime).length <= 127 && mime.matches(MIME)) { "Invalid MIME type" }
                 require(requireNotNull(dataBytes()).isNotEmpty()) { "Empty content" }
@@ -176,7 +199,7 @@ data class Payload(
             }
             PayloadKind.RECEIPT -> {
                 require(UUID.fromString(requireNotNull(receiptFor)).toString() == receiptFor && status != null)
-                require(text == null && name == null && mime == null && data == null)
+                require(text == null && name == null && mime == null && data == null && group == null)
             }
             PayloadKind.UNLINK -> require(text == null && name == null && mime == null && data == null && receiptFor == null && status == null)
         }
@@ -192,7 +215,20 @@ data class Payload(
         fun decode(bytes: ByteArray): Payload =
             wireJson.decodeFromString<Payload>(bytes.toString(Charsets.UTF_8)).also { it.validate() }
 
-        fun text(text: String, now: Long) = Payload(PayloadKind.TEXT, text = text, sentAt = now)
+        fun text(text: String, now: Long, html: String? = null, sensitive: Boolean = false) =
+            Payload(PayloadKind.TEXT, text = text, sentAt = now, html = html, sensitive = sensitive.takeIf { it })
+
+        /** Splits large content into ordered chunk payloads sharing one group ID. */
+        fun chunks(kind: PayloadKind, name: String, mime: String, bytes: ByteArray, now: Long, group: String = UUID.randomUUID().toString()): List<Payload> {
+            require(kind == PayloadKind.IMAGE || kind == PayloadKind.FILE)
+            require(bytes.size in 1..Limits.MAX_FILE_BYTES) { "File is larger than ${Limits.MAX_FILE_BYTES / (1024 * 1024)} MB" }
+            val parts = (bytes.size + Limits.CHUNK_BYTES - 1) / Limits.CHUNK_BYTES
+            return List(parts) { index ->
+                val slice = bytes.copyOfRange(index * Limits.CHUNK_BYTES, minOf(bytes.size, (index + 1) * Limits.CHUNK_BYTES))
+                Payload(kind, name = name, mime = mime, data = Encoding.b64(slice), sentAt = now, group = group,
+                    part = index, parts = parts, size = bytes.size.toLong())
+            }
+        }
         fun image(name: String, mime: String, bytes: ByteArray, now: Long) =
             Payload(PayloadKind.IMAGE, name = name, mime = mime, data = Encoding.b64(bytes), sentAt = now)
         fun file(name: String, mime: String, bytes: ByteArray, now: Long) =

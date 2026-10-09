@@ -9,6 +9,10 @@ public enum Limits {
     public static let maxClockSkewMillis: Int64 = 60_000
     public static let maxNameUTF16 = 48
     public static let maxFileNameUTF16 = 120
+    public static let maxHTMLBytes = 256 * 1024
+    public static let chunkBytes = 4 * 1024 * 1024
+    public static let maxParts = 10
+    public static let maxFileBytes = chunkBytes * maxParts
     public static let imageMimes: Set<String> = ["image/png", "image/jpeg", "image/webp", "image/gif", "image/heic"]
 }
 
@@ -150,12 +154,22 @@ public struct Payload: Codable, Equatable, Sendable {
     public var receiptFor: String?
     public var status: ReceiptStatus?
     public var sentAt: Int64?
+    public var html: String?
+    public var sensitive: Bool?
+    public var group: String?
+    public var part: Int?
+    public var parts: Int?
+    public var size: Int64?
 
     public init(kind: PayloadKind, text: String? = nil, name: String? = nil, mime: String? = nil, data: String? = nil,
-                receiptFor: String? = nil, status: ReceiptStatus? = nil, sentAt: Int64? = nil) {
+                receiptFor: String? = nil, status: ReceiptStatus? = nil, sentAt: Int64? = nil, html: String? = nil,
+                sensitive: Bool? = nil, group: String? = nil, part: Int? = nil, parts: Int? = nil, size: Int64? = nil) {
         self.kind = kind; self.text = text; self.name = name; self.mime = mime; self.data = data
-        self.receiptFor = receiptFor; self.status = status; self.sentAt = sentAt
+        self.receiptFor = receiptFor; self.status = status; self.sentAt = sentAt; self.html = html
+        self.sensitive = sensitive; self.group = group; self.part = part; self.parts = parts; self.size = size
     }
+
+    public var isChunk: Bool { group != nil }
 
     public func dataBytes() throws -> Data? { try data.map { try Encoding.unb64($0, maxBytes: Limits.maxContentBytes) } }
 
@@ -169,15 +183,24 @@ public struct Payload: Codable, Equatable, Sendable {
         case .text:
             try require(text.map { (1...Limits.maxTextBytes).contains($0.utf8.count) } ?? false, "text")
             try require(name == nil && mime == nil && data == nil && receiptFor == nil && status == nil, "text fields")
+            try require(html.map { (1...Limits.maxHTMLBytes).contains($0.utf8.count) } ?? true, "html")
+            try require(group == nil && part == nil && parts == nil && size == nil, "text chunk fields")
         case .image, .file:
-            try require(text == nil && receiptFor == nil && status == nil, "file fields")
+            try require(text == nil && receiptFor == nil && status == nil && html == nil, "file fields")
+            if group != nil || part != nil || parts != nil || size != nil {
+                try require(group.map { UUID(uuidString: $0)?.uuidString.lowercased() == $0 } ?? false, "chunk group")
+                try require(parts.map { (2...Limits.maxParts).contains($0) } ?? false, "chunk count")
+                try require(part.map { (0..<(parts ?? 0)).contains($0) } ?? false, "chunk index")
+                try require(size.map { (1...Int64(Limits.maxFileBytes)).contains($0) } ?? false, "file size")
+                try require((try dataBytes()?.count ?? 0) <= Limits.chunkBytes, "chunk size")
+            }
             try require(name.map(Self.validFileName) ?? false, "file name")
             try require(mime.map { $0.count <= 127 && $0.range(of: "^[A-Za-z0-9!#$&^_.+-]+/[A-Za-z0-9!#$&^_.+-]+$", options: .regularExpression) != nil } ?? false, "MIME type")
             try require(!(try dataBytes() ?? Data()).isEmpty, "content")
             if kind == .image { try require(Limits.imageMimes.contains(mime ?? ""), "image type") }
         case .receipt:
             try require(receiptFor.map { UUID(uuidString: $0)?.uuidString.lowercased() == $0 } ?? false && status != nil, "receipt")
-            try require(text == nil && name == nil && mime == nil && data == nil, "receipt fields")
+            try require(text == nil && name == nil && mime == nil && data == nil && group == nil, "receipt fields")
         case .unlink:
             try require(text == nil && name == nil && mime == nil && data == nil && receiptFor == nil && status == nil, "unlink fields")
         }
@@ -190,7 +213,24 @@ public struct Payload: Codable, Equatable, Sendable {
         return payload
     }
 
-    public static func text(_ text: String, now: Int64) -> Payload { Payload(kind: .text, text: text, sentAt: now) }
+    public static func text(_ text: String, now: Int64, html: String? = nil, sensitive: Bool = false) -> Payload {
+        Payload(kind: .text, text: text, sentAt: now, html: html, sensitive: sensitive ? true : nil)
+    }
+
+    /// Splits large content into ordered chunk payloads sharing one group ID.
+    public static func chunks(kind: PayloadKind, name: String, mime: String, bytes: Data, now: Int64,
+                              group: String = UUID().uuidString.lowercased()) throws -> [Payload] {
+        guard kind == .image || kind == .file, (1...Limits.maxFileBytes).contains(bytes.count) else {
+            throw DeviceLinkError.invalid("File is larger than \(Limits.maxFileBytes / (1024 * 1024)) MB")
+        }
+        let parts = (bytes.count + Limits.chunkBytes - 1) / Limits.chunkBytes
+        return (0..<parts).map { index in
+            let start = bytes.startIndex + index * Limits.chunkBytes
+            let slice = bytes[start..<min(bytes.endIndex, start + Limits.chunkBytes)]
+            return Payload(kind: kind, name: name, mime: mime, data: Encoding.b64(Data(slice)), sentAt: now, group: group,
+                           part: index, parts: parts, size: Int64(bytes.count))
+        }
+    }
     public static func image(name: String, mime: String, bytes: Data, now: Int64) -> Payload {
         Payload(kind: .image, name: name, mime: mime, data: Encoding.b64(bytes), sentAt: now)
     }

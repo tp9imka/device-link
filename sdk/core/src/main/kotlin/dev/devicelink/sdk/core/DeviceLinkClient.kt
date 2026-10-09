@@ -33,7 +33,8 @@ data class LinkConfig(
 )
 
 sealed interface OutgoingContent {
-    data class Text(val text: String) : OutgoingContent
+    /** [html] is an optional rich-text alternative; [sensitive] hides previews on the receiver. */
+    data class Text(val text: String, val html: String? = null, val sensitive: Boolean = false) : OutgoingContent
     class Image(val name: String, val mime: String, val bytes: ByteArray) : OutgoingContent
     class File(val name: String, val mime: String, val bytes: ByteArray) : OutgoingContent
 }
@@ -46,13 +47,32 @@ data class IncomingItem(
     val expiresAt: Long,
     /** A newer clip from the same peer was already applied; show it, do not overwrite the clipboard. */
     val stale: Boolean,
+    /** Reassembled content of a chunked file; null for single-envelope items. */
+    private val assembled: ByteArray? = null,
 ) {
     val kind: PayloadKind get() = payload.kind
     val text: String? get() = payload.text
+    val html: String? get() = payload.html
+    val sensitive: Boolean get() = payload.sensitive == true
     val fileName: String? get() = payload.name
     val mime: String get() = payload.mime ?: "text/plain"
-    fun bytes(): ByteArray? = payload.dataBytes()
+    fun bytes(): ByteArray? = assembled ?: payload.dataBytes()
 }
+
+/** Snapshot for debug screens: where the device talks to and what happened last. Never contains content. */
+data class Diagnostics(
+    val deviceId: String,
+    val relayUrl: String,
+    val registered: Boolean,
+    val peers: Int,
+    val lastPollAt: Long? = null,
+    val lastReceiveAt: Long? = null,
+    val lastSendAt: Long? = null,
+    val lastError: String? = null,
+    val lastErrorAt: Long? = null,
+    val received: Int = 0,
+    val sent: Int = 0,
+)
 
 data class SendOutcome(val peerId: String, val itemId: String?, val error: String? = null) {
     val accepted: Boolean get() = itemId != null && error == null
@@ -101,6 +121,23 @@ class DeviceLinkClient(
     val peers: StateFlow<List<LinkedPeer>> = mutablePeers.asStateFlow()
     private val mutableStatus = MutableStateFlow(ReceiverStatus.IDLE)
     val status: StateFlow<ReceiverStatus> = mutableStatus.asStateFlow()
+
+    private val mutableDiagnostics = MutableStateFlow(Diagnostics(deviceId, store.load().relayUrl,
+        store.load().registeredRelay == store.load().relayUrl && store.load().relayUrl.isNotEmpty(), store.load().peers.size))
+    val diagnostics: StateFlow<Diagnostics> = mutableDiagnostics.asStateFlow()
+    private val chunks = ChunkAssembler()
+
+    private fun note(transform: (Diagnostics) -> Diagnostics) {
+        val state = store.load()
+        mutableDiagnostics.value = transform(mutableDiagnostics.value).copy(relayUrl = state.relayUrl, peers = state.peers.size,
+            registered = state.relayUrl.isNotEmpty() && state.registeredRelay == state.relayUrl)
+    }
+
+    private fun failure(error: Throwable) = note { it.copy(lastError = when (error) {
+        is RelayException -> "relay ${error.status} ${error.code}"
+        is IOException -> "network: ${error.javaClass.simpleName}"
+        else -> error.javaClass.simpleName
+    }, lastErrorAt = clock()) }
 
     val relayUrl: String get() = store.load().relayUrl
     val isConfigured: Boolean get() = relayUrl.isNotEmpty()
@@ -172,7 +209,7 @@ class DeviceLinkClient(
                         val bundle = invite.openJoin(requireNotNull(status.sealed))
                         if (bundle.id != status.joinerId || bundle.id == deviceId) throw PairingException("Pairing data does not match joiner")
                         relay.allow(bundle.id)
-                        val peer = LinkedPeer(bundle, clock())
+                        val peer = LinkedPeer(bundle, clock(), invite.confirmationCode(bundle.id))
                         update { state -> state.copy(peers = state.peers.filterNot { it.id == bundle.id } + peer,
                             pendingRevocations = state.pendingRevocations - bundle.id) }
                         relay.confirmPairing(invite.pairingId, invite.sealConfirm(localBundle))
@@ -218,7 +255,7 @@ class DeviceLinkClient(
                     val bundle = invite.openConfirm(requireNotNull(status.sealed))
                     if (bundle.id != invite.inviterId) throw PairingException("Inviter identity does not match the code")
                     relay.allow(bundle.id)
-                    val peer = LinkedPeer(bundle, clock())
+                    val peer = LinkedPeer(bundle, clock(), invite.confirmationCode(deviceId))
                     update { state -> state.copy(peers = state.peers.filterNot { it.id == bundle.id } + peer,
                         pendingRevocations = state.pendingRevocations - bundle.id) }
                     mutableEvents.tryEmit(LinkEvent.PeerLinked(peer))
@@ -240,6 +277,9 @@ class DeviceLinkClient(
         runCatching { flushRevocations() }
     }
 
+    /** "Remove this device everywhere": tells every peer, revokes them on the relay, forgets them locally. */
+    suspend fun unlinkAll() { store.load().peers.forEach { unlink(it.id) } }
+
     private suspend fun flushRevocations() {
         for (id in store.load().pendingRevocations) {
             registered { it.revoke(id) }
@@ -250,21 +290,29 @@ class DeviceLinkClient(
     /** Encrypts [content] separately for each target peer (all linked peers by default). */
     suspend fun send(content: OutgoingContent, peerIds: Collection<String>? = null): List<SendOutcome> {
         val now = clock()
-        val payload = when (content) {
-            is OutgoingContent.Text -> Payload.text(content.text, now)
-            is OutgoingContent.Image -> Payload.image(content.name, content.mime, content.bytes, now)
-            is OutgoingContent.File -> Payload.file(content.name, content.mime, content.bytes, now)
+        val payloads = when (content) {
+            is OutgoingContent.Text -> listOf(Payload.text(content.text, now, content.html, content.sensitive))
+            is OutgoingContent.Image -> if (content.bytes.size <= Limits.MAX_CONTENT_BYTES) listOf(Payload.image(content.name, content.mime, content.bytes, now))
+                else Payload.chunks(PayloadKind.IMAGE, content.name, content.mime, content.bytes, now)
+            is OutgoingContent.File -> if (content.bytes.size <= Limits.MAX_CONTENT_BYTES) listOf(Payload.file(content.name, content.mime, content.bytes, now))
+                else Payload.chunks(PayloadKind.FILE, content.name, content.mime, content.bytes, now)
         }
-        payload.validate()
+        payloads.forEach { it.validate() }
         val targets = store.load().peers.filter { peerIds == null || it.id in peerIds }
         return targets.map { peer ->
             try {
-                SendOutcome(peer.id, deliver(payload, peer))
+                // A chunked file is one item for receipts and UI: its group ID.
+                var id = ""
+                payloads.forEach { id = deliver(it, peer) }
+                note { it.copy(lastSendAt = clock(), sent = it.sent + 1) }
+                SendOutcome(peer.id, payloads.first().group ?: id)
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (failure: RelayException) {
+                failure(failure)
                 SendOutcome(peer.id, null, failure.code)
             } catch (failure: Exception) {
+                failure(failure)
                 SendOutcome(peer.id, null, failure.message ?: "send_failed")
             }
         }
@@ -274,13 +322,19 @@ class DeviceLinkClient(
         val sequence = update { it.copy(sequence = Math.addExact(it.sequence, 1)) }.sequence
         val envelope = crypto.seal(payload, peer.bundle, clock(), sequence, config.lifetimeMillis)
         var attempt = 0
+        val deadline = clock() + 90_000L
         while (true) {
             try {
+                // Retries resend the exact same envelope: the relay treats it as idempotent.
                 registered { it.upload(envelope) }
                 return envelope.id
             } catch (failure: IOException) {
                 if (++attempt >= 3) throw failure
                 delay(500L * attempt)
+            } catch (failure: RelayException) {
+                // A full mailbox drains as the receiver acknowledges; large chunked files rely on this.
+                if (failure.code != "mailbox_full" || clock() >= deadline) throw failure
+                delay(2_000L)
             }
         }
     }
@@ -290,8 +344,16 @@ class DeviceLinkClient(
      * and returns the receipt status reported back to the sender. Returns how many items reached [handler]
      * (receipts, unlink notices and duplicates are handled internally and not counted).
      */
-    suspend fun receiveOnce(waitSeconds: Int = config.pollWaitSeconds, handler: suspend (IncomingItem) -> ReceiptStatus): Int =
-        registered { it.poll(waitSeconds, 1) }.count { process(it, handler) }
+    suspend fun receiveOnce(waitSeconds: Int = config.pollWaitSeconds, handler: suspend (IncomingItem) -> ReceiptStatus): Int {
+        note { it.copy(lastPollAt = clock()) }
+        val envelopes = try { registered { it.poll(waitSeconds, 1) } } catch (error: Exception) {
+            if (error !is CancellationException) failure(error)
+            throw error
+        }
+        return envelopes.count { process(it, handler) }.also { count ->
+            if (count > 0) note { it.copy(lastReceiveAt = clock(), received = it.received + count) }
+        }
+    }
 
     private suspend fun process(envelope: Envelope, handler: suspend (IncomingItem) -> ReceiptStatus): Boolean {
         val relay = relay()
@@ -317,9 +379,18 @@ class DeviceLinkClient(
                 return false
             }
             PayloadKind.TEXT, PayloadKind.IMAGE, PayloadKind.FILE -> {
+                var itemId = envelope.id
+                var assembled: ByteArray? = null
+                if (payload.isChunk) {
+                    relay.acknowledge(envelope.id)
+                    assembled = chunks.add(peer.id, payload, envelope.expiresAt, clock()) ?: return false
+                    itemId = payload.group!!
+                }
                 val stale = payload.kind != PayloadKind.FILE && envelope.sequence <= (recorded.lastClip[peer.id] ?: 0)
+                val item = if (assembled == null) IncomingItem(itemId, peer, payload, envelope.expiresAt, stale)
+                    else IncomingItem(itemId, peer, payload.copy(data = null, part = null, parts = null), envelope.expiresAt, stale, assembled)
                 val status = try {
-                    handler(IncomingItem(envelope.id, peer, payload, envelope.expiresAt, stale))
+                    handler(item)
                 } catch (cancelled: CancellationException) {
                     throw cancelled
                 } catch (_: Exception) {
@@ -328,8 +399,8 @@ class DeviceLinkClient(
                 if (status == ReceiptStatus.COPIED) update { s ->
                     s.copy(lastClip = s.lastClip + (peer.id to maxOf(s.lastClip[peer.id] ?: 0, envelope.sequence)))
                 }
-                relay.acknowledge(envelope.id)
-                runCatching { deliver(Payload.receipt(envelope.id, status), peer) }
+                if (!payload.isChunk) relay.acknowledge(envelope.id)
+                runCatching { deliver(Payload.receipt(itemId, status), peer) }
                 return true
             }
         }
@@ -352,10 +423,12 @@ class DeviceLinkClient(
                 } catch (cancelled: CancellationException) {
                     throw cancelled
                 } catch (failure: RelayException) {
+                    failure(failure)
                     mutableStatus.value = if (failure.status in listOf(401, 403)) ReceiverStatus.REJECTED else ReceiverStatus.OFFLINE
                     delay(if (failure.status == 429) 60_000L else maxOf(backoff, 15_000L))
                     backoff = (backoff * 2).coerceAtMost(60_000L)
-                } catch (_: Exception) {
+                } catch (error: Exception) {
+                    failure(error)
                     mutableStatus.value = ReceiverStatus.OFFLINE
                     delay(backoff + Random.nextLong(backoff / 2 + 1))
                     backoff = (backoff * 2).coerceAtMost(60_000L)
@@ -364,5 +437,34 @@ class DeviceLinkClient(
         } finally {
             mutableStatus.value = ReceiverStatus.IDLE
         }
+    }
+}
+
+
+/**
+ * Collects the parts of chunked files per sender until complete. Bounded: at most 3 files in flight,
+ * dropped at envelope expiry, total size checked against the declared size.
+ */
+internal class ChunkAssembler {
+    private class Pending(val parts: Int, val size: Long, val expiresAt: Long) { val data = arrayOfNulls<ByteArray>(parts) }
+    private val pending = LinkedHashMap<String, Pending>()
+
+    @Synchronized
+    fun add(peerId: String, payload: Payload, expiresAt: Long, now: Long): ByteArray? {
+        pending.entries.removeAll { it.value.expiresAt <= now }
+        val key = "$peerId/${payload.group}"
+        val entry = pending.getOrPut(key) {
+            while (pending.size >= 3) pending.remove(pending.keys.first())
+            Pending(payload.parts!!, payload.size!!, expiresAt)
+        }
+        if (entry.parts != payload.parts || entry.size != payload.size) { pending.remove(key); return null }
+        entry.data[payload.part!!] = payload.dataBytes()
+        if (entry.data.any { it == null }) return null
+        pending.remove(key)
+        val total = entry.data.sumOf { it!!.size }
+        if (total.toLong() != entry.size) return null
+        val output = java.io.ByteArrayOutputStream(total)
+        entry.data.forEach { output.write(it!!) }
+        return output.toByteArray()
     }
 }

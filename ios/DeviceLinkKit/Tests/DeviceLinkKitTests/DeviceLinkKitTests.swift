@@ -89,6 +89,20 @@ final class ContractTests: XCTestCase {
     }
 }
 
+final class ChunkTests: XCTestCase {
+    func testChunkedFileReassemblesInAnyOrderAndRejectsOversize() throws {
+        let bytes = Data((0..<(Limits.maxContentBytes + 5_000_000)).map { UInt8(truncatingIfNeeded: $0 &* 31) })
+        let parts = try Payload.chunks(kind: .file, name: "big.bin", mime: "application/octet-stream", bytes: bytes, now: 1)
+        XCTAssertEqual(parts.count, 4)
+        try parts.forEach { try $0.validate() }
+        var assembler = ChunkAssembler()
+        var result: Data?
+        for part in parts.reversed() { result = assembler.add(peerId: "p", payload: part, expiresAt: 10, now: 1) ?? result }
+        XCTAssertEqual(result, bytes)
+        XCTAssertThrowsError(try Payload.chunks(kind: .file, name: "x", mime: "a/b", bytes: Data(count: Limits.maxFileBytes + 1), now: 1))
+    }
+}
+
 /// Cross-language vectors in docs/protocol/vectors: Kotlin writes kotlin.json, Swift writes swift.json,
 /// each side must open the other's output.
 final class InteropVectorTests: XCTestCase {
@@ -114,7 +128,7 @@ final class InteropVectorTests: XCTestCase {
 enum VectorFile {
     struct Party: Codable { var identityPrivate: String; var encryptionPrivate: String; var bundle: KeyBundle }
     struct Item: Codable { var now: Int64; var envelope: Envelope; var payload: Payload }
-    struct Pairing: Codable { var uri: String; var pairingId: String; var joinSealed: String; var confirmSealed: String }
+    struct Pairing: Codable { var uri: String; var pairingId: String; var joinSealed: String; var confirmSealed: String; var code: String }
     struct Request: Codable { var method: String; var path: String; var body: String; var headers: [String: String] }
     struct File: Codable {
         var producer: String
@@ -134,7 +148,10 @@ enum VectorFile {
         let crypto = EnvelopeCrypto(identity: senderIdentity, encryption: senderKeys)
         let payloads: [Payload] = [.text("Hello from \(producer) — ünïcødé 📋", now: now),
                                    .image(name: "pixel.png", mime: "image/png", bytes: Data((0..<64).map { UInt8($0) }), now: now),
-                                   .receipt("6f0d3c9e-6a45-4b8e-9b51-2f4c1b4e0a11", .copied)]
+                                   .receipt("6f0d3c9e-6a45-4b8e-9b51-2f4c1b4e0a11", .copied),
+                                   .text("Rich", now: now, html: "<b>Rich</b>", sensitive: true),
+                                   Payload(kind: .file, name: "part.bin", mime: "application/octet-stream", data: Encoding.b64(Data(repeating: 7, count: 16)),
+                                           sentAt: now, group: "0b6c2f4e-1d2a-4c3b-8e9f-0a1b2c3d4e5f", part: 1, parts: 3, size: 9_000_000)]
         let items = try payloads.enumerated().map { index, payload in
             Item(now: now, envelope: try crypto.seal(payload, to: recipient, now: now, sequence: Int64(index + 1)), payload: payload)
         }
@@ -149,7 +166,7 @@ enum VectorFile {
                              encryptionPrivate: Encoding.b64(recipientKeys.privateKey.rawRepresentation), bundle: recipient),
             items: items,
             pairing: Pairing(uri: invite.uri, pairingId: invite.pairingId, joinSealed: try invite.sealJoin(recipient),
-                             confirmSealed: try invite.sealConfirm(sender)),
+                             confirmSealed: try invite.sealConfirm(sender), code: invite.confirmationCode(joinerId: recipient.id)),
             request: Request(method: "PUT", path: "/v1/peers/\(recipient.id)", body: body,
                              headers: try relay.signatureHeaders(method: "PUT", path: "/v1/peers/\(recipient.id)", body: Data(body.utf8)))))
     }
@@ -169,6 +186,7 @@ enum VectorFile {
         XCTAssertEqual(invite.pairingId, file.pairing.pairingId)
         XCTAssertEqual(try invite.openJoin(file.pairing.joinSealed), file.recipient.bundle)
         XCTAssertEqual(try invite.openConfirm(file.pairing.confirmSealed), file.sender.bundle)
+        XCTAssertEqual(invite.confirmationCode(joinerId: file.recipient.bundle.id), file.pairing.code)
         let headers = file.request.headers
         let canonical = "DeviceLink relay request v1\n\(file.request.method)\n\(file.request.path)\n\(headers["X-Device-Time"]!)\n" +
             "\(headers["X-Device-Nonce"]!)\n\(Encoding.hex(Encoding.sha256(Data(file.request.body.utf8))))"

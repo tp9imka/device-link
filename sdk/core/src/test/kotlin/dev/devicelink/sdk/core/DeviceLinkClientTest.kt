@@ -197,4 +197,62 @@ class DeviceLinkClientTest {
         assertEquals(listOf(iphone.deviceId), restarted.peers.value.map { it.id })
         assertTrue(restarted.send(OutgoingContent.Text("after restart")).single().accepted)
     }
+
+    @Test fun `both devices derive the same confirmation code`() {
+        linked()
+        val code = android.peers.value.single().pairingCode
+        assertTrue(code!!.matches(Regex("[0-9]{6}")))
+        assertEquals(code, iphone.peers.value.single().pairingCode)
+    }
+
+    @Test fun `files above one envelope are chunked, reassembled and receipted as one item`() = runBlocking {
+        linked()
+        val file = ByteArray(Limits.MAX_CONTENT_BYTES + 3 * 1024 * 1024) { (it * 31).toByte() }
+        val sent = android.send(OutgoingContent.File("big.bin", "application/octet-stream", file)).single()
+        assertTrue(sent.accepted)
+        assertEquals(4, relay.mailbox.size)
+        val items = mutableListOf<IncomingItem>()
+        repeat(4) { iphone.receiveOnce { items += it; ReceiptStatus.DELIVERED } }
+        assertEquals(sent.itemId, items.single().id)
+        assertTrue(file.contentEquals(items.single().bytes()!!))
+        val receipt = async(start = CoroutineStart.UNDISPATCHED) { android.events.first { it is LinkEvent.Receipt } }
+        android.receiveOnce { error("no content") }
+        assertEquals(sent.itemId, (withTimeout(1_000) { receipt.await() } as LinkEvent.Receipt).itemId)
+        assertTrue(relay.mailbox.isEmpty())
+    }
+
+    @Test fun `rich text and sensitive flag reach the receiver`() = runBlocking {
+        linked()
+        android.send(OutgoingContent.Text("bold", html = "<b>bold</b>", sensitive = true))
+        val items = mutableListOf<IncomingItem>()
+        iphone.receiveOnce { items += it; ReceiptStatus.COPIED }
+        assertEquals("<b>bold</b>", items.single().html)
+        assertTrue(items.single().sensitive)
+    }
+
+    @Test fun `oversized files are refused before upload`() = runBlocking {
+        linked()
+        val failure = runCatching { android.send(OutgoingContent.File("huge", "application/zip", ByteArray(Limits.MAX_FILE_BYTES + 1))) }.exceptionOrNull()
+        assertTrue(failure is IllegalArgumentException)
+        assertTrue(relay.mailbox.isEmpty())
+    }
+
+    @Test fun `diagnostics record polls, deliveries and errors without content`() = runBlocking {
+        linked()
+        android.send(OutgoingContent.Text("secret words"))
+        iphone.receiveOnce { ReceiptStatus.COPIED }
+        val diagnostics = iphone.diagnostics.value
+        assertEquals(1, diagnostics.received)
+        assertTrue(diagnostics.lastPollAt != null && diagnostics.registered && diagnostics.peers == 1)
+        relay.devices.remove(iphone.deviceId)
+        relay.devices.clear()
+        runCatching { iphone.receiveOnce { ReceiptStatus.COPIED } }
+        assertFalse(iphone.diagnostics.value.toString().contains("secret"))
+    }
+
+    @Test fun `unlink all forgets every peer`() = runBlocking {
+        linked()
+        android.unlinkAll()
+        assertTrue(android.peers.value.isEmpty())
+    }
 }

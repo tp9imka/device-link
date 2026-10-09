@@ -3,6 +3,8 @@ import Foundation
 public struct LinkedPeer: Codable, Equatable, Sendable, Identifiable {
     public var bundle: KeyBundle
     public var linkedAt: Int64
+    /// Six-digit confirmation code shown to the user after linking.
+    public var pairingCode: String?
     public var id: String { bundle.id }
     public var name: String { bundle.name }
     public var platform: String { bundle.platform }
