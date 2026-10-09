@@ -1,4 +1,52 @@
-# DeviceLink handoff (2026-10-09)
+# DeviceLink handoff (updated 2026-10-09, Link v2)
+
+## Where we stopped
+
+Branch `claude/zen-gates-e4f4lj`, draft PR tp9imka/device-link#1. Link v2 is implemented end to end:
+QR pairing through the relay, Android + iOS + desktop clients, 5-minute encrypted sandbox, admin
+dashboard. Read `docs/adr/0005-link-v2-cross-platform.md` and `docs/protocol/link-v2.md` first.
+
+| Area | Path | State |
+| --- | --- | --- |
+| Relay + `/admin` dashboard | `server/` | 48 pytest tests green; dashboard checked in headless Chromium |
+| Kotlin core | `sdk/core` | 24 JVM tests incl. RFC vectors; live relay test |
+| Swift core + CLI | `ios/DeviceLinkKit` | 7 tests on Linux; Kotlin<->Swift vectors both ways |
+| Live interop | `scripts/interop_e2e.sh` | Passed locally (Kotlin <-> Swift CLI, both directions) |
+| Android SDK + apps | `sdk/android`, `apps/receiver`, `apps/sample` | Kotlin compiled against android.jar 37 offline; AGP lint/assemble only in CI |
+| iOS apps | `ios/` (XcodeGen) | Compiled only in CI (`ios` job); never run on a device |
+
+Decisions taken without the user (they asked for autonomy):
+- First device needs no setup: relay URL/token are built in from private config
+  (`local.properties` `devicelink.relayUrl`, `ios/Config/Private.xcconfig` `DEVICELINK_RELAY_HOST`).
+  The admin Setup QR is only a fallback.
+- Sandbox lifetime 5 min (client), cap 10 min (relay). Legacy v1 Internet Link lifetimes reduced to fit.
+- HPKE X25519/HKDF-SHA256/ChaCha20-Poly1305 (CryptoKit preset), P-256 identities (Keystore/Secure Enclave).
+- Android receiving = visible `remoteMessaging` foreground service long poll; no FCM.
+- iOS receiving = app open (+25 s grace), optional APNs content-free alert, "Get DeviceLink clip" App Intent.
+- Sending from other apps is one gesture (text selection / share sheet / tile / Back Tap shortcut);
+  SDK host apps auto-send in-app copies.
+- Android SDK and apps use framework views only (no AndroidX) so they could be compile-checked offline.
+
+## Next
+
+1. Get PR CI fully green (Android lint may flag things that were not checkable offline; iOS job compiles
+   the apps for the first time).
+2. Two-device validation on hardware (list in `docs/validation.md` → Link v2 → Pending).
+3. Run the relay behind a named Cloudflare tunnel (`docs/wiki/Hosting.md`), then build apps with that URL.
+4. Optional: iOS Notification Service Extension to decrypt previews; Android battery measurement of the
+   long poll; per-relay multi-device UX (send to one vs all).
+
+## Environment notes for agents
+
+The cloud container had no Android SDK/Google Maven and no Swift toolchain. What worked:
+`dockerd &`, `docker pull cimg/android:<tag>` and copy `platforms/android-37.0`, `build-tools/37.0.0`
+and JDK 17 out of it; Maven Central via `https://maven-central.storage-download.googleapis.com/maven2/`;
+`swift:6.2-jammy` image with swift-crypto/swift-asn1 cloned on the host and used as SwiftPM mirrors.
+
+---
+
+# Previous handoff (2026-10-09, before Link v2)
+
 
 Migrated from `https://git.oryxlabs.internal/ivan-antsimonau/device-link` to
 `https://github.com/tp9imka/device-link`. Local checkout: `~/Projects/device-link`.
