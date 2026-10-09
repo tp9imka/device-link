@@ -4,7 +4,10 @@ The relay holds only end-to-end encrypted envelopes, so the dashboard shows meta
 (sizes, timing, routing) and ciphertext fingerprints. Nobody here can read clipboard content.
 """
 import base64
+import csv
 import hashlib
+import io
+import json
 import hmac
 import secrets
 import statistics
@@ -158,7 +161,45 @@ def install_admin(app):
         data = await run_in_threadpool(_overview, store, settings, clock(), set(runtime.polling))
         data["runtime"] = {"version": __version__, "uptimeSeconds": int(time.time() - runtime.started),
                            "counters": dict(runtime.counters)}
+        data["alerts"] = alerts(data, settings, recent_rejections(runtime))
         return data
+
+    @app.get("/admin/api/export/{kind}")
+    async def export(kind: str, request: Request):
+        session(request)
+        if kind not in ("devices", "events"):
+            raise RelayError(404, "not_found")
+        fmt = request.query_params.get("format", "json")
+        if fmt not in ("json", "csv"):
+            raise RelayError(400, "invalid_format")
+        if kind == "devices":
+            rows = await run_in_threadpool(_devices, store, clock(), set(runtime.polling))
+        else:
+            rows = await run_in_threadpool(_events, store, settings.max_events)
+        await run_in_threadpool(_event, store, clock(), "admin_export")
+        name = f"devicelink-{kind}-{clock() // 1000}.{fmt}"
+        headers = {"Content-Disposition": f'attachment; filename="{name}"'}
+        if fmt == "json":
+            return Response(json.dumps(rows, indent=1), media_type="application/json", headers=headers)
+        return Response(to_csv(rows), media_type="text/csv; charset=utf-8", headers=headers)
+
+    async def metrics_text():
+        data = await run_in_threadpool(_overview, store, settings, clock(), set(runtime.polling))
+        return Response(prometheus(data, runtime, recent_rejections(runtime)), media_type="text/plain; version=0.0.4")
+
+    @app.get("/metrics")
+    async def metrics(request: Request):
+        if not settings.metrics_token:
+            raise RelayError(404, "not_found")
+        supplied = request.headers.get("authorization", "")
+        if not hmac.compare_digest(supplied.encode(), f"Bearer {settings.metrics_token}".encode()):
+            raise RelayError(401, "metrics_auth_required")
+        return await metrics_text()
+
+    @app.get("/admin/api/metrics")
+    async def admin_metrics(request: Request):
+        session(request)
+        return await metrics_text()
 
     @app.get("/admin/api/devices")
     async def devices(request: Request):
@@ -263,6 +304,83 @@ def install_admin(app):
 
 # ----- queries (worker threads) ----------------------------------------------------------------
 
+ALERT_WINDOW_SECONDS = 600
+REJECTION_ALERT = 50
+
+
+def recent_rejections(runtime):
+    cutoff = time.monotonic() - ALERT_WINDOW_SECONDS
+    return sum(1 for at in runtime.rejections if at >= cutoff)
+
+
+def alerts(overview, settings, rejections):
+    """Operator warnings derived from metadata only. Levels: warn, bad."""
+    result = []
+    sandbox = overview["sandbox"]
+    if sandbox["capacityBytes"]:
+        used = sandbox["bytes"] / sandbox["capacityBytes"]
+        if used >= 0.8:
+            result.append({"level": "bad" if used >= 0.95 else "warn", "code": "storage_near_cap",
+                           "message": f"Sandbox storage at {used:.0%} of the configured cap; new items may be refused."})
+    if overview["sandbox"]["fullMailboxes"]:
+        result.append({"level": "warn", "code": "mailbox_full",
+                       "message": f"{overview['sandbox']['fullMailboxes']} device mailbox(es) at the item limit; senders are waiting."})
+    if rejections >= REJECTION_ALERT:
+        result.append({"level": "warn", "code": "repeated_rejections",
+                       "message": f"{rejections} authentication failures or rate limits in the last 10 minutes."})
+    devices = overview["devices"]["total"]
+    if settings.max_devices and devices >= settings.max_devices * 0.9:
+        result.append({"level": "warn", "code": "devices_near_cap",
+                       "message": f"{devices} of {settings.max_devices} device registrations used."})
+    counters = overview.get("runtime", {}).get("counters", {})
+    if counters.get("push_failed", 0) >= 5 and counters.get("push_failed", 0) > counters.get("push_sent", 0):
+        result.append({"level": "warn", "code": "push_failing",
+                       "message": "Most APNs wake-ups since start failed; check the APNs key, team and topic."})
+    if overview["config"]["enrollment"] == "open":
+        result.append({"level": "warn", "code": "open_enrollment",
+                       "message": "No enrollment token is set: any device can register on this relay."})
+    return result
+
+
+def to_csv(rows):
+    buffer = io.StringIO()
+    if not rows:
+        return ""
+    writer = csv.DictWriter(buffer, fieldnames=list(rows[0].keys()))
+    writer.writeheader()
+    for row in rows:
+        writer.writerow({key: " ".join(value) if isinstance(value, list) else value for key, value in row.items()})
+    return buffer.getvalue()
+
+
+def prometheus(overview, runtime, rejections):
+    lines = []
+
+    def metric(name, kind, help_text, value):
+        lines.extend((f"# HELP devicelink_{name} {help_text}", f"# TYPE devicelink_{name} {kind}", f"devicelink_{name} {value}"))
+
+    metric("devices_registered", "gauge", "Registered device identities.", overview["devices"]["total"])
+    metric("devices_online", "gauge", "Devices currently long-polling.", overview["devices"]["online"])
+    metric("devices_active_24h", "gauge", "Devices seen in the last 24 hours.", overview["devices"]["active24h"])
+    metric("devices_blocked", "gauge", "Blocked devices.", overview["devices"]["blocked"])
+    metric("links_mutual", "gauge", "Mutually linked device pairs.", overview["links"]["mutual"])
+    metric("pairings_open", "gauge", "Open QR pairing rendezvous.", overview["links"]["openPairings"])
+    metric("sandbox_items", "gauge", "Encrypted items waiting for delivery.", overview["sandbox"]["pending"])
+    metric("sandbox_bytes", "gauge", "Bytes of encrypted items waiting.", overview["sandbox"]["bytes"])
+    metric("sandbox_capacity_bytes", "gauge", "Configured global sandbox byte cap.", overview["sandbox"]["capacityBytes"])
+    metric("sandbox_full_mailboxes", "gauge", "Mailboxes at the item limit.", overview["sandbox"]["fullMailboxes"])
+    for kind in ("sent", "delivered", "expired"):
+        metric(f"items_{kind}_24h", "gauge", f"Items {kind} in the last 24 hours.", overview["last24h"][kind])
+    if overview["last24h"]["medianLatencyMs"] is not None:
+        metric("delivery_latency_median_seconds", "gauge", "Median upload-to-acknowledge time, last 24 hours.",
+               overview["last24h"]["medianLatencyMs"] / 1000)
+    for name, value in runtime.counters.items():
+        metric(f"{name}_total", "counter", f"{name.replace('_', ' ').capitalize()} since start.", value)
+    metric("rejections_10m", "gauge", "Authentication failures and rate limits in the last 10 minutes.", rejections)
+    metric("uptime_seconds", "gauge", "Seconds since the relay started.", int(time.time() - runtime.started))
+    return "\n".join(lines) + "\n"
+
+
 def _event(store, now, kind, device=None):
     with store.transaction() as db:
         store.event(db, now, kind, device)
@@ -312,6 +430,8 @@ def _overview(store, settings, now, polling):
         one_way = db.execute("SELECT count(*) FROM peers a WHERE NOT EXISTS (SELECT 1 FROM peers b "
                              "WHERE b.recipient=a.sender AND b.sender=a.recipient)").fetchone()[0]
         open_pairings = db.execute("SELECT count(*) FROM pairings WHERE expires>?", (now,)).fetchone()[0]
+        full = db.execute("SELECT count(*) FROM (SELECT recipient FROM messages GROUP BY recipient HAVING count(*)>=?)",
+                          (settings.mailbox_count,)).fetchone()[0]
         rows = db.execute("SELECT at, kind, value FROM events WHERE at>? AND kind IN ('sent','delivered','expired')", (day,)).fetchall()
     hours = [{"hour": day + index * 3600 * 1000, "sent": 0, "delivered": 0, "expired": 0} for index in range(24)]
     latencies = []
@@ -327,7 +447,7 @@ def _overview(store, settings, now, polling):
         "now": now,
         "devices": {"total": total, "online": len(polling & known), "active24h": active, "blocked": blocked},
         "links": {"mutual": mutual, "oneWay": one_way, "openPairings": open_pairings},
-        "sandbox": {"pending": pending, "bytes": pending_bytes, "nextExpiry": next_expiry,
+        "sandbox": {"pending": pending, "bytes": pending_bytes, "nextExpiry": next_expiry, "fullMailboxes": full,
                     "capacityBytes": settings.global_bytes, "maxLifetimeSeconds": settings.max_ttl_ms // 1000},
         "last24h": dict(totals, medianLatencyMs=int(statistics.median(latencies)) if latencies else None,
                         p95LatencyMs=latencies[int(len(latencies) * 0.95) - 1] if len(latencies) >= 20 else None,

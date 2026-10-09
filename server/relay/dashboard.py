@@ -33,6 +33,8 @@ dialog{border:1px solid var(--line);border-radius:14px;background:var(--panel);c
 dialog pre{white-space:pre-wrap;word-break:break-all;background:var(--panel2);padding:10px;border-radius:8px}
 .qr svg{width:220px;height:220px;background:#fff;border-radius:10px;padding:6px}
 .notice{background:var(--chip);border-radius:10px;padding:10px 12px;margin:10px 0}
+.alert{border-left:4px solid var(--warn)}.alert.bad{border-left-color:var(--bad)}
+a.small{display:inline-block;border:1px solid var(--line);background:var(--panel2);color:var(--text);border-radius:8px;padding:4px 9px;font-size:12px;margin:2px;text-decoration:none}
 @media (max-width:640px){main{padding:12px}header{padding:12px}}
 """
 
@@ -86,6 +88,7 @@ const views = {
     devices = Object.fromEntries(d.map(x => [x.id, x]));
     const used = o.sandbox.capacityBytes ? o.sandbox.bytes / o.sandbox.capacityBytes : 0;
     root.replaceChildren(
+      ...(o.alerts || []).map(a => el('div', { class: 'notice alert' + (a.level === 'bad' ? ' bad' : ''), role: 'status' }, a.message)),
       el('div', { class: 'grid' },
         stat('Devices online', o.devices.online, `${o.devices.total} registered · ${o.devices.active24h} active 24h`),
         stat('Linked pairs', o.links.mutual, `${o.links.oneWay} one-way · ${o.links.openPairings} open QR codes`),
@@ -103,7 +106,11 @@ const views = {
         el('div', { class: 'card' }, el('div', { class: 'muted' }, 'Since start'),
           `${o.runtime.counters.requests} requests · ${o.runtime.counters.auth_failures} auth failures · ${o.runtime.counters.rate_limited} rate limited · push ${o.runtime.counters.push_sent} sent / ${o.runtime.counters.push_failed} failed`),
         el('div', { class: 'card' }, el('div', { class: 'muted' }, 'Policy'),
-          `Enrollment: ${o.config.enrollment} · Push: ${o.config.push ? 'APNs on' : 'off'} · ${o.config.mailboxCount} items / ${bytes(o.config.mailboxBytes)} per mailbox`)));
+          `Enrollment: ${o.config.enrollment} · Push: ${o.config.push ? 'APNs on' : 'off'} · ${o.config.mailboxCount} items / ${bytes(o.config.mailboxBytes)} per mailbox`),
+        el('div', { class: 'card' }, el('div', { class: 'muted' }, 'Export (metadata only)'),
+          ...[['devices', 'csv'], ['devices', 'json'], ['events', 'csv'], ['events', 'json']].map(([k, f]) =>
+            el('a', { class: 'small', href: `/admin/api/export/${k}?format=${f}`, download: '' }, `${k} .${f}`)),
+          el('a', { class: 'small', href: '/admin/api/metrics', target: '_blank', rel: 'noopener' }, 'metrics'))));
   },
 
   async devices(root) {

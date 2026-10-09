@@ -288,3 +288,62 @@ def test_recipient_can_fetch_one_waiting_item_for_previews(relay):
     assert request(client, recipient, now[0], "GET", "/v1/messages").json() == [item]
     request(client, recipient, now[0], "DELETE", f"/v1/messages/{item['id']}")
     assert request(client, recipient, now[0], "GET", f"/v1/messages/{item['id']}").status_code == 404
+
+
+def test_admin_alerts_export_and_metrics_hold_no_content(tmp_path):
+    now = [NOW]
+    settings = Settings(database=tmp_path / "relay.sqlite3", admin_password_hash=hash_password("correct horse", iterations=1000),
+                        mailbox_count=1, metrics_token="scrape-secret")
+    with TestClient(create_app(settings, lambda: now[0])) as client:
+        sender, recipient = Device(), Device()
+        register(client, sender, now[0])
+        register(client, recipient, now[0])
+        request(client, recipient, now[0], "PUT", f"/v1/peers/{sender.id}", {})
+        assert request(client, sender, now[0], "POST", "/v1/messages", envelope(sender, recipient, now[0])).status_code == 201
+
+        assert client.get("/metrics").status_code == 401
+        assert client.get("/metrics", headers={"Authorization": "Bearer wrong"}).status_code == 401
+        scraped = client.get("/metrics", headers={"Authorization": "Bearer scrape-secret"})
+        assert scraped.status_code == 200 and "devicelink_sandbox_items 1" in scraped.text
+        assert "devicelink_sandbox_full_mailboxes 1" in scraped.text
+        assert client.get("/admin/api/export/devices").status_code == 401
+
+        login(client)
+        codes = {alert["code"] for alert in client.get("/admin/api/overview").json()["alerts"]}
+        assert {"mailbox_full", "open_enrollment"} <= codes
+        exported = client.get("/admin/api/export/devices?format=csv")
+        assert exported.status_code == 200 and "attachment" in exported.headers["content-disposition"]
+        assert sender.id in exported.text and recipient.id in exported.text
+        events = client.get("/admin/api/export/events?format=json").json()
+        assert any(event["kind"] == "sent" for event in events)
+        assert client.get("/admin/api/export/messages").status_code == 404
+        assert client.get("/admin/api/export/devices?format=xml").status_code == 400
+        assert "devicelink_devices_registered 2" in client.get("/admin/api/metrics").text
+        for body in (scraped.text, exported.text, str(events)):
+            assert "ciphertext" not in body.lower()
+
+
+def test_metrics_disabled_without_token(relay):
+    _, _, client = relay
+    assert client.get("/metrics").status_code == 404
+
+
+def test_backup_is_consistent_and_prunes(tmp_path, monkeypatch):
+    from relay import backup
+    database = tmp_path / "relay.sqlite3"
+    with TestClient(create_app(Settings(database=database), lambda: NOW)) as client:
+        device = Device()
+        register(client, device, NOW)
+        monkeypatch.setenv("RELAY_DATABASE", str(database))
+        target = tmp_path / "backups"
+        target.mkdir()
+        for index in range(3):
+            stale = target / f"relay-2000010{index}-000000.sqlite3"
+            stale.write_bytes(b"")
+        backup.main([str(target), "--keep", "2"])
+    copies = sorted(target.glob("relay-*.sqlite3"))
+    assert len(copies) == 2 and copies[-1].stat().st_size > 0
+    import sqlite3
+    with sqlite3.connect(copies[-1]) as db:
+        assert db.execute("SELECT id FROM devices").fetchone()[0] == device.id
+    assert oct(copies[-1].stat().st_mode & 0o777) == "0o600"

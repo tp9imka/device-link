@@ -1,4 +1,5 @@
 import asyncio
+import collections
 import hmac
 import json
 import re
@@ -100,6 +101,8 @@ class Runtime:
         self.started = time.time()
         self.polling = set()
         self.counters = {"auth_failures": 0, "rate_limited": 0, "requests": 0, "push_sent": 0, "push_failed": 0}
+        # Monotonic times of recent rejections, for dashboard alerts (bounded).
+        self.rejections = collections.deque(maxlen=1000)
 
 
 def create_app(settings=None, clock=None, push_transport=None):
@@ -151,8 +154,10 @@ def create_app(settings=None, clock=None, push_transport=None):
     async def relay_error(_request, exc):
         if exc.status == 401:
             runtime.counters["auth_failures"] += 1
+            runtime.rejections.append(time.monotonic())
         if exc.status == 429:
             runtime.counters["rate_limited"] += 1
+            runtime.rejections.append(time.monotonic())
         return JSONResponse({"error": exc.code}, status_code=exc.status,
                             headers={"Retry-After": "60"} if exc.status == 429 else None)
 

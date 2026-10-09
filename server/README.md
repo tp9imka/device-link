@@ -41,6 +41,7 @@ Configuration comes from an optional TOML file named by `RELAY_CONFIG` (see `con
 | `max_poll_wait` | `50` | Longest mailbox long poll in seconds; keep below proxy idle timeouts |
 | `admin_username`, `admin_password_hash` / `admin_password` | `admin`, unset | Dashboard credentials; dashboard disabled until a password is set. Hash with `python -m relay.passwd`. |
 | `session_secret` | random per start | HMAC key for admin sessions; set it to keep sessions across restarts |
+| `metrics_token` | unset | Bearer token for Prometheus `GET /metrics`; unset disables it (signed-in admins use `/admin/api/metrics`) |
 | `apns_key_path`, `apns_key_id`, `apns_team_id` | unset | Optional APNs token auth for content-free iPhone wake-ups |
 | `android_app_links`, `apple_app_ids` | unset | Optional `/.well-known` app-link verification files |
 | `mailbox_bytes`, `global_bytes`, `mailbox_count`, `max_peers`, `max_devices` | 64 MiB, 256 MiB, 20, 100, 10,000 | Quotas |
@@ -62,7 +63,7 @@ The container binds loopback unless `RELAY_BIND` is explicitly changed. The comm
 
 Run **one worker / one replica per database**. SQLite transactions protect consistency, while in-process condition notifications implement prompt long polling. Multiple workers would retain data correctly but cannot reliably wake another worker's poll. The normal runner bounds simultaneous connections to 32; this is a small deployment, not a horizontally scaled messaging service.
 
-SQLite uses WAL and synchronous FULL. Use SQLite's backup API for live backups, or stop the server before copying the database and its sidecars; do not copy only the main file while running. Restrict permissions, encrypt the host volume/backups if metadata sensitivity requires it, and monitor disk availability. The byte quotas limit live envelope data, not the database/WAL filesystem high-water mark or backups. Leave disk headroom for WAL/checkpoints, indices, replay records and temporary HTTP buffers. Deleted pages are reused by SQLite; deleting a row is not forensic erasure.
+SQLite uses WAL and synchronous FULL. Use `python -m relay.backup DEST [--keep N]` (SQLite's online backup API, verified, pruned; see `deploy/README.md`) for live backups, or stop the server before copying the database and its sidecars; do not copy only the main file while running. Restrict permissions, encrypt the host volume/backups if metadata sensitivity requires it, and monitor disk availability. The byte quotas limit live envelope data, not the database/WAL filesystem high-water mark or backups. Leave disk headroom for WAL/checkpoints, indices, replay records and temporary HTTP buffers. Deleted pages are reused by SQLite; deleting a row is not forensic erasure.
 
 ## Signed HTTP contract
 

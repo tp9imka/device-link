@@ -51,8 +51,13 @@ Open `https://<your relay>/admin` and sign in with the configured username/passw
 - **Activity:** open pairing codes and a metadata-only event log (registrations, links, uploads,
   deliveries with latency, expiries, admin actions). Retained 7 days.
 - **Setup:** enrollment QR for builds without a built-in relay.
+- **Alerts** (top of Overview): storage near cap, full mailboxes, repeated auth failures/rate limits,
+  failing push, device cap, open enrollment. **Export:** devices and events as CSV/JSON (metadata only).
+- **Metrics:** `/admin/api/metrics` when signed in, or `/metrics` for Prometheus with
+  `metrics_token` set (`Authorization: Bearer …`).
 
 ## 4. Later: a real server
 
-Use `deploy/devicelink-relay.service` + `deploy/nginx.conf` (or the Docker image) behind your own
-TLS. Point the same hostname at it to keep existing links working. One process per database.
+Follow [server/deploy/README.md](../../server/deploy/README.md): systemd service, nginx + TLS, daily
+backups (`python -m relay.backup`), monitoring and updates. Point the same hostname at it to keep
+existing links working. One process per database.
