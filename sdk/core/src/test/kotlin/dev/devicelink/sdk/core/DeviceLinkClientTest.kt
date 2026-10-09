@@ -101,6 +101,17 @@ class DeviceLinkClientTest {
         assertTrue(relay.allow.containsAll(listOf(android.deviceId to iphone.deviceId, iphone.deviceId to android.deviceId)))
     }
 
+    @Test fun `first device with a built-in relay shows a code without any setup`() = runBlocking {
+        val first = DeviceLinkClient(SoftwareIdentity(), EncryptionKeyPair.generate(), MemoryLinkStore(),
+            LinkConfig("Pixel", "android", defaultRelayUrl = "https://relay.example/"), relay) { now }
+        assertEquals("https://relay.example", first.relayUrl)
+        val session = first.invite()
+        val inviter = async { session.awaitPeer() }
+        iphone.join(session.uri)
+        assertEquals(iphone.deviceId, inviter.await().id)
+        assertTrue(first.deviceId in relay.devices)
+    }
+
     @Test fun `a pairing code links exactly one joiner`() = runBlocking {
         android.configure("https://relay.example")
         val session = android.invite()

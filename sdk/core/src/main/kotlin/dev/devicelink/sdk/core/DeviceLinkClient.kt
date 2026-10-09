@@ -24,6 +24,12 @@ data class LinkConfig(
     val allowInsecureRelay: Boolean = false,
     val lifetimeMillis: Long = Limits.DEFAULT_LIFETIME_MILLIS,
     val pollWaitSeconds: Int = 25,
+    /**
+     * Relay built into the app (private build configuration). The first device then needs no setup:
+     * it creates its identity, registers on first use and can show a pairing QR immediately.
+     */
+    val defaultRelayUrl: String = "",
+    val defaultEnrollmentToken: String = "",
 )
 
 sealed interface OutgoingContent {
@@ -83,6 +89,14 @@ class DeviceLinkClient(
     private val lock = Mutex()
     private val mutableEvents = MutableSharedFlow<LinkEvent>(extraBufferCapacity = 64)
     val events: SharedFlow<LinkEvent> = mutableEvents.asSharedFlow()
+    init {
+        val state = store.load()
+        if (state.relayUrl.isEmpty() && config.defaultRelayUrl.isNotEmpty()) {
+            store.save(state.copy(relayUrl = RelayUrl.normalize(config.defaultRelayUrl, config.allowInsecureRelay),
+                enrollmentToken = config.defaultEnrollmentToken))
+        }
+    }
+
     private val mutablePeers = MutableStateFlow(store.load().peers)
     val peers: StateFlow<List<LinkedPeer>> = mutablePeers.asStateFlow()
     private val mutableStatus = MutableStateFlow(ReceiverStatus.IDLE)
@@ -273,27 +287,26 @@ class DeviceLinkClient(
 
     /**
      * Fetches and processes at most one envelope. [handler] applies the item (clipboard, notification)
-     * and returns the receipt status reported back to the sender.
+     * and returns the receipt status reported back to the sender. Returns how many items reached [handler]
+     * (receipts, unlink notices and duplicates are handled internally and not counted).
      */
-    suspend fun receiveOnce(waitSeconds: Int = config.pollWaitSeconds, handler: suspend (IncomingItem) -> ReceiptStatus): Int {
-        val envelopes = registered { it.poll(waitSeconds, 1) }
-        envelopes.forEach { process(it, handler) }
-        return envelopes.size
-    }
+    suspend fun receiveOnce(waitSeconds: Int = config.pollWaitSeconds, handler: suspend (IncomingItem) -> ReceiptStatus): Int =
+        registered { it.poll(waitSeconds, 1) }.count { process(it, handler) }
 
-    private suspend fun process(envelope: Envelope, handler: suspend (IncomingItem) -> ReceiptStatus) {
+    private suspend fun process(envelope: Envelope, handler: suspend (IncomingItem) -> ReceiptStatus): Boolean {
         val relay = relay()
         val state = store.load()
         val peer = state.peers.firstOrNull { it.id == envelope.senderId }
-        if (envelope.id in state.seen || peer == null) { relay.acknowledge(envelope.id); return }
+        if (envelope.id in state.seen || peer == null) { relay.acknowledge(envelope.id); return false }
         val payload = try { crypto.open(envelope, peer.bundle, clock()) } catch (_: Exception) { null }
-        if (payload == null) { relay.acknowledge(envelope.id); return }
+        if (payload == null) { relay.acknowledge(envelope.id); return false }
         // Record before applying: a crash must never re-apply an old clip on restart.
         val recorded = update { it.copy(seen = it.seen + (envelope.id to envelope.expiresAt)) }
         when (payload.kind) {
             PayloadKind.RECEIPT -> {
                 relay.acknowledge(envelope.id)
                 mutableEvents.tryEmit(LinkEvent.Receipt(payload.receiptFor!!, peer.id, payload.status!!))
+                return false
             }
             PayloadKind.UNLINK -> {
                 relay.acknowledge(envelope.id)
@@ -301,6 +314,7 @@ class DeviceLinkClient(
                     lastClip = s.lastClip - peer.id) }
                 mutableEvents.tryEmit(LinkEvent.PeerUnlinked(peer.id, byRemote = true))
                 runCatching { flushRevocations() }
+                return false
             }
             PayloadKind.TEXT, PayloadKind.IMAGE, PayloadKind.FILE -> {
                 val stale = payload.kind != PayloadKind.FILE && envelope.sequence <= (recorded.lastClip[peer.id] ?: 0)
@@ -316,6 +330,7 @@ class DeviceLinkClient(
                 }
                 relay.acknowledge(envelope.id)
                 runCatching { deliver(Payload.receipt(envelope.id, status), peer) }
+                return true
             }
         }
     }
