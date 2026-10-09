@@ -35,7 +35,8 @@ struct GetLatestClipIntent: AppIntent {
             return .result(value: latest.text ?? "", dialog: "Nothing new. Copied the last clip again.")
         }
         if box.count == 0 { return .result(value: "", dialog: "Nothing waiting.") }
-        return .result(value: box.text ?? "", dialog: "Copied \(box.count) item\(box.count == 1 ? "" : "s"). Ready to paste.")
+        let items = box.count == 1 ? "1 item" : "\(box.count) items"
+        return .result(value: box.text ?? "", dialog: "Copied \(items). Ready to paste.")
     }
 }
 
@@ -55,7 +56,8 @@ struct SendTextIntent: AppIntent {
         let peers = await client.peers
         if outcomes.isEmpty { return .result(dialog: "No linked device yet.") }
         let names = peers.filter { peer in outcomes.contains { $0.peerId == peer.id && $0.accepted } }.map(\.name)
-        return .result(dialog: names.isEmpty ? "Could not send." : "Sent to \(names.joined(separator: ", ")).")
+        if names.isEmpty { return .result(dialog: "Could not send.") }
+        return .result(dialog: "Sent to \(names.joined(separator: ", ")).")
     }
 }
 
