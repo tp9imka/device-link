@@ -68,8 +68,9 @@ jobs:
       - run: cd ios && xcodegen
       - run: |
           cd ios
-          for scheme in DeviceLink DeviceLinkSample; do
-            if ! xcodebuild -project DeviceLink.xcodeproj -scheme "$scheme" -destination 'generic/platform=iOS Simulator' \
+          for target in "DeviceLink|generic/platform=iOS Simulator" "DeviceLinkSample|generic/platform=iOS Simulator" "DeviceLinkMac|generic/platform=macOS"; do
+            scheme="${target%%|*}"
+            if ! xcodebuild -project DeviceLink.xcodeproj -scheme "$scheme" -destination "${target#*|}" \
                 CODE_SIGNING_ALLOWED=NO build > "build-$scheme.log" 2>&1; then
               grep -E "error:|warning: .*(isolated|Sendable)" "build-$scheme.log" | sort -u | head -80
               tail -20 "build-$scheme.log"

@@ -78,6 +78,36 @@ func writeClipboard(_ text: String) {
     }
 }
 
+/// Reads the desktop clipboard as text (pbpaste / wl-paste / xclip). Desktops allow this at any time.
+func readClipboard() -> String? {
+    #if os(macOS)
+    let candidates = [["/usr/bin/pbpaste"]]
+    #else
+    let candidates = [["/usr/bin/wl-paste", "--no-newline"], ["/usr/bin/xclip", "-selection", "clipboard", "-o"]]
+    #endif
+    for command in candidates where FileManager.default.isExecutableFile(atPath: command[0]) {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: command[0])
+        process.arguments = Array(command.dropFirst())
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+        guard (try? process.run()) != nil else { continue }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        return process.terminationStatus == 0 ? String(data: data, encoding: .utf8) : nil
+    }
+    return nil
+}
+
+/// Last text this process put on or saw on the clipboard; shared by both sync directions.
+final class ClipboardMemory: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: String?
+    func get() -> String? { lock.lock(); defer { lock.unlock() }; return value }
+    func set(_ text: String?) { lock.lock(); value = text; lock.unlock() }
+}
+
 func emit(_ object: [String: Any]) {
     let data = try! JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
     print(String(data: data, encoding: .utf8)!)
@@ -102,6 +132,7 @@ usage: devicelink [--state DIR] [--insecure] [--name NAME] <command>
   send <text> | send-file <path>           send to all linked devices
   receive [--count N] [--timeout S]        print received items as JSON lines
   watch [--copy]                           receive until interrupted; --copy writes text to the clipboard
+  sync                                     two-way clipboard: received text is copied, local copies are sent
   peers | unlink <device-id> | id
 """
 
@@ -146,6 +177,32 @@ do {
         for outcome in try await client.send(content) {
             emit(["event": "sent", "peer": outcome.peerId, "item": outcome.itemId ?? NSNull(), "error": outcome.error ?? NSNull()])
         }
+    case "sync":
+        // Desktops may read the clipboard, so this side is fully automatic in both directions.
+        let memory = ClipboardMemory()
+        memory.set(readClipboard())
+        emit(["event": "sync", "peers": await client.peers.count])
+        let receiver = Task {
+            await client.runReceiver { item in
+                if let text = item.text, !item.stale {
+                    memory.set(text)
+                    writeClipboard(text)
+                    emit(["event": "received", "from": item.peer.name, "kind": item.kind.rawValue])
+                    return .copied
+                }
+                emit(["event": "received", "from": item.peer.name, "kind": item.kind.rawValue, "name": item.fileName ?? ""])
+                return .delivered
+            }
+        }
+        while !Task.isCancelled {
+            try await Task.sleep(nanoseconds: 700_000_000)
+            guard let text = readClipboard(), !text.isEmpty, text != memory.get(),
+                  text.utf8.count <= Limits.maxTextBytes else { continue }
+            memory.set(text)
+            let outcomes = try await client.send(.text(text))
+            emit(["event": "sent", "accepted": outcomes.filter(\.accepted).count, "peers": outcomes.count])
+        }
+        receiver.cancel()
     case "receive", "watch":
         let limit = command == "watch" ? Int.max : options.count
         let copy = options.copy
