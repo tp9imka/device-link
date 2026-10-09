@@ -27,7 +27,14 @@ Executed in a Linux container (no phones, no emulator):
   all passed. CI found two issues the container could not: an App Intents dialog type error and an
   Android lint Orientation error; both fixed.
 
-Pending on real devices (not claimed):
+Follow-up the same day (container + CI, no phones): relay suite 52 tests (adds alerts/export/metrics
+and backup); Kotlin engine tests for chunked 40 MB files, html/sensitive fields, confirmation code and
+diagnostics; Swift tests with regenerated cross-language vectors; CI built the notification service
+extension, the Android keyboard and the macOS menu bar app. None of these new features has been run on
+a device yet.
+
+Pending on real devices (not claimed). The full scripted checklist is
+[validation-kit.md](validation-kit.md); handoff specs are in `todo/`:
 
 - Android receiver: background clipboard writes from the foreground service on Android 10–16 and
   OEM skins, Doze/idle delivery latency, battery cost of the 25 s long poll, notification Share/Open/Copy,

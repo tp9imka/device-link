@@ -8,12 +8,18 @@ dashboard. Read `docs/adr/0005-link-v2-cross-platform.md` and `docs/protocol/lin
 
 | Area | Path | State |
 | --- | --- | --- |
-| Relay + `/admin` dashboard | `server/` | 48 pytest tests green; dashboard checked in headless Chromium |
-| Kotlin core | `sdk/core` | 24 JVM tests incl. RFC vectors; live relay test |
-| Swift core + CLI | `ios/DeviceLinkKit` | 7 tests on Linux; Kotlin<->Swift vectors both ways |
-| Live interop | `scripts/interop_e2e.sh` | Passed locally (Kotlin <-> Swift CLI, both directions) |
-| Android SDK + apps | `sdk/android`, `apps/receiver`, `apps/sample` | Kotlin compiled against android.jar 37 offline; AGP lint/assemble only in CI |
-| iOS apps | `ios/` (XcodeGen) | Compiled only in CI (`ios` job); never run on a device |
+| Relay + `/admin` dashboard | `server/` | 52 pytest tests green; alerts, CSV/JSON export, `/metrics`, `python -m relay.backup`, VM recipe in `server/deploy/README.md` |
+| Kotlin core | `sdk/core` | JVM tests incl. RFC vectors, chunking (40 MB files), html/sensitive, confirmation code, diagnostics |
+| Swift core + CLI | `ios/DeviceLinkKit` | Tests on Linux; Kotlin<->Swift vectors both ways; `devicelink sync` two-way desktop clipboard |
+| Live interop | `scripts/interop_e2e.sh` | Passes locally and in CI (Kotlin <-> Swift CLI, both directions) |
+| Android SDK + apps | `sdk/android`, `apps/receiver`, `apps/sample` | CI green (lint, assemble). Diagnostics, send targets, reset, optional DeviceLink keyboard |
+| iOS apps | `ios/` (XcodeGen) | CI builds app, share + notification extensions, sample, macOS menu bar app; never run on a device |
+
+**Hardware/account work is specified for agents in `todo/README.md` (specs 01–07).** The device
+checklist is `docs/validation-kit.md`; battery script `scripts/android_battery.sh`.
+
+Linking is one-time: the 6-digit code is display-only, shown once after a QR scan; linked devices
+never ask for a code again (links persist across restarts and updates until unlinked or reset).
 
 Decisions taken without the user (they asked for autonomy):
 - First device needs no setup: relay URL/token are built in from private config
@@ -29,11 +35,9 @@ Decisions taken without the user (they asked for autonomy):
 
 ## Next
 
-1. CI is green on the PR (Android check/lint, relay, Swift, live interop, iOS xcodebuild).
-2. Two-device validation on hardware (list in `docs/validation.md` → Link v2 → Pending).
-3. Run the relay behind a named Cloudflare tunnel (`docs/wiki/Hosting.md`), then build apps with that URL.
-4. Optional: iOS Notification Service Extension to decrypt previews; Android battery measurement of the
-   long poll; per-relay multi-device UX (send to one vs all).
+1. `todo/01` relay behind a named tunnel + private builds (owner's machine).
+2. `todo/02` device validation run with `docs/validation-kit.md`; `todo/03` battery; `todo/04` APNs/iOS.
+3. `todo/05` fixes from findings; `todo/06` signed releases; `todo/07` independent security review.
 
 ## Environment notes for agents
 

@@ -11,14 +11,15 @@ scan through your own relay. Content is end-to-end encrypted, waits at most 5 mi
 
 | Part | Path | Status |
 | --- | --- | --- |
-| Relay + admin dashboard | [`server/`](server/README.md) | 48 contract tests; dashboard at `/admin` |
+| Relay + admin dashboard | [`server/`](server/README.md) | 52 contract tests; `/admin` with alerts and export, `/metrics`, backups, [VM recipe](server/deploy/README.md) |
 | Protocol v2 | [`docs/protocol/link-v2.md`](docs/protocol/link-v2.md) | Kotlin and Swift exchange checked-in vectors |
 | Kotlin SDK core (JVM/Android) | `sdk/core` | Unit tests incl. RFC 9180/5869 vectors, live-relay test |
 | Android SDK | `sdk/android` | Keystore identity, foreground receiver, clipboard, share prompts, pairing UI |
-| Android receiver app | `apps/receiver` | Thin clip list, Quick Settings tile, share-sheet and text-selection send |
+| Android receiver app | `apps/receiver` | Thin clip list, Quick Settings tile, share-sheet and text-selection send, optional DeviceLink keyboard that sends every copy, diagnostics |
 | Android SDK sample | `apps/sample` | Auto-sends every in-app copy; synthetic samples and test scenarios |
-| Swift SDK + CLI | [`ios/DeviceLinkKit`](ios/README.md) | Builds/tests on Linux and macOS; `devicelink` desktop client |
-| iOS app, share extension, Shortcuts, sample | [`ios/`](ios/README.md) | Compiled in CI (`xcodebuild`); needs on-device validation |
+| Swift SDK + CLI | [`ios/DeviceLinkKit`](ios/README.md) | Builds/tests on Linux and macOS; `devicelink` CLI with two-way clipboard `sync` |
+| iOS app, share extension, notification previews, Shortcuts, sample | [`ios/`](ios/README.md) | Compiled in CI (`xcodebuild`); needs on-device validation |
+| macOS menu bar app | [`ios/Mac`](ios/README.md) | Mirrors the Mac clipboard both ways; compiled in CI |
 
 ### Quick start
 
@@ -40,7 +41,8 @@ Honest limits: neither Android nor iOS lets an ordinary app read the clipboard i
 sending from *other* apps is one explicit gesture (share sheet, text selection, tile, Back Tap
 shortcut). Receiving into the clipboard is automatic on Android and while the iOS app runs; a closed
 iPhone app relies on a push alert or the Shortcuts action within the 5-minute window. Automated tests
-and CI builds are not two-device evidence; see [validation](docs/validation.md).
+and CI builds are not two-device evidence; see [validation](docs/validation.md), the device
+[validation kit](docs/validation-kit.md) and the [handoff specs](todo/README.md) for hardware work.
 Design record: [ADR 0005](docs/adr/0005-link-v2-cross-platform.md).
 
 ## Nearby Android app (Wi-Fi Direct)
