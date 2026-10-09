@@ -90,18 +90,31 @@ class PairingInvite private constructor(
 /** Admin-issued setup link: relay URL plus optional enrollment token, for the first device. */
 data class SetupLink(val relayUrl: String, val enrollmentToken: String) {
     val uri: String get() = "$relayUrl/setup#v2." + Encoding.b64url(enrollmentToken.toByteArray(Charsets.UTF_8))
+    val appUri: String get() = "devicelink://setup?relay=${URLEncoder.encode(relayUrl, "UTF-8")}#v2." +
+        Encoding.b64url(enrollmentToken.toByteArray(Charsets.UTF_8))
 
     companion object {
         fun parse(text: String, allowInsecure: Boolean = false): SetupLink? = try {
             val uri = URI(text.trim())
-            require(uri.scheme in setOf("https", "http") && uri.rawPath == "/setup" && uri.rawQuery == null)
+            val relay = when (uri.scheme) {
+                "devicelink" -> {
+                    require(uri.host == "setup")
+                    URLDecoder.decode(requireNotNull(uri.rawQuery).split('&').map { it.split('=', limit = 2) }
+                        .single { it[0] == "relay" }[1], "UTF-8")
+                }
+                "https", "http" -> {
+                    require(uri.rawPath == "/setup" && uri.rawQuery == null)
+                    URI(uri.scheme, null, uri.host, uri.port, null, null, null).toString()
+                }
+                else -> error("Unsupported setup link")
+            }
             val fragment = requireNotNull(uri.rawFragment)
             require(fragment.startsWith("v2."))
             val encoded = fragment.removePrefix("v2.")
             require(encoded.matches(Regex("[A-Za-z0-9_-]*")) && encoded.length <= 700)
             val token = java.util.Base64.getUrlDecoder().decode(encoded).toString(Charsets.UTF_8)
             require(token.none { it.isISOControl() })
-            SetupLink(RelayUrl.normalize(URI(uri.scheme, null, uri.host, uri.port, null, null, null).toString(), allowInsecure), token)
+            SetupLink(RelayUrl.normalize(relay, allowInsecure), token)
         } catch (_: Exception) {
             null
         }

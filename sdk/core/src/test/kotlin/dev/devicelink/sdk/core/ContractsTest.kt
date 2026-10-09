@@ -100,6 +100,7 @@ class ContractsTest {
     @Test fun `setup link carries relay and enrollment token`() {
         val link = SetupLink("https://relay.example", "s3cret token")
         assertEquals(link, SetupLink.parse(link.uri))
+        assertEquals(link, SetupLink.parse(link.appUri))
         assertNull(SetupLink.parse("https://relay.example/setup"))
     }
 
