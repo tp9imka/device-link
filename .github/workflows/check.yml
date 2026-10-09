@@ -10,6 +10,9 @@ jobs:
           distribution: temurin
           java-version: '17'
       - uses: android-actions/setup-android@v3
+        with:
+          # The action's default also requests the removed 'tools' package, which fails sdkmanager.
+          packages: platform-tools
       - uses: gradle/actions/setup-gradle@v4
       - run: ./gradlew check --no-daemon
   relay:
@@ -49,6 +52,9 @@ jobs:
           distribution: temurin
           java-version: '17'
       - uses: android-actions/setup-android@v3
+        with:
+          # The action's default also requests the removed 'tools' package, which fails sdkmanager.
+          packages: platform-tools
       - uses: gradle/actions/setup-gradle@v4
       - run: python -m pip install -r server/requirements.txt
       - run: swift --version && swift build --package-path ios/DeviceLinkKit
@@ -63,7 +69,10 @@ jobs:
       - run: |
           cd ios
           for scheme in DeviceLink DeviceLinkSample; do
-            xcodebuild -project DeviceLink.xcodeproj -scheme "$scheme" -destination 'generic/platform=iOS Simulator' \
-              CODE_SIGNING_ALLOWED=NO build | tail -40
-            test "${PIPESTATUS[0]}" -eq 0
+            if ! xcodebuild -project DeviceLink.xcodeproj -scheme "$scheme" -destination 'generic/platform=iOS Simulator' \
+                CODE_SIGNING_ALLOWED=NO build > "build-$scheme.log" 2>&1; then
+              grep -E "error:|warning: .*(isolated|Sendable)" "build-$scheme.log" | sort -u | head -80
+              tail -20 "build-$scheme.log"
+              exit 1
+            fi
           done
