@@ -1,0 +1,9 @@
+// Shared settings. Private values (team, bundle prefix, relay) live in Private.xcconfig (git-ignored).
+// Copy Private.example.xcconfig to Private.xcconfig and fill it in.
+DL_BUNDLE_PREFIX = dev.devicelink
+DEVELOPMENT_TEAM =
+DEVICELINK_RELAY_SCHEME = https
+DEVICELINK_RELAY_HOST =
+DEVICELINK_ENROLLMENT_TOKEN =
+DL_APP_GROUP = group.$(DL_BUNDLE_PREFIX).ios
+#include? "Private.xcconfig"

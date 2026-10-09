@@ -162,6 +162,13 @@ public actor DeviceLinkClient {
         }
     }
 
+    public func relayInfo() async throws -> RelayInfo { try await relay().info() }
+
+    /// Registers an APNs token so the relay can wake this device (content-free alert) when an item waits.
+    public func registerPush(token: String, environment: String, topic: String) async throws {
+        try await registered { try await $0.registerPush(token: token, environment: environment, topic: topic) }
+    }
+
     // MARK: Pairing
 
     public struct PairingSession: Sendable {
