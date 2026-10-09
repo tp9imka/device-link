@@ -1,6 +1,7 @@
 package dev.devicelink.transfer
 
 import android.content.Context
+import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.ParcelFileDescriptor
 import android.os.SystemClock
@@ -33,6 +34,12 @@ class NativeLinkController(context: Context, private val scope: CoroutineScope) 
     private val clipEvents = MutableSharedFlow<IncomingClip>(replay = 0, extraBufferCapacity = ClipboardDeliveries.MAX_PENDING)
     override val incomingClips: Flow<IncomingClip> = clipEvents.asSharedFlow()
     private val clipboardDeliveries = ClipboardDeliveries()
+    private val clipboardOrder = ClipboardActionOrder()
+    private val imageClipEvents = MutableSharedFlow<IncomingImageClip>(extraBufferCapacity = 4)
+    override val incomingImageClips: Flow<IncomingImageClip> = imageClipEvents.asSharedFlow()
+    private val imageDeliveries = mutableMapOf<String, IncomingImageClip>()
+    private val relayKeyEvents = MutableSharedFlow<String>(extraBufferCapacity = 4)
+    override val incomingRelayKeys: Flow<String> = relayKeyEvents.asSharedFlow()
     override val pairingCode: String get() = PairingInvite(TrustProof.fingerprint(identity.publicKey), identity.deviceName,
         if (radioDelegate.isInitialized()) radio.localAddress.orEmpty() else "").encode()
     private val startupCleanup = scope.async(Dispatchers.IO) {
@@ -144,13 +151,13 @@ class NativeLinkController(context: Context, private val scope: CoroutineScope) 
         outgoing.values.forEach { runCatching { it.descriptor.close() } }; outgoing.clear()
         incomingStreams.forEach { (id, stream) -> runCatching { stream.close() }; File(context.filesDir, "incoming/$id").delete() }
         incomingStreams.clear(); incomingCounts.clear(); offers.clear()
-        clipboardDeliveries.clear()
+        clipboardDeliveries.clear(); imageDeliveries.clear(); clipboardOrder.clear()
         agreement = null; secureChannel = null
         endpoint = null; localHello = null; remoteHello = null; remoteCommitment = null; proofVerified = false
         localApproved = false; remoteApproved = false; authenticated = false
         pinnedFingerprint = null; pinnedName = null
         mutable.update { it.copy(phase = LinkPhase.OFF, nearbyPeers = emptyList(), verification = null,
-            connectedPeerName = null, remainingSeconds = 0,
+            connectedPeerName = null, connectedPeerId = null, remainingSeconds = 0,
             transfers = it.transfers.map { transfer -> if (transfer.status in listOf(TransferStatus.OFFERED, TransferStatus.TRANSFERRING))
                 transfer.copy(status = TransferStatus.CANCELLED,
                     clipboardStatus = if (transfer.mode == TransferMode.CLIPBOARD) ClipboardStatus.NOT_COPIED else transfer.clipboardStatus) else transfer }) }
@@ -281,6 +288,8 @@ class NativeLinkController(context: Context, private val scope: CoroutineScope) 
                     is WireMessage.Clip -> receiveClip(wire)
                     is WireMessage.ClipResult -> receiveClipResult(wire)
                     is WireMessage.Offer -> receiveOffer(wire)
+                    is WireMessage.ClipImageOffer -> receiveImageOffer(wire)
+                    is WireMessage.RelayKeys -> relayKeyEvents.emit(wire.bundle)
                     is WireMessage.Accept -> sendAccepted(wire.id)
                     is WireMessage.Reject -> terminal(wire.id, TransferStatus.REJECTED)
                     is WireMessage.Cancel -> terminal(wire.id, TransferStatus.CANCELLED)
@@ -303,7 +312,7 @@ class NativeLinkController(context: Context, private val scope: CoroutineScope) 
         val peer = Peer(TrustProof.fingerprint(remoteHello!!.publicKey), peerName.ifBlank { message(R.string.link_other_phone) })
         val peers = mutable.value.trustedPeers.filterNot { it.id == peer.id } + peer
         identity.savePeers(peers)
-        mutable.update { it.copy(phase = LinkPhase.CONNECTED, trustedPeers = peers, verification = null, connectedPeerName = peerName) }
+        mutable.update { it.copy(phase = LinkPhase.CONNECTED, trustedPeers = peers, verification = null, connectedPeerName = peerName, connectedPeerId = peer.id) }
         val queued = pending.toList(); pending.clear(); mutable.update { it.copy(pendingItems = 0) }
         queued.forEach { when (it) { is Pending.Text -> sendText(it.text); is Pending.Files -> sendFiles(it.uris) } }
     }
@@ -366,11 +375,89 @@ class NativeLinkController(context: Context, private val scope: CoroutineScope) 
         }
     }
 
+    override fun sendRelayKeys(bundle: String) = main {
+        if (!authenticated || mutable.value.phase != LinkPhase.CONNECTED || expired()) return@main
+        val wire = WireMessage.RelayKeys(bundle)
+        if (runCatching { WireCodec.encode(wire) }.isSuccess) sendWire(wire)
+    }
+
+    override suspend fun sendImageClip(uri: String): ClipSendResult = withContext(Dispatchers.Main.immediate) {
+        if (!authenticated || mutable.value.phase != LinkPhase.CONNECTED) return@withContext ClipSendResult.NOT_CONNECTED
+        if (expired()) return@withContext ClipSendResult.EXPIRED
+        val session = generation
+        val ownership = ResourceHandoff<Pair<WireMessage.Offer, PreparedFile>> { it.second.descriptor.close() }
+        try {
+            val prepared = withContext(Dispatchers.IO) { prepareFile(uri).also { ownership.acquire(it) } } ?: return@withContext ClipSendResult.INVALID
+            val (original, file) = prepared
+            val mime = withContext(Dispatchers.IO) {
+                runCatching {
+                    require(original.size in 1..WireCodec.MAX_CLIP_IMAGE_BYTES)
+                    val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                    context.contentResolver.openInputStream(Uri.parse(uri)).use { BitmapFactory.decodeStream(it, null, options) }
+                    require(options.outMimeType in WireCodec.CLIP_IMAGE_MIMES && options.outWidth > 0 && options.outHeight > 0 && options.outWidth.toLong() * options.outHeight <= 40_000_000)
+                    options.outMimeType
+                }.getOrNull()
+            }
+            if (mime == null || session != generation || !authenticated || expired()) {
+                return@withContext if (session != generation || !authenticated) ClipSendResult.NOT_CONNECTED else if (expired()) ClipSendResult.EXPIRED else ClipSendResult.INVALID
+            }
+            val extension = imageExtension(mime)
+            val offer = original.copy(name = "image.$extension", mime = mime)
+            val wire = WireMessage.ClipImageOffer(offer.id, offer.name, offer.size, offer.mime, offer.payloadId!!)
+            val bytes = WireCodec.encode(wire)
+            offers[offer.id] = offer; outgoing[offer.id] = file
+            ownership.release()
+            append(Transfer(offer.id, offer.name, TransferKind.FILE, TransferDirection.OUTGOING, TransferStatus.OFFERED,
+                totalBytes = offer.size, mimeType = mime, mode = TransferMode.CLIPBOARD, clipboardStatus = ClipboardStatus.PENDING))
+            try {
+                frameWrites.write(session) {
+                    check(session == generation && authenticated && !expired())
+                    byteArrayOf(1) + requireNotNull(secureChannel).encrypt(byteArrayOf(1) + bytes)
+                }
+                scope.launch { delay(30_000); if (session == generation && mutable.value.transfers.any { it.id == offer.id && it.status == TransferStatus.OFFERED }) { terminal(offer.id, TransferStatus.CANCELLED); sendWire(WireMessage.Cancel(offer.id)) } }
+                ClipSendResult.SENT
+            } catch (cancelled: CancellationException) {
+                terminal(offer.id, TransferStatus.CANCELLED); throw cancelled
+            } catch (_: Exception) { terminal(offer.id, TransferStatus.FAILED); ClipSendResult.FAILED }
+        } finally { ownership.close() }
+    }
+
+    private fun receiveImageOffer(image: WireMessage.ClipImageOffer) {
+        if (expired() || offers.size >= 40 || mutable.value.transfers.count { it.mode == TransferMode.CLIPBOARD && it.kind == TransferKind.FILE && it.status in listOf(TransferStatus.OFFERED, TransferStatus.TRANSFERRING) } >= 4) {
+            sendWire(WireMessage.Reject(image.id)); return
+        }
+        val offer = WireMessage.Offer(image.id, "image.${imageExtension(image.mime)}", image.size, image.mime, TransferKind.FILE, image.payloadId)
+        receiveOffer(offer)
+        if (offers[image.id] == null) return
+        clipboardOrder.received(image.id)
+        updateTransfer(image.id) { it.copy(mode = TransferMode.CLIPBOARD, clipboardStatus = ClipboardStatus.PENDING) }
+        acceptTransfer(image.id)
+        if (mutable.value.transfers.any { it.id == image.id && it.status == TransferStatus.OFFERED }) {
+            terminal(image.id, TransferStatus.REJECTED); sendWire(WireMessage.Reject(image.id))
+        }
+    }
+
+    override fun isImageClipCurrent(event: IncomingImageClip): Boolean = !expired() && authenticated &&
+        mutable.value.phase == LinkPhase.CONNECTED && event.sessionToken == generation && imageDeliveries[event.id] == event && clipboardOrder.isLatest(event.id)
+
+    override fun imageClipboardApplied(event: IncomingImageClip, success: Boolean) = main { completeImageClipboard(event, success) }
+
+    private fun completeImageClipboard(event: IncomingImageClip, success: Boolean) {
+        if (event.sessionToken != generation || !authenticated || imageDeliveries[event.id] != event) return
+        imageDeliveries.remove(event.id)
+        val copied = success && clipboardOrder.isLatest(event.id)
+        updateTransfer(event.id) { it.copy(status = TransferStatus.COMPLETE, clipboardStatus = if (copied) ClipboardStatus.COPIED else ClipboardStatus.NOT_COPIED) }
+        sendWire(WireMessage.ClipResult(event.id, copied))
+    }
+
+    private fun imageExtension(mime: String): String = when (mime) { "image/jpeg" -> "jpg"; "image/webp" -> "webp"; "image/gif" -> "gif"; else -> "png" }
+
     private suspend fun receiveClip(clip: WireMessage.Clip) {
         if (mutable.value.transfers.any { it.id == clip.id }) { disconnectWithError(R.string.link_protocol_error); return }
         if (expired()) { sendWire(WireMessage.ClipResult(clip.id, false)); return }
         val event = clipboardDeliveries.offer(clip.id, clip.text, generation)
         if (event == null) { sendWire(WireMessage.ClipResult(clip.id, false)); return }
+        clipboardOrder.received(clip.id)
         val size = clip.text.toByteArray().size.toLong()
         append(Transfer(clip.id, message(R.string.link_clipboard_item), TransferKind.TEXT, TransferDirection.INCOMING,
             TransferStatus.TRANSFERRING, totalBytes = size, transferredBytes = size, text = clip.text,
@@ -382,21 +469,23 @@ class NativeLinkController(context: Context, private val scope: CoroutineScope) 
         clipEvents.emit(event)
     }
 
-    override fun isClipCurrent(event: IncomingClip): Boolean = !expired() &&
+    override fun isClipCurrent(event: IncomingClip): Boolean = !expired() && clipboardOrder.isLatest(event.id) &&
         clipboardDeliveries.isPending(event, generation, authenticated && mutable.value.phase == LinkPhase.CONNECTED)
 
     override fun clipboardApplied(event: IncomingClip, success: Boolean) = main { completeClipboard(event, success) }
 
     private fun completeClipboard(event: IncomingClip, success: Boolean) {
         if (!clipboardDeliveries.consume(event, generation, authenticated && mutable.value.phase == LinkPhase.CONNECTED)) return
+        val copied = success && clipboardOrder.isLatest(event.id)
         updateTransfer(event.id) { it.copy(status = TransferStatus.COMPLETE,
-            clipboardStatus = if (success) ClipboardStatus.COPIED else ClipboardStatus.NOT_COPIED) }
-        sendWire(WireMessage.ClipResult(event.id, success))
+            clipboardStatus = if (copied) ClipboardStatus.COPIED else ClipboardStatus.NOT_COPIED) }
+        sendWire(WireMessage.ClipResult(event.id, copied))
     }
 
     private fun receiveClipResult(result: WireMessage.ClipResult) {
         val item = mutable.value.transfers.firstOrNull { it.id == result.id } ?: return
         if (item.direction != TransferDirection.OUTGOING || item.mode != TransferMode.CLIPBOARD || item.status != TransferStatus.TRANSFERRING) return
+        offers.remove(result.id); outgoing.remove(result.id)?.descriptor?.let { runCatching { it.close() } }
         updateTransfer(result.id) { it.copy(status = TransferStatus.COMPLETE, transferredBytes = it.totalBytes,
             clipboardStatus = if (result.copied) ClipboardStatus.COPIED else ClipboardStatus.NOT_COPIED) }
     }
@@ -517,21 +606,50 @@ class NativeLinkController(context: Context, private val scope: CoroutineScope) 
             require(frame.size == 9 && incomingCounts[offer.id] == offer.size)
             if (!receivingIo(offer.id, session) { stream.fd.sync(); stream.close() }) return
             incomingStreams.remove(offer.id); incomingCounts.remove(offer.id)
-            val file = File(context.filesDir, "received/${offer.id}")
-            val uri = FileProvider.getUriForFile(context, "${context.packageName}.files", file, transfer.name).toString()
-            val completed = transfer.copy(status = TransferStatus.COMPLETE, transferredBytes = offer.size, localUri = uri)
-            finalizing.add(offer.id)
-            try {
-                val committed = receivedCommitter.commit(
-                    staged = File(context.filesDir, "incoming/${offer.id}"), destination = file,
-                    isCurrent = { isReceiving(offer.id, session) },
-                    persist = { identity.addReceivedFile(completed) },
-                    removeRecord = { identity.removeReceivedFile(offer.id) },
-                    publish = { updateTransfer(offer.id) { completed } },
-                )
-                if (committed) { offers.remove(offer.id); sendWire(WireMessage.Receipt(offer.id)) }
-            } finally {
-                finalizing.remove(offer.id)
+            val stagedImage = File(context.filesDir, "incoming/${offer.id}")
+            withOwnedStagedFile(stagedImage) {
+                if (transfer.mode == TransferMode.CLIPBOARD) {
+                    val valid = withContext(Dispatchers.IO) {
+                        val staged = File(context.filesDir, "incoming/${offer.id}")
+                        val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                        BitmapFactory.decodeFile(staged.path, options)
+                        if (options.outMimeType != offer.mime || options.outWidth <= 0 || options.outHeight <= 0 || options.outWidth.toLong() * options.outHeight > 40_000_000) false
+                        else {
+                            options.inJustDecodeBounds = false
+                            options.inSampleSize = Integer.highestOneBit((maxOf(options.outWidth, options.outHeight) / 256).coerceAtLeast(1))
+                            BitmapFactory.decodeFile(staged.path, options)?.let { it.recycle(); true } ?: false
+                        }
+                    }
+                    if (!valid) { File(context.filesDir, "incoming/${offer.id}").delete(); terminal(offer.id, TransferStatus.FAILED); sendWire(WireMessage.Cancel(offer.id)); return@withOwnedStagedFile }
+                    if (!isReceiving(offer.id, session)) return@withOwnedStagedFile
+                }
+                val file = File(context.filesDir, "received/${offer.id}")
+                val uri = FileProvider.getUriForFile(context, "${context.packageName}.files", file, transfer.name).toString()
+                val completed = transfer.copy(status = TransferStatus.COMPLETE, transferredBytes = offer.size, localUri = uri)
+                finalizing.add(offer.id)
+                try {
+                    val committed = receivedCommitter.commit(
+                        staged = File(context.filesDir, "incoming/${offer.id}"), destination = file,
+                        isCurrent = { isReceiving(offer.id, session) },
+                        persist = { identity.addReceivedFile(completed) },
+                        removeRecord = { identity.removeReceivedFile(offer.id) },
+                        publish = { updateTransfer(offer.id) { if (transfer.mode == TransferMode.CLIPBOARD) completed.copy(status = TransferStatus.TRANSFERRING) else completed } },
+                    )
+                    if (committed) {
+                        offers.remove(offer.id)
+                        if (transfer.mode == TransferMode.CLIPBOARD) {
+                            val event = IncomingImageClip(offer.id, uri, offer.mime, session)
+                            imageDeliveries[offer.id] = event
+                            if (!clipboardOrder.isLatest(offer.id)) completeImageClipboard(event, false)
+                            else {
+                                scope.launch { delay(10_000); completeImageClipboard(event, false) }
+                                imageClipEvents.emit(event)
+                            }
+                        } else sendWire(WireMessage.Receipt(offer.id))
+                    }
+                } finally {
+                    finalizing.remove(offer.id)
+                }
             }
         }
     }
@@ -561,7 +679,7 @@ class NativeLinkController(context: Context, private val scope: CoroutineScope) 
     private fun terminal(id: String, status: TransferStatus) {
         val item = mutable.value.transfers.firstOrNull { it.id == id } ?: return
         if (!TransferLifecycle.canTransition(item.status, status)) return
-        clipboardDeliveries.discard(id)
+        clipboardDeliveries.discard(id); imageDeliveries.remove(id)
         offers.remove(id)
         if (status != TransferStatus.COMPLETE) {
             incomingStreams.remove(id)?.let { runCatching { it.close() }; File(context.filesDir, "incoming/$id").delete() }
@@ -601,4 +719,27 @@ class NativeLinkController(context: Context, private val scope: CoroutineScope) 
         identity.deviceName = safe; mutable.update { it.copy(localName = safe) }
     }
     override fun dismissError() = main { mutable.update { it.copy(error = null) } }
+}
+
+/** Receipt order, not transfer speed, determines which explicit copy may replace the clipboard. */
+internal class ClipboardActionOrder {
+    private var latest: String? = null
+    fun received(id: String) { latest = id }
+    fun isLatest(id: String): Boolean = latest == id
+    fun clear() { latest = null }
+}
+
+/** Own staging after EOF, including the cancellable gap before ReceivedFileCommitter starts. */
+internal suspend fun <T> withOwnedStagedFile(staged: File, action: suspend () -> T): T = try {
+    action()
+} finally {
+    withContext(NonCancellable + Dispatchers.IO) { staged.delete() }
+}
+
+/** Register resources on their producing dispatcher before cancellable return to the caller. */
+internal class ResourceHandoff<T>(private val dispose: (T) -> Unit) {
+    private var owned: T? = null
+    @Synchronized fun acquire(value: T?) { check(owned == null); owned = value }
+    @Synchronized fun release() { owned = null }
+    @Synchronized fun close() { owned?.let { runCatching { dispose(it) } }; owned = null }
 }

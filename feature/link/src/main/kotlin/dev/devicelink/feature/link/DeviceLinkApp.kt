@@ -90,13 +90,18 @@ data class LinkCallbacks(
     val onShareFile: (Transfer) -> Unit,
     val onCopySample: (String) -> Unit,
     val onAddSampleMessage: suspend (String) -> Boolean,
+    val onCopyImage: (String) -> Unit,
+    val onCopySampleImage: (String) -> Unit,
+    val onPasteImage: suspend (String) -> SampleChatImage?,
+    val onAddSampleImage: suspend (String, SampleChatImage) -> Boolean,
+    val onOpenInternetLink: () -> Unit = {},
 )
 
 @Composable
-fun DeviceLinkApp(state: LinkState, controller: LinkController, appearanceStore: AppearanceStore, callbacks: LinkCallbacks, sampleMessages: List<SampleChatMessage> = emptyList()) {
+fun DeviceLinkApp(state: LinkState, controller: LinkController, appearanceStore: AppearanceStore, callbacks: LinkCallbacks, sampleMessages: List<SampleChatMessage> = emptyList(), sampleImage: SampleChatImage? = null, relayPeerName: String? = null, initialSamples: Boolean = false) {
     val appearance by appearanceStore.appearance.collectAsState()
     var settings by rememberSaveable { mutableStateOf(false) }
-    var samples by rememberSaveable { mutableStateOf(false) }
+    var samples by rememberSaveable { mutableStateOf(initialSamples) }
     var pairMenu by rememberSaveable { mutableStateOf(false) }
     var showQr by rememberSaveable { mutableStateOf(false) }
     var confirmStop by rememberSaveable { mutableStateOf(false) }
@@ -109,7 +114,7 @@ fun DeviceLinkApp(state: LinkState, controller: LinkController, appearanceStore:
         Scaffold(containerColor = MaterialTheme.colorScheme.background) { insets ->
             Box(Modifier.fillMaxSize().padding(insets).consumeWindowInsets(insets), contentAlignment = Alignment.TopCenter) {
                 if (samples) {
-                    ClipboardSamplesScreen(state, sampleMessages, callbacks.onCopySample, callbacks.onAddSampleMessage, onBack = { samples = false })
+                    ClipboardSamplesScreen(state, sampleMessages, callbacks.onCopySample, callbacks.onAddSampleMessage, onBack = { samples = false }, sampleImage = sampleImage, relayPeerName = relayPeerName, onCopyImage = callbacks.onCopySampleImage, onPasteImage = callbacks.onPasteImage, onAddImage = callbacks.onAddSampleImage)
                 } else if (settings) {
                     SettingsScreen(state, appearance, appearanceStore::update, controller, onBack = { settings = false })
                 } else {
@@ -124,7 +129,10 @@ fun DeviceLinkApp(state: LinkState, controller: LinkController, appearanceStore:
                                     Text(stringResource(R.string.dl_brand), style = MaterialTheme.typography.headlineLarge, modifier = Modifier.semantics { heading() })
                                     Text(state.localName, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 }
-                                TextButton(onClick = { settings = true }) { Text(stringResource(R.string.dl_settings)) }
+                                Column {
+                                    TextButton(onClick = { settings = true }) { Text(stringResource(R.string.dl_settings)) }
+                                    TextButton(onClick = callbacks.onOpenInternetLink) { Text(stringResource(R.string.dl_internet_link)) }
+                                }
                             }
                         }
                         item { SessionPanel(state, appearance.sessionMinutes, callbacks.onStartSession, stop) }
@@ -213,7 +221,8 @@ fun DeviceLinkApp(state: LinkState, controller: LinkController, appearanceStore:
             confirmButton = { Button(onClick = { confirmStop = false; controller.stopSession() }) { Text(stringResource(R.string.dl_stop)) } },
             dismissButton = { TextButton(onClick = { confirmStop = false }) { Text(stringResource(R.string.dl_cancel)) } },
         )
-        state.error?.let { error ->
+        // Nearby errors remain available on return; a relay/local sample must not consume them.
+        state.error?.takeUnless { samples }?.let { error ->
             AlertDialog(onDismissRequest = controller::dismissError, title = { Text(stringResource(R.string.dl_error)) },
                 text = { Text(error) }, confirmButton = { TextButton(onClick = controller::dismissError) { Text(stringResource(R.string.dl_done)) } })
         }
@@ -297,6 +306,7 @@ private fun TransferCard(transfer: Transfer, controller: LinkController, callbac
                 TransferStatus.COMPLETE -> {
                     if (incoming && text) transfer.text?.let { content -> Button(onClick = { callbacks.onCopyText(content) }) { Text(stringResource(R.string.dl_copy)) } }
                     if (incoming && !text && transfer.localUri != null) {
+                        if (transfer.mimeType.startsWith("image/")) TextButton(onClick = { callbacks.onCopyImage(requireNotNull(transfer.localUri)) }) { Text(stringResource(R.string.dl_copy_image)) }
                         Button(onClick = { callbacks.onOpenFile(transfer) }) { Text(stringResource(R.string.dl_open)) }
                         OutlinedButton(onClick = { callbacks.onSaveFile(transfer) }) { Text(stringResource(R.string.dl_save)) }
                         TextButton(onClick = { callbacks.onShareFile(transfer) }) { Text(stringResource(R.string.dl_share)) }

@@ -9,6 +9,9 @@ identity; QR may bootstrap peer selection. Explicit 15 minute sessions, a
 Quick Settings tile, Android Sharesheet input, receive tray, foreground clipboard
 actions, transfer consent/progress/cancellation, expiry and unpairing.
 No server, account, background clipboard scraping, root or system permission.
+This describes the initial nearby scope. Optional Internet Link was subsequently
+added in [ADR 0003](0003-encrypted-internet-relay.md); image clipboard support is
+covered by [ADR 0004](0004-image-clipboard.md). Nearby remains server-independent.
 Native Wi-Fi Direct is the transport. Google Play services are not required.
 The connected KATIM X3M has no Play services, so the initial Nearby proposal
 was replaced before the first delivery.
@@ -44,8 +47,11 @@ transfers to finish, then tears down transport; explicit stop cancels immediatel
 ## Deferred
 True cross-app automatic clipboard synchronization is unavailable to ordinary apps.
 Always-ready background discovery, cloud relay, multi-peer broadcasting and full
-cross-process transfer resumption are outside the initial version. Interrupted
+cross-process transfer resumption were outside the initial version. Interrupted
 transfers offer retry; no silent promise of resume.
+
+Update: the bounded encrypted relay is now implemented under ADR 0003. Push wake-up,
+multi-peer broadcast and chunk-level resume remain deferred.
 
 ## Rule adoption
 The agent-rules templates are guidance, not copied wholesale. User explicitly

@@ -19,6 +19,7 @@
    <intent-filter><action android:name="android.intent.action.SEND" /><action android:name="android.intent.action.SEND_MULTIPLE" /><category android:name="android.intent.category.DEFAULT" /><data android:mimeType="*/*" /></intent-filter>
   </activity>
   <service android:name=".LinkSessionService" android:exported="false" android:foregroundServiceType="connectedDevice" />
+  <service android:name=".InternetLinkService" android:exported="false" android:foregroundServiceType="connectedDevice" />
   <service android:name=".DeviceLinkTileService" android:label="@string/app_name" android:icon="@drawable/ic_link" android:permission="android.permission.BIND_QUICK_SETTINGS_TILE" android:exported="true">
    <intent-filter><action android:name="android.service.quicksettings.action.QS_TILE" /></intent-filter>
    <meta-data android:name="android.service.quicksettings.ACTIVE_TILE" android:value="true" />

@@ -35,7 +35,9 @@ command. The peer writes its clipboard only while that authenticated session
 and event remain current. A clipboard result appears in the transfer tray after
 the write attempt. Paste into the other phone's composer or another app to use it.
 
-When disconnected, Copy remains local. It is never saved for later delivery.
+When neither transport is available, Copy remains local. It is never saved for
+upload on a later reconnect. An Internet Link upload already accepted by the relay
+may wait for the receiver within the separate 60-second clipboard lifetime.
 Copy inside the editable composer/paste field is also local; the integration
 is scoped to the sample's displayed message content. Both phones need the new
 clipboard-capable build. See [[Clipboard]] for acknowledgement and timeout rules.
@@ -48,12 +50,43 @@ The receiver explicitly accepts each file offer. Progress appears on both phones
 Completed files offer Open, Save and Share. A returned edit is simply a new file
 sent in the opposite direction; originals are not overwritten.
 
+For clipboard images, Copy an image message in the local sample. The clipboard
+contains a scoped image URI with real image data, not URI text. Use image Paste in
+the sample to see a preview, then Send to add it to local history. PNG, JPEG, WebP
+and GIF are supported; nearby clipboard images are limited to 16 MiB. The selected
+receiving app must support image paste. General files still use Receive/Open/Save/Share.
+
+## On different networks
+
+Open Internet Link and save the same deployed HTTPS relay URL on both phones,
+plus its enrollment token if required. Connect the phones nearby after saving;
+their verified channel exchanges pinned encryption keys. Select the trusted phone
+in Internet Link, then start a 15-minute internet session on each phone.
+
+With no authenticated nearby connection, an enabled Internet Link carries Share,
+Send clipboard and linked sample Copy to that selected peer. Chat Send still only
+saves local history. Ordinary internet files require Receive/Reject and contain
+at most 8 MiB. **Allow clipboard updates** is off by default: enable it on the
+receiver only when fresh incoming Copy actions should write automatically.
+Otherwise use the received item's Copy action.
+
+An uploaded file/text can wait in the encrypted mailbox for up to 24 hours;
+clipboard actions expire after 60 seconds. The receiving phone must start an
+internet session before expiry. Upload accepted does not mean received/copied;
+the sender waits for an encrypted result. No push service wakes an off phone.
+See [[Internet-Link]] for setup, persistence and recovery details.
+
 ## Reconnect and turn off
 
 Paired identities persist. Start sessions and select the peer again; verified
 remembered identities do not need another code comparison. Session expiry stops
 new transfers, lets in-progress work finish, then disconnects. Turn off cancels
 immediately. A phone that is off is not silently listening for a remote wake-up.
+Internet Link has a separate Stop action and notification. Its deadline blocks new
+work and gives active operations up to 60 seconds to finish. Explicit Stop closes
+requests immediately; already accepted envelopes remain on the relay until
+acknowledged or expired. Stopping nearby does not stop a separately enabled
+internet session, and vice versa.
 
 ## Recovery
 
@@ -69,3 +102,10 @@ immediately. A phone that is off is not silently listening for a remote wake-up.
 - No app can open a file: use Save or Share to choose a suitable destination.
 - Clipboard not copied: confirm the link is still active, then use the explicit
   Copy action again. Reconnecting never replays an earlier clipboard command.
+- Internet peer list empty: save relay settings on both phones, connect nearby
+  and complete initial verification so encryption keys can be exchanged.
+- Internet configuration error: check the HTTPS URL, enrollment token and phone
+  clocks. Release builds do not accept plaintext HTTP or invalid certificates.
+- Internet waiting/retrying: verify server reachability, active receiver session
+  and mailbox capacity. A failed send needs an explicit retry; late clipboard
+  events are discarded, not applied after their freshness window.

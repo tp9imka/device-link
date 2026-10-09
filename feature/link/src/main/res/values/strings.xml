@@ -147,4 +147,12 @@
     <string name="dl_clip_remote_copied">Copied on your other phone</string>
     <string name="dl_clip_manual">Received · Tap Copy to paste</string>
     <string name="dl_clip_remote_manual">Received · Copy from the other phone’s tray</string>
+    <string name="dl_copy_image">Copy image</string>
+    <string name="dl_image_remove">Remove image</string>
+    <string name="dl_image_importing">Adding image…</string>
+    <string name="dl_image_invalid">Could not add this image. Use a PNG, JPEG, WebP or GIF up to 16 MB.</string>
+    <string name="dl_image_sample_sender">Alex · Sample image</string>
+    <string name="dl_image_description">Chat image</string>
+    <string name="dl_image_loading">Image preview unavailable</string>
+    <string name="dl_internet_link">Internet link</string>
 </resources>

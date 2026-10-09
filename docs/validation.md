@@ -52,7 +52,7 @@ Date: 2026-10-08. This record separates executed checks from pending device work
 
 ## Clipboard extension: executed checks
 
-The current focused JUnit reports show **20 model tests and 12 transfer tests,
+At the text-clipboard checkpoint, focused JUnit reports showed **20 model tests and 12 transfer tests,
 zero failures**. This includes three new clipboard protocol tests protecting the
 ordinary Text golden bytes, distinct Clip/ClipResult types, UTF-8 limits and
 malformed messages. Three delivery-registry tests protect one-shot application,
@@ -94,11 +94,96 @@ Pending clipboard/chat checks:
 - History capacity eviction and storage-failure UX on hardware. Persistence and
   the composer byte boundary were exercised; no exhaustive coverage is claimed.
 
-## Pending at this checkpoint
+## Internet Link and image clipboard: automated checkpoint
+
+The integrated Android check passed after relay/image application wiring. Current
+JUnit XML reports contain **66 Android/JVM tests: 34 model, 29 transfer and 3 app,
+with zero failures, errors or skips**. The final `./gradlew check` passed.
+Added coverage protects HPKE key/envelope authentication,
+recipient binding, expiry/replay, image wire bounds, URL security policy, newer
+clipboard-action ordering and staged-image cancellation cleanup. The Gradle gate
+also runs architecture checks, Android lint and APK assembly. The final combined
+`./gradlew check :app:assembleRelease` run succeeded (332 tasks), including the
+optimized unsigned release APK. This validates packaging, not release signing or
+installation of the release build on hardware.
+
+The separate Python relay suite passes **32 contract tests** using temporary
+SQLite databases and real signed requests. Checks include tampering/replay,
+enrollment, recipient consent, mailbox ownership, durable ack/retry across restart,
+expiry, concurrent quota enforcement, malformed inputs, long-poll wakeup,
+exclusion and response limits. Dependency consistency (`pip check`) passed.
+The final server rerun passed all 32 tests; its only warning is the upstream
+Starlette/httpx TestClient deprecation, not a test failure.
+
+Local Python startup and `/health` passed. The Docker image built successfully on
+Linux ARM64 with pinned dependencies; its non-root container started and answered
+`/health` through a loopback-only published test port. Smoke processes/containers
+were stopped afterward. This does not validate a public TLS certificate, deployed
+reverse proxy, systemd host setup or mobile-to-server delivery.
+
+The October 9 follow-up adds protected lifecycle tests for the natural-deadline
+finishing period, clipboard acknowledgement continuity, immediate explicit Stop,
+and isolation from a restarted session. The UI and notification expose finishing
+status and disable new work. Neither phone was attached for that final follow-up;
+these deadline changes have automated validation, not a new hardware run.
+
+## Internet Link and image clipboard: executed phone checks
+
+The local Python relay ran on the development host. Each debug phone reached
+`http://127.0.0.1:8000` through its own USB `adb reverse tcp:8000 tcp:8000` mapping.
+Devices were KATIM X3M `DG2LHD1450610066` (Android 15) and Samsung Galaxy S24
+`RFCX70AL6FL` (Android 16). These are ordinary app-permission tests; locked-device
+access required the user to unlock the phone, never a lock bypass.
+
+- Image clipboard delivery worked in both directions with the receiving phone
+  on Home/backgrounded. Opening the receiver's local sample and using image Paste
+  displayed the actual received image, rather than pasting URI text.
+- KATIM → Samsung text Copy with Samsung backgrounded was verified by an actual
+  paste of the exact synthetic text on Samsung, not only a Copied tray label.
+- A temporary separate, unprivileged foreground probe on Samsung obtained the
+  clipboard's `image/png` URI, opened it through the granted content permission,
+  and decoded a 640 × 400 image. It confirmed the clipboard item was image content,
+  with no text URI payload. The external probe was removed afterward.
+- The manual `RelayDeviceProbe` instrumentation on KATIM authenticated the
+  remembered nearby peer and waited for verified pinned relay-key exchange, then
+  stopped nearby before sending. Relay text and image clipboard operations both
+  received `COPIED` results. The ordinary image-file send completed only after an
+  explicit Samsung **Receive** tap. Thus those transfers did not depend on an
+  active nearby data channel.
+- SHA-256 of the KATIM synthetic image fixture matched both Samsung received
+  files: the clipboard image and the separately accepted ordinary file.
+- Sender-offline mailbox delivery was exercised: KATIM sent ordinary text while
+  Samsung's internet session was off; KATIM's session was then stopped; starting
+  Samsung's internet session produced the received text from the relay mailbox.
+- Chat-sample Send remained local-only and did not produce a server message.
+- Receiver opt-out was exercised on Samsung: automatic clipboard application was
+  saved off and its preference confirmed false. KATIM sent a new synthetic text
+  Copy; Samsung showed **Received · use Copy to put it on your clipboard**. Actual
+  Paste in Samsung's composer still produced the prior image attachment, proving
+  that incoming text did not overwrite its clipboard while opted out.
+- The native nearby image path was separately verified with both phones connected
+  over authenticated Wi-Fi Direct. Samsung image Copy delivered while KATIM was
+  on Home/backgrounded. Samsung's nearby tray showed **Copied on your other phone**;
+  reopening KATIM's sample and invoking actual Paste produced an image attachment
+  with the Remove image action. This exercises `ClipImageOffer`, independently of
+  the relay checks above.
+
+The evidence establishes these paths through the local debug relay and USB
+tunnels. It does **not** establish public HTTPS/cellular deployment, two independent
+internet networks, sustained Doze reliability or battery drain. Screen-background
+tests are not sustained screen-off/Doze tests. The external probe's image read
+occurred while that probe was focused, not as a background clipboard reader.
+Forced clipboard-write failures, interrupted-network recovery and long-lived idle
+behavior remain separate validation scenarios.
+
+## Remaining checks
 
 - End-to-end camera QR scan with physically aligned phones.
 - Sustained both-screen-off/Doze transfers, older Android versions and more OEMs.
 - Idle/transfer battery measurements. USB-powered testing cannot establish drain.
+- Public HTTPS endpoint/certificate and cellular or independent-network delivery.
+- Image retention under quota pressure, relay clipboard expiry races,
+  and receiver restart/interrupted-network scenarios beyond the mailbox test above.
 - The 30-second stalled socket-write watchdog is covered by implementation review
   and compilation; forced socket-stall behavior has not been measured on hardware.
 

@@ -30,6 +30,8 @@ sealed interface WireMessage {
     @Serializable @SerialName("text") data class Text(val id: String, val text: String) : WireMessage
     @Serializable @SerialName("clip") data class Clip(val id: String, val text: String) : WireMessage
     @Serializable @SerialName("clip_result") data class ClipResult(val id: String, val copied: Boolean) : WireMessage
+    @Serializable @SerialName("clip_image_offer") data class ClipImageOffer(val id: String, val name: String, val size: Long, val mime: String, val payloadId: Long) : WireMessage
+    @Serializable @SerialName("relay_keys") data class RelayKeys(val bundle: String) : WireMessage
     @Serializable @SerialName("receipt") data class Receipt(val id: String) : WireMessage
 }
 
@@ -41,6 +43,8 @@ object WireCodec {
     const val MAX_WIRE_BYTES = 32_768
     const val MAX_TEXT_BYTES = 8_192
     const val MAX_FILE_BYTES = 10L * 1024 * 1024 * 1024
+    const val MAX_CLIP_IMAGE_BYTES = 16L * 1024 * 1024
+    val CLIP_IMAGE_MIMES = setOf("image/png", "image/jpeg", "image/webp", "image/gif")
     private val idPattern = Regex("[A-Za-z0-9_-]{1,80}")
     private val mimePattern = Regex("[A-Za-z0-9!#$&^_.+-]+/[A-Za-z0-9!#$&^_.+-]+")
     private val json = Json { encodeDefaults = true; ignoreUnknownKeys = false; isLenient = false }
@@ -104,6 +108,13 @@ object WireCodec {
                 require(message.text.toByteArray(Charsets.UTF_8).size in 1..MAX_TEXT_BYTES) { "Invalid clip size" }
             }
             is WireMessage.ClipResult -> validId(message.id)
+            is WireMessage.ClipImageOffer -> {
+                validId(message.id)
+                require(message.name.isNotBlank() && message.name.length <= 255)
+                require(message.size in 1..MAX_CLIP_IMAGE_BYTES)
+                require(message.mime in CLIP_IMAGE_MIMES) { "Unsupported clipboard image MIME" }
+            }
+            is WireMessage.RelayKeys -> require(message.bundle.toByteArray(Charsets.UTF_8).size in 1..16_384)
             is WireMessage.Accept -> validId(message.id)
             is WireMessage.Reject -> validId(message.id)
             is WireMessage.Cancel -> validId(message.id)

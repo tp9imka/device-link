@@ -39,6 +39,8 @@ data class DeviceTokens(
     val qrBackground: Color = Color.White,
     val compactBreakpoint: androidx.compose.ui.unit.Dp = 380.dp,
     val messageWidthFraction: Float = .9f,
+    val imageAttachmentHeight: androidx.compose.ui.unit.Dp = 96.dp,
+    val imageMessageHeight: androidx.compose.ui.unit.Dp = 200.dp,
 )
 val LocalDeviceTokens = staticCompositionLocalOf { DeviceTokens() }
 

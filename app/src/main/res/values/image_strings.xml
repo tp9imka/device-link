@@ -1,0 +1,4 @@
+<resources>
+    <string name="image_clipboard_label">Image from DeviceLink</string>
+    <string name="image_sample_caption">A little closer.</string>
+</resources>

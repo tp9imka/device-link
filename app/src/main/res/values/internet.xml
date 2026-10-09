@@ -1,0 +1,9 @@
+<resources>
+ <string name="internet_channel">Internet link sessions</string>
+ <string name="internet_session_active">DeviceLink internet link is on</string>
+ <string name="internet_session_finishing">Finishing current transfers…</string>
+ <string name="internet_settings_saved">Relay settings saved. Start internet link on both phones to exchange copies.</string>
+ <string name="internet_settings_invalid">Use an HTTPS server address without a path. Check the access token and try again.</string>
+ <string name="internet_send_failed">Could not send. Check your internet session, trusted device and relay. Files must be at most 8 MiB.</string>
+ <string name="image_copy_failed">Could not copy this image. Choose a supported image up to 16 MiB.</string>
+</resources>

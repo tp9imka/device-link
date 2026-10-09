@@ -13,6 +13,7 @@ enum class ClipboardStatus { NOT_REQUESTED, PENDING, COPIED, NOT_COPIED }
 enum class ClipSendResult { SENT, NOT_CONNECTED, EXPIRED, INVALID, FAILED }
 /** One-shot application delivery. The session token prevents a delayed event from affecting a new session. */
 data class IncomingClip(val id: String, val text: String, val sessionToken: Long)
+data class IncomingImageClip(val id: String, val uri: String, val mime: String, val sessionToken: Long)
 enum class TransferDirection { INCOMING, OUTGOING }
 enum class TransferStatus { OFFERED, TRANSFERRING, COMPLETE, REJECTED, CANCELLED, FAILED }
 data class Peer(val id: String, val name: String)
@@ -39,6 +40,7 @@ data class LinkState(
     val trustedPeers: List<Peer> = emptyList(),
     val verification: Verification? = null,
     val connectedPeerName: String? = null,
+    val connectedPeerId: String? = null,
     val remainingSeconds: Long = 0,
     val transfers: List<Transfer> = emptyList(),
     val pendingItems: Int = 0,
@@ -50,6 +52,8 @@ data class LinkState(
 interface LinkController {
     val state: StateFlow<LinkState>
     val incomingClips: Flow<IncomingClip>
+    val incomingImageClips: Flow<IncomingImageClip>
+    val incomingRelayKeys: Flow<String>
     val pairingCode: String
     fun startSession(durationMinutes: Int = 15)
     fun stopSession()
@@ -59,6 +63,10 @@ interface LinkController {
     fun sendText(text: String)
     /** Sends only through the currently authenticated session; never queues for a future connection. */
     suspend fun sendClip(text: String): ClipSendResult
+    suspend fun sendImageClip(uri: String): ClipSendResult
+    fun isImageClipCurrent(event: IncomingImageClip): Boolean
+    fun imageClipboardApplied(event: IncomingImageClip, success: Boolean)
+    fun sendRelayKeys(bundle: String)
     /** Check immediately before an application clipboard write, on the same serialized event context. */
     fun isClipCurrent(event: IncomingClip): Boolean
     /** Report the actual clipboard-write outcome; stale session events must be ignored. */

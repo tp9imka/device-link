@@ -1,14 +1,21 @@
 # DeviceLink
 
 **Your other phone, one share away.** A native Android app for exchanging text,
-links, photos and files between two nearby phones. Both phones install DeviceLink;
-neither needs Fortress, an account, Google Play services, or an internet connection.
+links, photos and files between two phones. Nearby sharing uses Wi-Fi Direct;
+optional **Internet Link** uses a self-hosted encrypted mailbox. Both phones install
+DeviceLink; neither needs Fortress, an account or Google Play services. Nearby
+sharing works without an internet connection or server.
 
 **Status:** initial implementation validated on KATIM X3M and Samsung Galaxy S24
 for pairing, two-way text/files, sharing back, persistence and cancellation.
 The clipboard integration and local chat sample pass focused automated checks
 and copy/paste validation on both phones, including background receiver writes. See the [validation record](docs/validation.md)
-for evidence and remaining limits.
+for evidence and remaining limits. Internet Link text/image clipboard delivery,
+explicit file acceptance and sender-offline mailbox delivery were verified using
+a local debug relay through USB tunnels. Both phones pasted actual received
+images with the receiver backgrounded during delivery. The relay passes 32 contract
+tests plus local/Docker startup checks. Public HTTPS/cellular deployment, sustained
+Doze and battery measurements remain unverified.
 
 DeviceLink uses Android Wi-Fi Direct and an authenticated, encrypted channel.
 Start a temporary session, select the other phone, compare the pairing code once,
@@ -49,13 +56,40 @@ that the session is still current before writing its clipboard, then acknowledge
 the actual write result. The tray distinguishes pending, copied and not-copied
 outcomes; dispatch alone is not a clipboard-success acknowledgement.
 
-Without a connection, Copy remains local and is never queued for reconnection.
+With both transports off, Copy remains local and is never queued for reconnection.
 The editable composer/paste field keeps ordinary local clipboard behavior. There
 is no clipboard polling or background capture. Existing Share/Send clipboard text
 transfers still arrive in the tray and require the receiver to tap Copy.
 
+Image Copy uses actual image bytes and a scoped content URI, with MIME validation;
+it never pastes a URI as text. The sample can paste an image preview into its local
+history. Supported image clipboard formats are PNG, JPEG, WebP and GIF, up to
+16 MiB nearby or 8 MiB through Internet Link. Image paste depends on the receiving
+app supporting image clipboard content. A newer received copy supersedes an older
+image still transferring.
+
 See [Clipboard integration](docs/wiki/Clipboard.md) for the contract and failure
-semantics. This is a nearby integration sample, not a server-backed messenger.
+semantics. Local chat Send remains local with either transport.
+
+## Internet Link
+
+Deploy the [relay server](server/README.md) behind HTTPS, then save the same relay
+URL and any enrollment token on both phones. Connect the phones nearby once after
+saving those settings: the verified channel exchanges identity-signed encryption
+keys. Select the trusted peer and start Internet Link on each phone when remote
+delivery is wanted. It is a separate, visible 15-minute session.
+
+The relay holds complete end-to-end encrypted envelopes: text/files expire after
+24 hours, clipboard actions after 60 seconds. Relay files are limited to 8 MiB;
+receivers explicitly accept ordinary files. **Allow clipboard updates** is off by
+default. With it off, incoming content stays available for manual Copy. Chat Copy
+uses an active nearby connection first, otherwise an enabled Internet Link; a copy
+made with both off remains local.
+
+An accepted upload can wait for the receiver to come online before expiry. There
+is no FCM/vendor push, no automatic session restart, and no background clipboard
+capture. Internet Link polls while enabled and stops on timeout/manual off. See
+[Internet Link](docs/wiki/Internet-Link.md) for setup, trust, receipts and limits.
 
 ## Build and verify
 
@@ -68,8 +102,13 @@ pins the build; create a git-ignored `local.properties` containing your `sdk.dir
 adb -s DEVICE_SERIAL install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
+The Python relay has its own dependency pins and test command in
+[server/README.md](server/README.md); Android `check` does not run server tests.
+
 `check` runs protected contract/security/lifecycle tests, architecture checks,
 Android lint and debug APK assembly. **There is no coverage percentage gate.**
+The final integrated run passed 66 Android/JVM tests; the separate relay suite
+passed 32 contract tests.
 Two-phone radio and UX checks are documented separately; a green JVM test suite
 is not evidence of physical radio compatibility or battery life.
 
@@ -78,13 +117,16 @@ is not evidence of physical radio compatibility or battery life.
 - [Architecture](docs/wiki/Architecture.md): modules, trust, data paths and lifecycle.
 - [User workflow](docs/wiki/Workflow.md): first pairing, sharing, return path and recovery.
 - [Clipboard integration](docs/wiki/Clipboard.md): explicit copy, local chat history and acknowledgements.
-- [Optional relay proposal](docs/relay-proposal.md): encrypted remote delivery, wake-up options and battery tradeoffs; not implemented.
+- [Internet Link](docs/wiki/Internet-Link.md): implemented encrypted mailbox, setup, limits and deployment.
+- [Relay implementation record](docs/relay-proposal.md): decisions adopted from the original proposal and deferred work.
 - [Battery and sessions](docs/wiki/Battery.md): resource policy and measurement procedure.
 - [Security](docs/wiki/Security.md): authentication, bounds and threat-model limits.
 - [Design system](docs/design-system.md): tokens, components and runtime customization.
 - [Development](docs/wiki/Development.md): repository workflow, build and test ownership.
 - [Validation](docs/validation.md): actual checks and device evidence for this revision.
 - [ADR 0001](docs/adr/0001-architecture.md): architecture and scope decisions.
+- [ADR 0003](docs/adr/0003-encrypted-internet-relay.md): asynchronous end-to-end encryption and relay sessions.
+- [ADR 0004](docs/adr/0004-image-clipboard.md): real image clipboard data and stale-write protection.
 
 `docs/wiki/` is the versioned wiki source, following KPNS's repo-owned wiki pattern.
 The pages can also be published to the repository's Git wiki with
@@ -96,15 +138,21 @@ The pages can also be published to the repository's Git wiki with
   change. Clipboard transfer requires a deliberate foreground action.
 - File paste is not universally supported by Android apps. Open/Save/Share is
   the dependable file handoff.
-- The receiving phone must have an active session. No always-on discovery.
+- Clipboard application requires an active receiving session. Relay envelopes can
+  wait for a later session within their expiry; there is no always-on discovery.
 - Both phones need a version supporting the new `Clip` command for linked copy.
   Older peers reject that unknown message; ordinary `Text` encoding is unchanged.
 - Wi-Fi Direct support and system prompts vary by manufacturer; active hotspot
   use can conflict with Wi-Fi Direct.
-- Transfers are cancelled by process death or connection loss. Retry by selecting
-  the source again; resumable cross-process transfers are not implemented.
+- Nearby transfers are cancelled by process death or connection loss. Relay
+  uploads accepted by the server and locally stored encrypted file offers can
+  survive restarts within their expiry. Partial network transfers do not resume;
+  failed sends need an explicit retry.
 - Received files stay in private app storage until removed. Transfer-tray text
-  stays in memory; the separate local chat sample retains its last 50 messages
-  in private storage.
+  from nearby stays in memory. Ordinary relay text persists locally with a
+  24-hour envelope lifetime and expiry filtering on history load/save; clipboard
+  text is ephemeral. This is not a timed secure-erasure guarantee. The separate
+  local chat sample retains its last 50 messages in private storage. Private
+  image copies use additional storage and are subject to an import quota.
 - This initial protocol has focused adversarial tests and implementation review,
   but has not undergone an independent cryptographic security audit.

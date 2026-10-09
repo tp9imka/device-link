@@ -2,7 +2,9 @@ plugins { alias(libs.plugins.android.application); alias(libs.plugins.kotlin.com
 android {
  namespace = "dev.devicelink"
  compileSdk = 37
- defaultConfig { applicationId = "dev.devicelink"; targetSdk = 36; versionCode = 1; versionName = "0.1.0"; minSdk = 26 }
+ defaultConfig { applicationId = "dev.devicelink"; targetSdk = 36; versionCode = 1; versionName = "0.1.0"; minSdk = 26
+  testInstrumentationRunner = "dev.devicelink.RelayDeviceProbe"
+ }
  compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
  buildFeatures { compose = true }
  buildTypes { release { isMinifyEnabled = true; proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro") } }

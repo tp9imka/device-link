@@ -1,75 +1,63 @@
-# Optional internet relay — proposal
+# Optional internet relay — implementation record
 
-Status: design direction only. No server or push transport is implemented.
+Status: implemented as Internet Link. This page supersedes the original proposal;
+setup and behavior are documented in [Internet Link](wiki/Internet-Link.md), the
+[server guide](../server/README.md) and [ADR 0003](adr/0003-encrypted-internet-relay.md).
 
-## Experience
+## Decisions implemented
 
-Keep the same linked Copy action and local-only sample chat. Nearby delivery uses
-the existing direct channel. An optional Internet sharing setting allows delivery
-when the phones are on different networks. A user can choose whether incoming
-fresh clipboard messages may replace their clipboard; otherwise show a received
-item with an explicit Copy action. Disabling internet sharing stops relay access.
+- Optional self-hosted FastAPI/SQLite encrypted mailbox; nearby sharing remains
+  server-independent and neither transport requires Google Play services.
+- Tink 1.23.0 HPKE (X25519/HKDF-SHA256/AES-256-GCM), identity-signed key bundles
+  exchanged over the verified nearby channel, pinned locally. Keystore protects
+  the signing key and wraps the persisted HPKE keyset.
+- Complete encrypted text/file/image/receipt payloads. Identity signatures bind
+  ciphertext and envelope routing, IDs, times and sequence. The relay sees public
+  routing metadata but not payload kind, text or file metadata/content.
+- Signed HTTPS requests with timestamp and durable nonce replay protection,
+  recipient-owned directional allowlists, optional enrollment token, byte/count
+  quotas, acknowledgement deletion and expiry cleanup.
+- Explicit 15-minute foreground Internet Link sessions, 25-second long polling,
+  bounded client responses and retries with backoff. Off cancels network work.
+- Receiver automatic clipboard application is opt-in and off by default. Fresh
+  clipboard actions and encrypted receipts expire after 60 seconds. Ordinary
+  text/files expire after at most 24 hours; files/images contain at most 8 MiB.
+- Durable local ID deduplication and per-sender clipboard sequence state. Pending
+  file offers remain encrypted locally and can be restored before expiry.
+- Ordinary relay text persists privately with its 24-hour envelope expiry and
+  load/save filtering; no timed secure-erasure promise. Clipboard text is
+  ephemeral. Sample chat Send/history remains local-only.
 
-Pair once by verifying device keys, then show a manageable trusted-device list
-with revoke controls. Account-free pairing is possible, but recovery after losing
-all trusted devices must be designed explicitly rather than trusting the server
-to restore membership.
+## Changes from the proposal
 
-## Encrypted mailbox
+There is no membership or device-recovery service; first trust uses the existing
+verified nearby pairing. There is no push adapter or periodic off-session fetch.
+Remote availability requires an active foreground session; a server cannot wake
+an off phone. Files use bounded complete envelopes, not resumable blob uploads.
+Release URLs require HTTPS, with a debug-only loopback HTTP path for ADB tests.
 
-The sender encrypts a complete text envelope for the verified recipient and
-uploads it to a bounded mailbox. It can go offline after the upload; the receiver
-does not need to pull the text from the sender. Bind destination, message ID,
-content kind, creation time and expiry into the authenticated envelope. Validate
-freshness and replay protection locally before applying the clipboard.
+A persisted HPKE key is suitable for asynchronous receipt, but does not provide
+forward secrecy against later compromise of that key. The implementation does
+not claim a ratchet or independently audited protocol. The app cannot inspect
+other applications' background clipboard changes; explicit integrated Copy and
+foreground Share remain the supported send triggers.
 
-Use established reviewed cryptographic protocols/libraries when implementing the
-asynchronous encrypted channel. The existing live session cipher is not an
-offline mailbox protocol and must not be reused by extending its lifetime.
-Device private keys should use Android Keystore with hardware protection where
-available. Newly added device keys require approval signed by an already trusted
-device and locally verified membership state, with rollback/revocation handling.
+## Remaining work
 
-The server cannot decrypt content but sees routing, size and timing metadata.
-Delete envelopes after acknowledgement or short expiry, enforce quotas, and keep
-payloads out of application/access logs. Ciphertext deletion is a server retention
-policy, not a guarantee against a malicious server keeping ciphertext.
+- Deployment owner, public URL/certificate, operations and retention monitoring.
+- Public HTTPS/cellular and independent-network validation, then matched
+  screen-off/idle/transfer battery and delivery-latency measurements.
+- FCM or a suitable vendor push adapter where available, with explicit lifecycle
+  and consent design; no instant invisible-delivery promise.
+- Key rotation/recovery, forward-secrecy improvements and independent security review.
+- Chunk-level transfer resume and larger-file strategy. Image imports now prune
+  unreferenced assets older than 24 hours while preserving current chat/clipboard
+  references, the fixture and recent assets. New imports are refused once stored
+  images reach the 512 MiB pre-copy admission threshold after cleanup.
 
-Clipboard messages should expire quickly and supersede older pending clipboard
-messages from the same sender. A delayed or out-of-order message must not silently
-overwrite newer received state. Offline deliveries beyond the freshness window
-are discarded. Exact expiry and handling of a receiver's intervening local copy
-require a product decision; background clipboard reads cannot reliably establish
-that local copy history on stock Android.
-
-Files use encrypted temporary blobs, bounded size/expiry, integrity checks and
-resumable download. Large downloads remain explicit. Chat Send and chat history
-do not use either mailbox or blob storage.
-
-## Background delivery and battery
-
-Push is a wake-up hint; the receiver fetches encrypted data and acknowledges the
-actual result. FCM is one adapter, not a requirement for the core relay protocol.
-Android normal-priority delivery can wait during Doze, and silent high-priority
-messages can be downgraded. Do not promise instant invisible synchronization.
-See [FCM Android priority guidance](https://firebase.google.com/docs/cloud-messaging/android-message-priority).
-
-KATIM without Google Play services needs an available vendor push adapter, or an
-explicit foreground Live link session with a persistent connection. Without such
-a wake-up mechanism, fetch when DeviceLink opens or through deferred scheduled
-work. Measure idle battery consumption before selecting Live link defaults;
-timeout/manual off should remain visible user controls.
-
-A server does not enable background clipboard capture. Automatic sends come from
-explicit copy actions in an integrated app; other applications use Share or a
-foreground Send clipboard action. See [Android clipboard restrictions](https://developer.android.com/about/versions/10/privacy/changes#clipboard-data).
-
-## Implementation decisions still needed
-
-- Deployment owner, service URL and operational retention/quotas.
-- Push availability on KATIM firmware and expected delivery latency without it.
-- Explicit receiver consent, clipboard expiry and treatment of delayed messages.
-- Reviewed asynchronous E2EE protocol, membership/recovery/revocation and replay state.
-- Measured battery/latency targets and failure UX for offline/unreachable phones.
-
-The proposal is a transport extension, not a replacement for the nearby feature.
+Android checks and 32 relay contract tests pass; local Python startup and Docker
+build/container health are verified. Two-phone text/image clipboard delivery,
+explicit file acceptance and sender-offline mailbox delivery also passed against
+the local debug relay through USB tunnels. These are not public HTTPS/cellular,
+sustained Doze or battery measurements. The [validation record](validation.md)
+tracks the exact evidence and remaining checks.

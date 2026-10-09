@@ -1,7 +1,22 @@
-@file:OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+@file:OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class, androidx.compose.foundation.ExperimentalFoundationApi::class, androidx.compose.material3.ExperimentalMaterial3Api::class)
 
 package dev.devicelink.feature.link
 
+import android.graphics.BitmapFactory
+import android.net.Uri
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.content.ReceiveContentListener
+import androidx.compose.foundation.content.contentReceiver
+import androidx.compose.foundation.content.consume
+import androidx.compose.foundation.text.input.rememberTextFieldState
+import androidx.compose.foundation.text.input.TextFieldLineLimits
+import androidx.compose.foundation.layout.height
+import androidx.compose.runtime.produceState
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
@@ -73,7 +88,8 @@ fun SampleClipboardProvider(onCopySample: (String) -> Unit, content: @Composable
 }
 
 /** Messages are persisted locally by the application; there is no chat transport. */
-data class SampleChatMessage(val id: String, val text: String)
+data class SampleChatImage(val uri: String, val mime: String)
+data class SampleChatMessage(val id: String, val text: String, val imageUri: String? = null, val imageMime: String? = null)
 
 private data class ClipboardSample(val title: String, val text: String, val outgoing: Boolean = false, val long: Boolean = false)
 
@@ -84,10 +100,19 @@ internal fun ClipboardSamplesScreen(
     onCopySample: (String) -> Unit,
     onAddMessage: suspend (String) -> Boolean,
     onBack: () -> Unit,
+    sampleImage: SampleChatImage? = null,
+    relayPeerName: String? = null,
+    onCopyImage: (String) -> Unit,
+    onPasteImage: suspend (String) -> SampleChatImage?,
+    onAddImage: suspend (String, SampleChatImage) -> Boolean,
 ) {
     val tokens = LocalDeviceTokens.current
-    val connected = state.phase == LinkPhase.CONNECTED
-    var draft by rememberSaveable { mutableStateOf("") }
+    val connected = state.phase == LinkPhase.CONNECTED || relayPeerName != null
+    val editor = rememberTextFieldState()
+    val draft = editor.text.toString()
+    var attachment by remember { mutableStateOf<SampleChatImage?>(null) }
+    var importing by remember { mutableStateOf(false) }
+    var imageError by remember { mutableStateOf(false) }
     var saving by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val draftBytes = remember(draft) { draft.toByteArray(Charsets.UTF_8).size }
@@ -105,8 +130,8 @@ internal fun ClipboardSamplesScreen(
         ClipboardSample(stringResource(R.string.dl_sample_long), longText, long = true),
     )
     val listState = rememberLazyListState()
-    LaunchedEffect(localMessages.lastOrNull()?.id) {
-        if (localMessages.isNotEmpty()) listState.animateScrollToItem(samples.size + localMessages.size)
+    LaunchedEffect(localMessages.lastOrNull()?.id, sampleImage?.uri) {
+        if (localMessages.isNotEmpty()) listState.animateScrollToItem(samples.size + localMessages.size + if (sampleImage == null) 0 else 1)
     }
     Scaffold(
         modifier = Modifier.widthIn(max = tokens.contentWidth).fillMaxSize().imePadding(),
@@ -116,7 +141,7 @@ internal fun ClipboardSamplesScreen(
             Row(Modifier.fillMaxWidth().padding(tokens.inset), horizontalArrangement = Arrangement.spacedBy(tokens.small), verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(tokens.tiny)) {
                     Text(stringResource(R.string.dl_samples_title), style = MaterialTheme.typography.titleLarge, modifier = Modifier.semantics { heading() })
-                    Text(if (connected) stringResource(R.string.dl_samples_linked, state.connectedPeerName.orEmpty()) else stringResource(R.string.dl_samples_local), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(if (connected) stringResource(R.string.dl_samples_linked, (state.connectedPeerName ?: relayPeerName).orEmpty()) else stringResource(R.string.dl_samples_local), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 TextButton(onClick = onBack) { Text(stringResource(R.string.dl_done)) }
             }
@@ -124,30 +149,59 @@ internal fun ClipboardSamplesScreen(
         bottomBar = {
             Surface(color = MaterialTheme.colorScheme.surfaceContainer) {
                 Column(Modifier.fillMaxWidth().padding(tokens.inset), verticalArrangement = Arrangement.spacedBy(tokens.small)) {
+                    attachment?.let { image ->
+                        ImagePreview(image, compact = true)
+                        TextButton(onClick = { attachment = null }) { Text(stringResource(R.string.dl_image_remove)) }
+                    }
+                    if (importing) Text(stringResource(R.string.dl_image_importing), style = MaterialTheme.typography.bodyMedium)
+                    if (imageError) Text(stringResource(R.string.dl_image_invalid), color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium)
                     // Intentionally outside SampleClipboardProvider: normal input copy/paste
                     // remains local. Send persists a local chat message; it never sends a Clip.
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(tokens.small), verticalAlignment = Alignment.Bottom) {
                         OutlinedTextField(
-                            value = draft, onValueChange = { draft = it }, modifier = Modifier.weight(1f),
+                            state = editor, modifier = Modifier.weight(1f).contentReceiver(ReceiveContentListener { content ->
+                                var selected = false
+                                content.consume { item ->
+                                    val uri = item.uri
+                                    if (uri == null) false else {
+                                        // Consume URI payloads even when invalid: never paste image URI text.
+                                        if (!selected && !importing) {
+                                            selected = true; importing = true; imageError = false
+                                            scope.launch {
+                                                try {
+                                                    val imported = onPasteImage(uri.toString())
+                                                    if (imported != null) attachment = imported else imageError = true
+                                                } finally { importing = false }
+                                            }
+                                        }
+                                        true
+                                    }
+                                }
+                            }),
                             label = { Text(stringResource(R.string.dl_samples_paste_label)) },
                             placeholder = { Text(stringResource(R.string.dl_samples_paste_placeholder)) },
                             isError = draftTooLarge,
                             supportingText = if (draftTooLarge) ({ Text(stringResource(R.string.dl_samples_message_too_large, WireCodec.MAX_TEXT_BYTES, draftBytes)) }) else null,
-                            minLines = 1, maxLines = 4,
+                            lineLimits = TextFieldLineLimits.MultiLine(minHeightInLines = 1, maxHeightInLines = 4),
                         )
                         Button(
                             onClick = {
                                 val submitted = draft
+                                val submittedImage = attachment
                                 saving = true
                                 scope.launch {
                                     try {
-                                        if (onAddMessage(submitted) && draft == submitted) draft = ""
+                                        val saved = if (submittedImage == null) onAddMessage(submitted) else onAddImage(submitted, submittedImage)
+                                        if (saved) {
+                                            if (editor.text.toString() == submitted) editor.edit { replace(0, length, "") }
+                                            if (attachment == submittedImage) attachment = null
+                                        }
                                     } finally {
                                         saving = false
                                     }
                                 }
                             },
-                            enabled = !saving && draft.isNotBlank() && !draftTooLarge,
+                            enabled = !saving && !importing && (draft.isNotBlank() || attachment != null) && !draftTooLarge,
                         ) { Text(stringResource(if (saving) R.string.dl_samples_saving else R.string.dl_samples_send)) }
                     }
                     Text(stringResource(R.string.dl_samples_paste_hint), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -164,6 +218,12 @@ internal fun ClipboardSamplesScreen(
             item {
                 Text(stringResource(if (connected) R.string.dl_samples_linked_hint else R.string.dl_samples_local_hint), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
+            if (sampleImage != null) item(key = "seed-image") {
+                MessageBubble(false, stringResource(R.string.dl_image_sample_sender)) {
+                    ImagePreview(sampleImage)
+                    TextButton(onClick = { onCopyImage(sampleImage.uri) }) { Text(stringResource(R.string.dl_copy_image)) }
+                }
+            }
             items(samples, key = { "seed-${it.title}" }) { sample ->
                 ChatMessage(
                     text = sample.text,
@@ -174,7 +234,13 @@ internal fun ClipboardSamplesScreen(
                 )
             }
             items(localMessages, key = { "local-${it.id}" }) { message ->
-                ChatMessage(message.text, outgoing = true, sender = stringResource(R.string.dl_samples_you), long = message.text.length > 600, onCopySample = onCopySample)
+                if (message.imageUri != null && message.imageMime != null) {
+                    MessageBubble(true, stringResource(R.string.dl_samples_you)) {
+                        ImagePreview(SampleChatImage(message.imageUri, message.imageMime))
+                        TextButton(onClick = { onCopyImage(message.imageUri) }) { Text(stringResource(R.string.dl_copy_image)) }
+                        if (message.text.isNotBlank()) SampleClipboardProvider(onCopySample) { SelectionContainer { Text(message.text, style = MaterialTheme.typography.bodyLarge) } }
+                    }
+                } else ChatMessage(message.text, outgoing = true, sender = stringResource(R.string.dl_samples_you), long = message.text.length > 600, onCopySample = onCopySample)
             }
         }
     }
@@ -194,4 +260,24 @@ private fun ChatMessage(text: String, outgoing: Boolean, sender: String, long: B
             if (long) TextButton(onClick = { expanded = !expanded }) { Text(stringResource(if (expanded) R.string.dl_samples_collapse else R.string.dl_samples_expand)) }
         }
     }
+}
+
+@Composable
+private fun ImagePreview(image: SampleChatImage, compact: Boolean = false) {
+    val context = LocalContext.current
+    val bitmap by produceState<androidx.compose.ui.graphics.ImageBitmap?>(null, image.uri) {
+        value = withContext(Dispatchers.IO) {
+            runCatching {
+                val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                context.contentResolver.openInputStream(Uri.parse(image.uri)).use { BitmapFactory.decodeStream(it, null, options) }
+                require(options.outWidth > 0 && options.outHeight > 0 && options.outWidth.toLong() * options.outHeight <= 40_000_000)
+                options.inJustDecodeBounds = false
+                options.inSampleSize = Integer.highestOneBit((maxOf(options.outWidth, options.outHeight) / 512).coerceAtLeast(1))
+                context.contentResolver.openInputStream(Uri.parse(image.uri)).use { BitmapFactory.decodeStream(it, null, options)?.asImageBitmap() }
+            }.getOrNull()
+        }
+    }
+    val tokens = LocalDeviceTokens.current
+    bitmap?.let { Image(it, contentDescription = stringResource(R.string.dl_image_description), contentScale = ContentScale.Fit, modifier = Modifier.fillMaxWidth().height(if (compact) tokens.imageAttachmentHeight else tokens.imageMessageHeight)) }
+        ?: Text(stringResource(R.string.dl_image_loading), style = MaterialTheme.typography.bodyMedium)
 }
