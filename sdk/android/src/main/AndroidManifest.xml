@@ -1,0 +1,31 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+ <uses-permission android:name="android.permission.INTERNET" />
+ <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+ <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+ <uses-permission android:name="android.permission.FOREGROUND_SERVICE_REMOTE_MESSAGING" />
+ <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+ <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+ <application>
+  <!-- Long-polls the relay while the user keeps receiving on; visible notification, stoppable. -->
+  <service android:name="dev.devicelink.sdk.ReceiverService" android:exported="false" android:foregroundServiceType="remoteMessaging" />
+  <provider android:name="dev.devicelink.sdk.DeviceLinkFileProvider" android:authorities="${applicationId}.devicelink.files"
+   android:exported="false" android:grantUriPermissions="true" />
+  <activity android:name="dev.devicelink.sdk.SendClipboardActivity" android:exported="false" android:excludeFromRecents="true"
+   android:noHistory="true" android:taskAffinity="" android:theme="@style/DeviceLink.Invisible" />
+  <!-- Share sheet + text selection "Send to device". Host apps can drop it with tools:node="remove". -->
+  <activity android:name="dev.devicelink.sdk.ShareToDeviceActivity" android:exported="true" android:excludeFromRecents="true"
+   android:noHistory="true" android:taskAffinity="" android:label="@string/dl_share_label" android:icon="@drawable/dl_ic_share"
+   android:theme="@style/DeviceLink.Invisible">
+   <intent-filter><action android:name="android.intent.action.SEND" /><category android:name="android.intent.category.DEFAULT" />
+    <data android:mimeType="text/*" /><data android:mimeType="image/*" /><data android:mimeType="application/*" /></intent-filter>
+   <intent-filter><action android:name="android.intent.action.SEND_MULTIPLE" /><category android:name="android.intent.category.DEFAULT" />
+    <data android:mimeType="image/*" /><data android:mimeType="application/*" /></intent-filter>
+   <intent-filter><action android:name="android.intent.action.PROCESS_TEXT" /><category android:name="android.intent.category.DEFAULT" />
+    <data android:mimeType="text/plain" /></intent-filter>
+  </activity>
+  <receiver android:name="dev.devicelink.sdk.NotificationActionReceiver" android:exported="false" />
+  <receiver android:name="dev.devicelink.sdk.BootReceiver" android:exported="false">
+   <intent-filter><action android:name="android.intent.action.BOOT_COMPLETED" /><action android:name="android.intent.action.MY_PACKAGE_REPLACED" /></intent-filter>
+  </receiver>
+ </application>
+</manifest>

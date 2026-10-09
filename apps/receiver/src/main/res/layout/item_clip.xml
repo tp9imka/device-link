@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android" style="@style/Card" android:layout_width="match_parent"
+ android:layout_height="wrap_content" android:gravity="center_vertical" android:minHeight="64dp" android:paddingTop="12dp" android:paddingBottom="12dp">
+ <ImageView android:id="@+id/thumb" android:layout_width="48dp" android:layout_height="48dp" android:layout_marginEnd="12dp"
+  android:scaleType="centerCrop" android:visibility="gone" android:importantForAccessibility="no" />
+ <LinearLayout android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:orientation="vertical">
+  <TextView android:id="@+id/meta" style="@style/Body" android:layout_width="wrap_content" android:layout_height="wrap_content" android:textSize="12sp" />
+  <TextView android:id="@+id/content" android:layout_width="wrap_content" android:layout_height="wrap_content" android:maxLines="3"
+   android:ellipsize="end" android:textColor="@color/on_surface" android:textSize="15sp" android:layout_marginTop="2dp" />
+  <TextView android:id="@+id/state" style="@style/Body" android:layout_width="wrap_content" android:layout_height="wrap_content"
+   android:textSize="12sp" android:layout_marginTop="4dp" />
+ </LinearLayout>
+</LinearLayout>

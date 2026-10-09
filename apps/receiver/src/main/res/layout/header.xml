@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android" android:layout_width="match_parent"
+ android:layout_height="wrap_content" android:orientation="vertical">
+
+ <LinearLayout android:id="@+id/empty" style="@style/Card" android:layout_width="match_parent" android:layout_height="wrap_content"
+  android:orientation="vertical" android:layout_marginTop="8dp">
+  <TextView style="@style/Heading" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="@string/empty_title" />
+  <TextView style="@style/Body" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="6dp"
+   android:text="@string/empty_body" />
+  <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="12dp">
+   <Button android:id="@+id/show_code" style="@style/PrimaryButton" android:layout_width="0dp" android:layout_weight="1"
+    android:layout_height="wrap_content" android:text="@string/show_code" />
+   <Button android:id="@+id/scan_code" style="@style/SecondaryButton" android:layout_width="0dp" android:layout_weight="1"
+    android:layout_height="wrap_content" android:text="@string/scan_code" />
+  </LinearLayout>
+  <Button android:id="@+id/paste_link" style="@style/SecondaryButton" android:layout_width="wrap_content" android:layout_height="wrap_content"
+   android:text="@string/paste_link" />
+ </LinearLayout>
+
+ <LinearLayout android:id="@+id/linked" style="@style/Card" android:layout_width="match_parent" android:layout_height="wrap_content"
+  android:orientation="vertical" android:layout_marginTop="8dp">
+  <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="center_vertical">
+   <TextView style="@style/Heading" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content"
+    android:text="@string/linked_devices" />
+   <Button android:id="@+id/link_more" style="@style/SecondaryButton" android:layout_width="wrap_content" android:layout_height="wrap_content"
+    android:text="@string/link_more" />
+  </LinearLayout>
+  <HorizontalScrollView android:layout_width="match_parent" android:layout_height="wrap_content" android:scrollbars="none">
+   <LinearLayout android:id="@+id/peers" android:layout_width="wrap_content" android:layout_height="wrap_content" />
+  </HorizontalScrollView>
+  <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="12dp">
+   <Button android:id="@+id/paste_send" style="@style/PrimaryButton" android:layout_width="0dp" android:layout_weight="1"
+    android:layout_height="wrap_content" android:text="@string/paste_send" />
+   <Button android:id="@+id/send_file" style="@style/SecondaryButton" android:layout_width="0dp" android:layout_weight="1"
+    android:layout_height="wrap_content" android:text="@string/send_file" />
+  </LinearLayout>
+ </LinearLayout>
+
+ <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="center_vertical"
+  android:layout_marginTop="16dp" android:paddingStart="4dp">
+  <TextView style="@style/Heading" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="@string/clips" />
+  <Button android:id="@+id/clear" style="@style/SecondaryButton" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="@string/clear" />
+ </LinearLayout>
+ <TextView android:id="@+id/clips_empty" style="@style/Body" android:layout_width="match_parent" android:layout_height="wrap_content"
+  android:padding="16dp" android:text="@string/clips_empty" />
+</LinearLayout>

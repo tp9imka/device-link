@@ -1,0 +1,7 @@
+<resources>
+ <color name="dl_accent">#2F6FED</color>
+ <style name="DeviceLink.Invisible" parent="@android:style/Theme.Translucent.NoTitleBar">
+  <item name="android:windowAnimationStyle">@null</item>
+  <item name="android:windowNoDisplay">false</item>
+ </style>
+</resources>

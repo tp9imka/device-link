@@ -1,0 +1,36 @@
+<resources>
+ <string name="app_name">DeviceLink Sample</string>
+ <string name="subtitle">SDK integration: every copy made in this app is sent to your linked devices.</string>
+ <string name="not_linked">No device linked yet</string>
+ <string name="linked_with">Linked with %1$s</string>
+ <string name="show_code">Show code</string>
+ <string name="scan_code">Scan code</string>
+ <string name="try_heading">Copy something</string>
+ <string name="try_body">Select and copy text below, or use Copy on a sample. The other device gets it on its clipboard within a second or two.</string>
+ <string name="scratch_hint">Type or paste anything here, then select it and choose Copy</string>
+ <string name="samples">Sample data</string>
+ <string name="copy">Copy</string>
+ <string name="copy_image">Copy image</string>
+ <string name="send_file">Send sample file</string>
+ <string name="image_heading">Image</string>
+ <string name="image_description">Synthetic sample image</string>
+ <string name="file_heading">File</string>
+ <string name="file_body">Files do not go to the clipboard: the receiver gets a notification with Share… to pick any app.</string>
+ <string name="deliveries">Recent deliveries</string>
+ <string name="deliveries_empty">Nothing sent yet</string>
+ <string name="scenarios">Test scenarios</string>
+ <string name="scenarios_body">1. Copy the short text: it should paste on the other device.\n2. Copy the emoji and the long text: content arrives intact.\n3. Copy the image: paste it in a chat or notes app there.\n4. Send the sample file: tap Share… in the notification there.\n5. Turn the other device offline, copy, reconnect within 5 minutes: it still arrives.\n6. Wait more than 5 minutes offline: the item expires and is never delivered.\n7. Copy three samples quickly: only the newest one replaces the clipboard there.\n8. On the other device, select text → Send to device: it arrives here.</string>
+ <string name="copied_sent">Copied · sending to %1$s</string>
+ <string name="copied_local">Copied (no linked device)</string>
+ <string name="state_pending">sending…</string>
+ <string name="state_copied">✓ copied on %1$s</string>
+ <string name="state_delivered">✓ delivered to %1$s</string>
+ <string name="state_failed">not delivered</string>
+ <string name="sample_short">Hello from the DeviceLink sample 👋</string>
+ <string name="sample_otp">482913</string>
+ <string name="sample_url">https://example.org/devicelink/sample?ref=clipboard</string>
+ <string name="sample_address">Sample Street 12\n10115 Example City\nNowhere</string>
+ <string name="sample_unicode">Ünïcødé ✓ — 日本語 · العربية · 🚀📋</string>
+ <string name="sample_code">fun greet(name: String) = \"Hello, $name!\"</string>
+ <string name="sample_long_label">Long text (~20 KB)</string>
+</resources>
