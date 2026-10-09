@@ -32,6 +32,7 @@ Compose Material 3, Android 8+ (API 26). No root or privileged clipboard access.
 - Visual values belong in core/designsystem. Runtime appearance settings must work without editing screens.
 - User strings belong in Android resources. Respect font scaling, RTL and system insets.
 - Do not add secret files or claim two-phone validation from emulator/unit tests.
+- Keep operator-specific hosting, tunnel setup, domains and deployment records outside the repository and wiki. Runtime endpoints belong in private configuration; shared deployment examples must stay generic.
 
 ## References
 - `docs/adr/0001-architecture.md`: scope, decisions and verification plan.

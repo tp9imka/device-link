@@ -8,3 +8,7 @@ local.properties
 *.jks
 *.keystore
 artifacts/
+.env
+.env.*
+*.env
+!.env.example
