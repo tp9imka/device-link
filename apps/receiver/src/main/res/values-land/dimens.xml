@@ -1,0 +1,5 @@
+<resources>
+ <dimen name="kb_key_height">40dp</dimen>
+ <dimen name="kb_row_gap">5dp</dimen>
+ <dimen name="kb_toolbar_height">38dp</dimen>
+</resources>

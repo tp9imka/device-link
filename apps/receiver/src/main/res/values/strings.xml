@@ -56,9 +56,22 @@
  <string name="sensitive_hidden">Sensitive content</string>
  <string name="paste_link_hint">https://…/pair#v2…</string>
  <string name="keyboard_name">DeviceLink keyboard</string>
- <string name="kb_paste">Paste last clip</string>
- <string name="kb_send">Send clipboard</string>
- <string name="kb_auto">Auto-send copies</string>
- <string name="kb_switch">Keyboard ⌨</string>
+ <string name="kb_send">Send ↑</string>
+ <string name="kb_subtype">English (US), DeviceLink</string>
+ <string name="kb_auto_on">Auto-send on</string>
+ <string name="kb_auto_off">Auto-send off</string>
+ <string name="kb_not_linked">Not linked</string>
+ <string name="kb_paste_clip">Paste: %1$s</string>
+ <string name="kb_paste_sensitive">Paste: sensitive clip</string>
+ <string name="kb_mode_symbols">\?123</string>
+ <string name="kb_mode_letters">ABC</string>
+ <string name="kb_mode_more">=\\&lt;</string>
+ <string name="kb_space">DeviceLink</string>
+ <string name="kb_action_go">Go</string>
+ <string name="kb_action_search">Search</string>
+ <string name="kb_action_send">Send</string>
+ <string name="kb_action_next">Next</string>
+ <string name="kb_action_previous">Prev</string>
+ <string name="kb_action_done">Done</string>
  <string name="kb_nothing_received">No clip received yet</string>
 </resources>

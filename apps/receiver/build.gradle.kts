@@ -26,4 +26,5 @@ android {
 dependencies {
  implementation(project(":sdk:android"))
  implementation(libs.coroutines.android)
+ testImplementation(libs.junit)
 }

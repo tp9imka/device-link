@@ -15,7 +15,7 @@ scan through your own relay. Content is end-to-end encrypted, waits at most 5 mi
 | Protocol v2 | [`docs/protocol/link-v2.md`](docs/protocol/link-v2.md) | Kotlin and Swift exchange checked-in vectors |
 | Kotlin SDK core (JVM/Android) | `sdk/core` | Unit tests incl. RFC 9180/5869 vectors, live-relay test |
 | Android SDK | `sdk/android` | Keystore identity, foreground receiver, clipboard, share prompts, pairing UI |
-| Android receiver app | `apps/receiver` | Thin clip list, Quick Settings tile, share-sheet and text-selection send, optional DeviceLink keyboard that sends every copy, diagnostics |
+| Android receiver app | `apps/receiver` | Thin clip list, Quick Settings tile, share-sheet and text-selection send, optional DeviceLink keyboard (full QWERTY; every copy is sent while it is active), diagnostics |
 | Android SDK sample | `apps/sample` | Auto-sends every in-app copy; synthetic samples and test scenarios |
 | Swift SDK + CLI | [`ios/DeviceLinkKit`](ios/README.md) | Builds/tests on Linux and macOS; `devicelink` CLI with two-way clipboard `sync` |
 | iOS app, share extension, notification previews, Shortcuts, sample | [`ios/`](ios/README.md) | Compiled in CI (`xcodebuild`); needs on-device validation |

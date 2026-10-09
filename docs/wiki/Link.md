@@ -37,12 +37,30 @@ opens DeviceLink). That's it — both devices are linked in both directions. The
 | --- | --- | --- |
 | Receive into the clipboard | Automatic while **Receive** is on (status-bar notification) | Automatic while DeviceLink is open; otherwise tap the push alert, open the app, or run *Get DeviceLink clip* (Back Tap) within 5 min |
 | Send what you copied in an SDK app | Automatic | Automatic |
-| Send from any other app | Select text → **Send to device**; Share → **Send to device**; Quick Settings tile **Send clipboard** | Share → **Send to device**; Back Tap shortcut *Get Clipboard → Send to DeviceLink*; **Paste** in the app |
+| Send from any other app | Automatic with the **DeviceLink keyboard** (below); otherwise select text → **Send to device**, Share → **Send to device**, or the Quick Settings tile **Send clipboard** | Share → **Send to device**; Back Tap shortcut *Get Clipboard → Send to DeviceLink*; **Paste** in the app |
 | Handle a file | Notification → **Share…** / **Open** | Clip list → Share… |
 
 Neither platform lets an ordinary app read the clipboard in the background, so sending from other
-apps is always one explicit gesture. Receiving into the clipboard is automatic on Android and
-whenever the iPhone app runs.
+apps is one explicit gesture, with one exception: Android lets the **current keyboard** see clipboard
+changes. Receiving into the clipboard is automatic on Android and whenever the iPhone app runs.
+
+### DeviceLink keyboard (Android, optional)
+
+Enable it in Settings › System › Keyboard › On-screen keyboard › **DeviceLink keyboard**, then pick it
+with the keyboard switcher. It is an everyday QWERTY keyboard, and while it is your keyboard every
+copy in any app is sent to your linked devices: copy and forget.
+
+- Bar above the keys: **Auto-send on/off** (tap to toggle), **Paste: …** inserts the last received
+  clip, **Send ↑** sends the clipboard now.
+- Typing: tap shift for one capital, double-tap or hold it for caps lock; sentences start capitalised
+  where the app asks for it; double space types ". "; hold a key for the small character in its
+  corner (numbers on the top row, symbols on the others); hold delete to repeat; slide on the space
+  bar to move the cursor; hold the comma for emoji; **?123** for numbers and symbols, **=\<** for more.
+- Enter shows the app's action (Go, Search, Send, Next, Done). Number and phone fields open a number pad.
+- 🌐 (or holding space) switches to another keyboard.
+- Clips that apps mark as sensitive (password managers) are never sent automatically.
+- Nothing you type is stored or sent: there is no dictionary, prediction or learning. If you want
+  autocorrect, keep your usual keyboard and switch to DeviceLink's when copying between devices.
 
 ## Privacy
 

@@ -1,16 +1,20 @@
 <?xml version="1.0" encoding="utf-8"?>
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android" android:layout_width="match_parent"
- android:layout_height="wrap_content" android:orientation="vertical" android:background="@color/surface" android:padding="8dp">
- <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical">
-  <Button android:id="@+id/kb_paste" style="@style/PrimaryButton" android:layout_width="0dp" android:layout_weight="1"
-   android:layout_height="wrap_content" android:text="@string/kb_paste" />
-  <Button android:id="@+id/kb_send" style="@style/SecondaryButton" android:layout_width="0dp" android:layout_weight="1"
-   android:layout_height="wrap_content" android:text="@string/kb_send" />
+ android:layout_height="wrap_content" android:orientation="vertical" android:background="@color/kb_background">
+ <LinearLayout android:layout_width="match_parent" android:layout_height="@dimen/kb_toolbar_height"
+  android:orientation="horizontal" android:gravity="center_vertical" android:paddingStart="6dp" android:paddingEnd="6dp">
+  <TextView android:id="@+id/kb_status" android:layout_width="wrap_content" android:layout_height="32dp"
+   android:background="@drawable/kb_chip" android:gravity="center" android:paddingStart="10dp" android:paddingEnd="10dp"
+   android:maxLines="1" android:textColor="@color/kb_chip_text" android:textSize="13sp" />
+  <TextView android:id="@+id/kb_clip" android:layout_width="0dp" android:layout_weight="1" android:layout_height="32dp"
+   android:layout_marginStart="6dp" android:layout_marginEnd="6dp" android:background="@drawable/kb_chip"
+   android:gravity="center_vertical" android:paddingStart="10dp" android:paddingEnd="10dp" android:maxLines="1"
+   android:ellipsize="end" android:textColor="@color/kb_label" android:textSize="13sp" />
+  <TextView android:id="@+id/kb_send" android:layout_width="wrap_content" android:layout_height="32dp"
+   android:background="@drawable/kb_chip" android:gravity="center" android:paddingStart="10dp" android:paddingEnd="10dp"
+   android:maxLines="1" android:text="@string/kb_send" android:textColor="@color/accent" android:textSize="13sp"
+   android:textStyle="bold" />
  </LinearLayout>
- <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical">
-  <Switch android:id="@+id/kb_auto" android:layout_width="0dp" android:layout_weight="1" android:layout_height="48dp"
-   android:text="@string/kb_auto" android:textColor="@color/on_surface" />
-  <Button android:id="@+id/kb_switch" style="@style/SecondaryButton" android:layout_width="wrap_content" android:layout_height="wrap_content"
-   android:text="@string/kb_switch" />
- </LinearLayout>
+ <dev.devicelink.receiver.keyboard.KeyboardView android:id="@+id/kb_keys" android:layout_width="match_parent"
+  android:layout_height="wrap_content" />
 </LinearLayout>

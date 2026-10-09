@@ -69,7 +69,7 @@ Record the SHA-256 of every file fixture before sending (`shasum -a 256` on desk
 | S1a | Android: select text in any app → **Send to device** (text selection menu). | Delivered. |
 | S2 | Android: any app → Share → DeviceLink (text, image, file). | Delivered. |
 | S3 | Android: Quick Settings **DeviceLink** tile after copying something elsewhere. | The clipboard is sent (brief invisible activity, no app UI left behind). |
-| S4 | Android: enable the **DeviceLink keyboard**, copy in any app while it is active. | Each copy is sent automatically; switching back to the previous keyboard works. |
+| S4 | Android: enable the **DeviceLink keyboard** and use it as the only keyboard for a day: chat, browser URL bar, search, a number field, a password field. Copy in several apps. | Each copy is sent automatically (password-manager copies are not); typing is comfortable: shift/caps lock, auto-capitals, hold-for-alternates, delete repeat, space-bar cursor slide, Enter action labels, number pad in number fields, 🌐 switching, light/dark, landscape. Note anything awkward. |
 | S5 | iPhone: Share sheet → DeviceLink (text, photo, file). | Delivered. |
 | S6 | iPhone: a Shortcut *Get Clipboard → Send to DeviceLink*, bound to Back Tap (Settings → Accessibility → Touch → Back Tap). | Delivered without opening the app. |
 | S7 | iPhone: Back Tap bound to **Get DeviceLink clip** with the app closed. | Newest waiting item lands on the clipboard. |
