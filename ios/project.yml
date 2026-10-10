@@ -32,6 +32,8 @@ targets:
       path: DeviceLink/Info.plist
       properties:
         CFBundleDisplayName: DeviceLink
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         UILaunchScreen: {}
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
         NSCameraUsageDescription: Scan the pairing code shown on your other device.
@@ -70,6 +72,8 @@ targets:
       path: ShareExtension/Info.plist
       properties:
         CFBundleDisplayName: Send to device
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         DLRelayScheme: $(DEVICELINK_RELAY_SCHEME)
         DLRelayHost: $(DEVICELINK_RELAY_HOST)
         DLEnrollmentToken: $(DEVICELINK_ENROLLMENT_TOKEN)
@@ -104,6 +108,8 @@ targets:
       path: NotificationService/Info.plist
       properties:
         CFBundleDisplayName: DeviceLink
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         DLRelayScheme: $(DEVICELINK_RELAY_SCHEME)
         DLRelayHost: $(DEVICELINK_RELAY_HOST)
         DLEnrollmentToken: $(DEVICELINK_ENROLLMENT_TOKEN)
@@ -131,6 +137,8 @@ targets:
       path: Sample/Info.plist
       properties:
         CFBundleDisplayName: DeviceLink Sample
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         UILaunchScreen: {}
         NSCameraUsageDescription: Scan the pairing code shown on your other device.
         DLRelayScheme: $(DEVICELINK_RELAY_SCHEME)
@@ -161,6 +169,8 @@ targets:
       path: Mac/Info.plist
       properties:
         CFBundleDisplayName: DeviceLink
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         LSUIElement: true
         DLRelayScheme: $(DEVICELINK_RELAY_SCHEME)
         DLRelayHost: $(DEVICELINK_RELAY_HOST)

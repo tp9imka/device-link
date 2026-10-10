@@ -98,10 +98,16 @@ struct ContentView: View {
     }
 
     private var linkSection: some View {
-        Section("Link your first device") {
+        Section {
             Button { showingCode = true } label: { Label("Show my code", systemImage: "qrcode") }.disabled(!model.relayConfigured)
             Button { scanning = true } label: { Label("Scan a code", systemImage: "qrcode.viewfinder") }
+            // PasteButton renders only "Paste"; the footer says what it pastes.
             PasteButton(payloadType: String.self) { strings in if let link = strings.first { model.open(link) } }
+                .accessibilityLabel("Paste a pairing link")
+        } header: {
+            Text("Link your first device")
+        } footer: {
+            Text("Paste: link with a pairing link copied from your other device.")
         }
     }
 
@@ -131,6 +137,7 @@ struct ContentView: View {
         Section("Send") {
             // PasteButton reads the clipboard without the "Allow Paste" prompt.
             PasteButton(payloadType: String.self) { strings in if let text = strings.first { model.sendText(text) } }
+                .accessibilityLabel("Paste and send clipboard text")
             PhotosPicker(selection: $photo, matching: .images) { Label("Send a photo", systemImage: "photo") }
             Button { importing = true } label: { Label("Send a file", systemImage: "doc") }
         }

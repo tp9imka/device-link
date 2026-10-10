@@ -62,7 +62,8 @@ final class MacModel: ObservableObject {
             client = try DeviceLinkClient(identity: identity, encryption: encryption,
                                           store: FileLinkStore(url: support.appendingPathComponent("links.json")),
                                           config: LinkConfig(deviceName: Host.current().localizedName ?? "Mac", platform: "desktop", model: "macOS",
-                                                             appVersion: "2.0.0", allowInsecureRelay: scheme == "http",
+                                                             appVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "",
+                                                             allowInsecureRelay: scheme == "http",
                                                              defaultRelayURL: host.isEmpty || host.hasPrefix("$(") ? "" : "\(scheme)://\(host)",
                                                              defaultEnrollmentToken: Bundle.main.object(forInfoDictionaryKey: "DLEnrollmentToken") as? String ?? ""))
             Task { await refresh(); start() }
