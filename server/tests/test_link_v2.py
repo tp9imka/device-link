@@ -175,6 +175,11 @@ def login(client, password="correct horse"):
                        headers={"Content-Type": "application/x-www-form-urlencoded"}, follow_redirects=False)
 
 
+def login_from(client, password="correct horse", **headers):
+    return client.post("/admin/login", content=f"username=admin&password={password}", follow_redirects=False,
+                       headers={"Content-Type": "application/x-www-form-urlencoded", **headers})
+
+
 def csrf(client):
     page = client.get("/admin").text
     return page.split('data-csrf="')[1].split('"')[0]
@@ -209,6 +214,53 @@ def test_admin_login_is_throttled(relay):
     for _ in range(10):
         login(client, "wrong")
     assert login(client).headers["location"] == "/admin?error=1"
+
+
+def test_admin_throttle_ignores_proxy_headers_unless_trusted(relay):
+    _, _, client = relay
+    for n in range(10):
+        login_from(client, "wrong", **{"CF-Connecting-IP": f"198.51.100.{n}"})
+    # Untrusted headers are client-controlled, so the default limit stays global.
+    assert login_from(client, **{"CF-Connecting-IP": "203.0.113.7"}).headers["location"] == "/admin?error=1"
+
+
+def test_trusted_proxy_throttles_per_client_ip(tmp_path):
+    settings = Settings(database=tmp_path / "relay.sqlite3", admin_password_hash=hash_password("correct horse", iterations=1000),
+                        trust_proxy_headers=True)
+    with TestClient(create_app(settings, lambda: NOW)) as client:
+        for _ in range(10):
+            login_from(client, "wrong", **{"CF-Connecting-IP": "198.51.100.1"})
+        assert login_from(client, **{"CF-Connecting-IP": "198.51.100.1"}).headers["location"] == "/admin?error=1"
+        # The operator on another address is not locked out by someone else's guesses.
+        assert login_from(client, **{"CF-Connecting-IP": "203.0.113.7"}).headers["location"] == "/admin"
+        client.cookies.clear()
+        # Without CF-Connecting-IP the address the nearest proxy appended (rightmost) is the key;
+        # a forged leftmost entry does not buy fresh attempts.
+        for n in range(10):
+            login_from(client, "wrong", **{"X-Forwarded-For": f"10.0.0.{n}, 192.0.2.5"})
+        assert login_from(client, **{"X-Forwarded-For": "10.0.0.99, 192.0.2.5"}).headers["location"] == "/admin?error=1"
+        assert login_from(client, **{"X-Forwarded-For": "192.0.2.6"}).headers["location"] == "/admin"
+
+
+def test_trusted_proxy_keeps_a_global_backstop(tmp_path):
+    settings = Settings(database=tmp_path / "relay.sqlite3", admin_password_hash=hash_password("correct horse", iterations=1000),
+                        trust_proxy_headers=True)
+    with TestClient(create_app(settings, lambda: NOW)) as client:
+        for n in range(100):
+            login_from(client, "wrong", **{"CF-Connecting-IP": f"198.51.{n // 250}.{n % 250}"})
+        assert login_from(client, **{"CF-Connecting-IP": "203.0.113.7"}).headers["location"] == "/admin?error=1"
+
+
+def test_unset_session_secret_warns_without_leaking(tmp_path, caplog):
+    password = hash_password("correct horse", iterations=1000)
+    with caplog.at_level("WARNING", logger="relay"):
+        create_app(Settings(database=tmp_path / "a.sqlite3", admin_password_hash=password))
+    assert any("session_secret" in record.getMessage() for record in caplog.records)
+    caplog.clear()
+    with caplog.at_level("WARNING", logger="relay"):
+        create_app(Settings(database=tmp_path / "b.sqlite3", admin_password_hash=password, session_secret="s3cret-value"))
+    assert not any("session_secret" in record.getMessage() for record in caplog.records)
+    assert "s3cret-value" not in caplog.text
 
 
 def test_admin_sees_devices_sandboxes_and_activity_but_no_content(relay):
@@ -289,6 +341,8 @@ def test_settings_from_toml_and_environment(tmp_path):
     path.write_text('admin_username = "ops"\nadmin_password = "from-file"\nmax_ttl_ms = 300000\n')
     settings = Settings.environment({"RELAY_CONFIG": str(path), "RELAY_ADMIN_PASSWORD": "from-env"})
     assert (settings.admin_username, settings.admin_password, settings.max_ttl_ms) == ("ops", "from-env", 300000)
+    assert not settings.trust_proxy_headers
+    assert Settings.environment({"RELAY_TRUST_PROXY_HEADERS": "true"}).trust_proxy_headers is True
     path.write_text('unknown_key = 1\n')
     with pytest.raises(ValueError):
         Settings.environment({"RELAY_CONFIG": str(path)})

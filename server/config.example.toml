@@ -14,7 +14,12 @@ enrollment_token = "replace-with-a-long-random-string"
 admin_username = "admin"
 admin_password_hash = ""
 # admin_password = ""          # plain-text alternative for local testing only
-session_secret = "replace-with-64-random-hex-characters"
+session_secret = "replace-with-64-random-hex-characters"   # unset: admins are signed out on every restart
+# Admin login throttle. false (default): 10 failures in 5 min lock the login for everyone.
+# true: 10 per client IP from CF-Connecting-IP / rightmost X-Forwarded-For, 100 global backstop.
+# Only enable when the relay is reachable solely through a proxy that overwrites those headers
+# (a Cloudflare tunnel, or deploy/nginx.conf with the relay bound to loopback).
+# trust_proxy_headers = true
 # Optional bearer token for Prometheus scraping of /metrics (metadata counts only).
 # metrics_token = "replace-with-a-long-random-string"
 

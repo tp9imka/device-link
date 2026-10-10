@@ -40,6 +40,9 @@ class Settings:
     admin_password_hash: str = ""
     session_secret: str = ""
     session_hours: int = 12
+    # Key the admin login throttle by client IP from CF-Connecting-IP / X-Forwarded-For.
+    # Enable only when every request reaches the relay through a proxy that sets these headers.
+    trust_proxy_headers: bool = False
     # Bearer token for GET /metrics (Prometheus text). Unset: only a signed-in admin can read it.
     metrics_token: str = ""
     # Optional Apple Push Notification service (token auth, .p8 key).

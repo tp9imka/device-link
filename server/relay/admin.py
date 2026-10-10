@@ -9,6 +9,7 @@ import hashlib
 import io
 import json
 import hmac
+import logging
 import secrets
 import statistics
 import time
@@ -24,6 +25,7 @@ from .dashboard import dashboard_page, login_page
 from .errors import RelayError
 
 COOKIE = "dl_admin"
+logger = logging.getLogger("relay")
 
 
 def hash_password(password, iterations=600_000, salt=None):
@@ -45,11 +47,38 @@ def verify_password(settings, password):
     return bool(settings.admin_password) and hmac.compare_digest(password.encode(), settings.admin_password.encode())
 
 
+LOGIN_WINDOW_SECONDS = 300
+LOGIN_FAILURES_PER_CLIENT = 10
+# With trusted proxy headers: a backstop against guesses spread over many addresses.
+LOGIN_FAILURES_GLOBAL = 100
+
+
+def login_client(request, settings):
+    """Throttle key for admin login failures.
+
+    Without trusted proxy headers every request may come from the proxy's own address and the
+    headers are client-controlled, so all failures share one key. With them, prefer Cloudflare's
+    CF-Connecting-IP, then the rightmost X-Forwarded-For entry (the one the nearest proxy appended).
+    """
+    if not settings.trust_proxy_headers:
+        return "*"
+    cloudflare = request.headers.get("cf-connecting-ip", "").strip()
+    if cloudflare:
+        return cloudflare
+    forwarded = [item.strip() for item in request.headers.get("x-forwarded-for", "").split(",") if item.strip()]
+    if forwarded:
+        return forwarded[-1]
+    return request.client.host if request.client else "*"
+
+
 class Sessions:
     def __init__(self, settings):
         self.settings = settings
+        if settings.admin_enabled and not settings.session_secret:
+            logger.warning("Admin dashboard enabled without session_secret: admin sessions end on every restart. "
+                           "Set session_secret to keep them.")
         self.secret = (settings.session_secret or secrets.token_hex(32)).encode()
-        self.failures = []
+        self.failures = []  # (monotonic time, client key)
 
     def _mac(self, payload):
         return hmac.new(self.secret, payload.encode(), hashlib.sha256).hexdigest()
@@ -73,10 +102,15 @@ class Sessions:
     def csrf(self, nonce):
         return self._mac("csrf." + nonce)[:32]
 
-    def throttled(self):
-        now = time.time()
-        self.failures = [moment for moment in self.failures if now - moment < 300]
-        return len(self.failures) >= 10
+    def failed(self, client):
+        self.failures.append((time.monotonic(), client))
+
+    def throttled(self, client):
+        now = time.monotonic()
+        self.failures = [(moment, key) for moment, key in self.failures if now - moment < LOGIN_WINDOW_SECONDS]
+        if sum(1 for _, key in self.failures if key == client) >= LOGIN_FAILURES_PER_CLIENT:
+            return True
+        return self.settings.trust_proxy_headers and len(self.failures) >= LOGIN_FAILURES_GLOBAL
 
 
 def short(device):
@@ -129,7 +163,8 @@ def install_admin(app):
     async def admin_login(request: Request):
         if not settings.admin_enabled:
             return Response(status_code=404)
-        if sessions.throttled():
+        client = login_client(request, settings)
+        if sessions.throttled(client):
             return RedirectResponse("/admin?error=1", status_code=303)
         body = (await request.body())[:4096].decode("utf-8", "replace")
         form = parse_qs(body)
@@ -138,7 +173,7 @@ def install_admin(app):
         valid = hmac.compare_digest(username.encode(), settings.admin_username.encode())
         valid = await run_in_threadpool(verify_password, settings, password) and valid
         if not valid:
-            sessions.failures.append(time.time())
+            sessions.failed(client)
             return RedirectResponse("/admin?error=1", status_code=303)
         response = RedirectResponse("/admin", status_code=303)
         response.set_cookie(COOKIE, sessions.issue(), max_age=settings.session_hours * 3600, httponly=True,

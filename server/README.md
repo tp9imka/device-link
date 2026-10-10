@@ -40,7 +40,8 @@ Configuration comes from an optional TOML file named by `RELAY_CONFIG` (see `con
 | `max_ttl_ms` | `600000` | Sandbox lifetime cap (clients default to 5 minutes) |
 | `max_poll_wait` | `50` | Longest mailbox long poll in seconds; keep below proxy idle timeouts |
 | `admin_username`, `admin_password_hash` / `admin_password` | `admin`, unset | Dashboard credentials; dashboard disabled until a password is set. Hash with `python -m relay.passwd`. |
-| `session_secret` | random per start | HMAC key for admin sessions; set it to keep sessions across restarts |
+| `session_secret` | random per start | HMAC key for admin sessions; set it to keep sessions across restarts. Unset with the dashboard enabled logs a startup warning. |
+| `trust_proxy_headers` | `false` | Admin login throttle key. `false`: 10 failed logins in 5 minutes lock the login for everyone (proxy headers are ignored because clients can forge them). `true`: 10 per client IP, taken from `CF-Connecting-IP`, else the rightmost `X-Forwarded-For` entry, else the socket address, plus a 100-failure global backstop. Enable only when the relay is reachable solely through a proxy that overwrites these headers: a Cloudflare tunnel sets `CF-Connecting-IP`; `deploy/nginx.conf` sets `X-Forwarded-For $remote_addr` and clears `CF-Connecting-IP`. |
 | `metrics_token` | unset | Bearer token for Prometheus `GET /metrics`; unset disables it (signed-in admins use `/admin/api/metrics`) |
 | `apns_key_path`, `apns_key_id`, `apns_team_id` | unset | Optional APNs token auth for content-free iPhone wake-ups |
 | `android_app_links`, `apple_app_ids` | unset | Optional `/.well-known` app-link verification files |
