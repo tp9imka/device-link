@@ -63,6 +63,12 @@ data class DeviceLinkOptions(
     }
 }
 
+/** Health of this device's stored keys; see [DeviceLinkInstance.keyState]. */
+enum class KeyState { OK, LOST }
+
+/** Pairing refused because [DeviceLinkInstance.keyState] is [KeyState.LOST]. The message is user-facing. */
+class KeysLostException(message: String) : IllegalStateException(message)
+
 /** Entry point: `DeviceLink.init(context)` once (for example in Application.onCreate), then `DeviceLink.get(context)`. */
 object DeviceLink {
     @Volatile private var instance: DeviceLinkInstance? = null
@@ -89,11 +95,21 @@ class DeviceLinkInstance internal constructor(private val context: Context, val 
             .ifBlank { "Android" }
     }
 
+    private val store = FileLinkStore(File(context.noBackupFilesDir, "devicelink/links.json"))
+    private val encryptionKey = WrappedEncryptionKey.load(context, hasLinks = store.load().peers.isNotEmpty())
+
+    /**
+     * [KeyState.LOST] when this device's encryption key could not be read back while devices are linked.
+     * Nothing sent to this device can be decrypted then, so pairing and receiving are refused until
+     * [resetDevice]. Show [R.string.dl_keys_lost] with a reset action.
+     */
+    val keyState: KeyState = if (encryptionKey.lost) KeyState.LOST else KeyState.OK
+
     /** Platform-neutral engine; identity and encryption keys are created on first use. */
     val client = DeviceLinkClient(
         KeystoreIdentity(),
-        WrappedEncryptionKey.load(context),
-        FileLinkStore(File(context.noBackupFilesDir, "devicelink/links.json")),
+        encryptionKey.pair,
+        store,
         LinkConfig(deviceName, "android", model = Build.MODEL, appVersion = options.appVersion,
             allowInsecureRelay = options.allowInsecureRelay, defaultRelayUrl = options.relayUrl,
             defaultEnrollmentToken = options.enrollmentToken),
@@ -115,7 +131,7 @@ class DeviceLinkInstance internal constructor(private val context: Context, val 
                         ReceiptStatus.DELIVERED -> ClipState.DELIVERED
                         ReceiptStatus.FAILED -> ClipState.FAILED
                     })
-                    is LinkEvent.PeerLinked -> if (receiverEnabled) ReceiverService.start(context)
+                    is LinkEvent.PeerLinked -> if (canReceive) ReceiverService.start(context)
                     is LinkEvent.PeerUnlinked -> if (client.peers.value.isEmpty()) ReceiverService.stop(context)
                 }
             }
@@ -125,10 +141,15 @@ class DeviceLinkInstance internal constructor(private val context: Context, val 
     // ----- pairing -------------------------------------------------------------------------------
 
     /** Shows-a-code side. Works on a brand-new install when a relay is built in. */
-    suspend fun invite(): DeviceLinkClient.PairingSession = client.invite()
+    suspend fun invite(): DeviceLinkClient.PairingSession { requireKeys(); return client.invite() }
 
     /** Scans-a-code side. Accepts the https QR link or the devicelink:// form. */
-    suspend fun join(link: String): LinkedPeer = client.join(link).also { receiverEnabled = true }
+    suspend fun join(link: String): LinkedPeer { requireKeys(); return client.join(link).also { receiverEnabled = true } }
+
+    /** A new peer would pin the throwaway key, which is gone after the next start. */
+    private fun requireKeys() {
+        if (keyState == KeyState.LOST) throw KeysLostException(context.getString(R.string.dl_keys_lost))
+    }
 
     suspend fun unlink(peerId: String) = client.unlink(peerId)
 
@@ -211,8 +232,14 @@ class DeviceLinkInstance internal constructor(private val context: Context, val 
         get() = prefs.getBoolean("receiver", true)
         set(value) {
             prefs.edit().putBoolean("receiver", value).apply()
-            if (value && client.peers.value.isNotEmpty()) ReceiverService.start(context) else if (!value) ReceiverService.stop(context)
+            if (canReceive) ReceiverService.start(context) else if (!value) ReceiverService.stop(context)
         }
+
+    /**
+     * The receiver may run: switched on, a device linked, and keys readable. With lost keys every item
+     * would fail to decrypt, so nothing is fetched and the items expire on the relay instead.
+     */
+    internal val canReceive: Boolean get() = receiverEnabled && client.peers.value.isNotEmpty() && keyState == KeyState.OK
 
     fun startReceiver() { receiverEnabled = true }
     fun stopReceiver() { receiverEnabled = false }
@@ -285,6 +312,7 @@ class DeviceLinkInstance internal constructor(private val context: Context, val 
         return buildString {
             appendLine("DeviceLink ${options.appVersion} on Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT}), ${Build.MANUFACTURER} ${Build.MODEL}")
             appendLine("Device ID: ${d.deviceId.take(16)}…")
+            appendLine("Keys: ${if (keyState == KeyState.LOST) "LOST (encryption key unreadable; reset and link again)" else "ok"}")
             appendLine("Relay: ${d.relayUrl.ifEmpty { "not configured" }} · registered: ${d.registered}")
             appendLine("Linked devices: ${d.peers} · receiver on: $receiverEnabled · status: ${client.status.value}")
             appendLine("Last poll: ${at(d.lastPollAt)} · last receive: ${at(d.lastReceiveAt)} · last send: ${at(d.lastSendAt)}")

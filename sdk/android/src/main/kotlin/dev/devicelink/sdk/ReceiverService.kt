@@ -34,7 +34,7 @@ class ReceiverService : Service() {
             shutdown()
             return START_NOT_STICKY
         }
-        if (!link.receiverEnabled || link.peers.value.isEmpty()) { shutdown(); return START_NOT_STICKY }
+        if (!link.canReceive) { shutdown(); return START_NOT_STICKY }
         val notification = Notifications.service(this, getString(R.string.dl_service_title), getString(R.string.dl_status_connecting))
         if (Build.VERSION.SDK_INT >= 34) {
             startForeground(Notifications.SERVICE_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_REMOTE_MESSAGING)
@@ -84,6 +84,6 @@ class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != Intent.ACTION_BOOT_COMPLETED && intent.action != Intent.ACTION_MY_PACKAGE_REPLACED) return
         val link = DeviceLink.get(context)
-        if (link.receiverEnabled && link.peers.value.isNotEmpty()) ReceiverService.start(context)
+        if (link.canReceive) ReceiverService.start(context)
     }
 }
