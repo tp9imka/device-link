@@ -77,12 +77,10 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
     /// Notification tap opens the app (the receive loop copies); the Copy action fetches and copies in the background.
     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
         guard response.actionIdentifier == "COPY" else { return }
-        guard let client = try? await MainActor.run(body: { try LinkEnvironment.client() }) else { return }
-        let store = await MainActor.run { ClipStore.shared }
-        for _ in 0..<10 {
-            let received = (try? await client.receiveOnce(wait: 0) { item in await MainActor.run { store.apply(item) } }) ?? 0
-            if received == 0 { break }
-        }
+        // drain, not receiveOnce until 0: a receipt or duplicate served first would stop before the clip.
+        // Failures leave the item waiting; opening the app fetches it.
+        guard let client = try? await LinkEnvironment.client() else { return }
+        _ = try? await drainWaiting(client)
     }
 
     @MainActor func finishInBackground(_ model: LinkModel) {
