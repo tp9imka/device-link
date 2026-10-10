@@ -3,11 +3,13 @@ package dev.devicelink.receiver
 import android.Manifest
 import android.app.Activity
 import android.app.AlertDialog
+import android.app.NotificationManager
 import android.content.ClipboardManager
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import android.view.Gravity
 import android.view.LayoutInflater
 import android.view.View
@@ -39,6 +41,7 @@ class MainActivity : Activity() {
     private lateinit var header: View
     private lateinit var receive: Switch
     private lateinit var undo: Button
+    private val prefs by lazy { getSharedPreferences("receiver_ui", MODE_PRIVATE) }
     private val hideUndo = Runnable { if (::undo.isInitialized) undo.visibility = View.GONE }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -83,8 +86,8 @@ class MainActivity : Activity() {
             header.findViewById<View>(R.id.clear).visibility = if (records.isEmpty()) View.GONE else View.VISIBLE
         } }
 
-        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), NOTIFICATIONS)
+        header.findViewById<Button>(R.id.notify_settings).setOnClickListener {
+            startActivity(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, packageName))
         }
         DeviceLinkPairing.handleIntent(this, intent)
     }
@@ -99,6 +102,36 @@ class MainActivity : Activity() {
         // Receive can also be turned off from the notification while this screen is in the background.
         render(link.peers.value, link.status.value)
     }
+
+    /**
+     * Fires once every dialog is gone, so this runs after the "Linked with" confirmation is closed.
+     * Notifications are asked for once, after the first link and with a reason; never at launch.
+     */
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) askForNotificationsOnce()
+    }
+
+    private fun askForNotificationsOnce() {
+        if (Build.VERSION.SDK_INT < 33 || link.peers.value.isEmpty() || prefs.getBoolean(ASKED_NOTIFICATIONS, false)) return
+        if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) return
+        prefs.edit().putBoolean(ASKED_NOTIFICATIONS, true).apply()
+        AlertDialog.Builder(this).setTitle(R.string.notify_ask_title).setMessage(R.string.notify_ask_body)
+            .setPositiveButton(R.string.notify_ask_continue) { _, _ -> requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), NOTIFICATIONS) }
+            .setNegativeButton(R.string.notify_ask_later, null)
+            .setOnDismissListener { render(link.peers.value, link.status.value) }
+            .show()
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == NOTIFICATIONS) render(link.peers.value, link.status.value)
+    }
+
+    /** Blocked notifications get a persistent hint, but only once the user was asked (or can't be, below API 33). */
+    private fun notificationsHintVisible(peers: List<LinkedPeer>) = peers.isNotEmpty() &&
+        !getSystemService(NotificationManager::class.java).areNotificationsEnabled() &&
+        (Build.VERSION.SDK_INT < 33 || prefs.getBoolean(ASKED_NOTIFICATIONS, false))
 
     /** User toggles only. Turning off offers Undo for a few seconds, since every clip stops arriving. */
     private fun setReceiving(on: Boolean, offerUndo: Boolean) {
@@ -116,6 +149,7 @@ class MainActivity : Activity() {
         receive.isChecked = link.receiverEnabled
         header.findViewById<TextView>(R.id.receive_state).setText(if (link.receiverEnabled) R.string.receive_on else R.string.receive_off)
         if (link.receiverEnabled) { undo.removeCallbacks(hideUndo); undo.visibility = View.GONE }
+        header.findViewById<View>(R.id.notify_hint).visibility = if (notificationsHintVisible(peers)) View.VISIBLE else View.GONE
         val targets = link.sendTargets
         findViewById<TextView>(R.id.status).text = if (targets.isNotEmpty() && peers.size > 1)
             getString(R.string.sending_to, peers.filter { it.id in targets }.joinToString { it.name }) else getString(when {
@@ -257,5 +291,10 @@ class MainActivity : Activity() {
 
     override fun onDestroy() { undo.removeCallbacks(hideUndo); scope.cancel(); super.onDestroy() }
 
-    private companion object { const val PICK_FILE = 41; const val NOTIFICATIONS = 42; const val UNDO_MILLIS = 8_000L }
+    private companion object {
+        const val PICK_FILE = 41
+        const val NOTIFICATIONS = 42
+        const val UNDO_MILLIS = 8_000L
+        const val ASKED_NOTIFICATIONS = "asked_notifications"
+    }
 }

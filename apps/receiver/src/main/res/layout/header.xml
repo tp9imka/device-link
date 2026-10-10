@@ -50,6 +50,14 @@
   </LinearLayout>
  </LinearLayout>
 
+ <!-- Shown while notifications are blocked: clips still arrive, but nothing says so. -->
+ <LinearLayout android:id="@+id/notify_hint" style="@style/Card" android:layout_width="match_parent" android:layout_height="wrap_content"
+  android:orientation="vertical" android:layout_marginTop="8dp" android:visibility="gone">
+  <TextView style="@style/Body" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="@string/notify_hint" />
+  <Button android:id="@+id/notify_settings" style="@style/SecondaryButton" android:layout_width="wrap_content" android:layout_height="wrap_content"
+   android:text="@string/notify_settings" />
+ </LinearLayout>
+
  <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="center_vertical"
   android:layout_marginTop="16dp" android:paddingStart="4dp">
   <TextView style="@style/Heading" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="@string/clips" />

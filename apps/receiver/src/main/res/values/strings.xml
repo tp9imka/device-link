@@ -11,6 +11,12 @@
  <string name="status_offline">Offline · retrying</string>
  <string name="status_rejected">The relay refused this device</string>
  <string name="status_setup">No relay configured</string>
+ <string name="notify_ask_title">Get a notification when a clip arrives?</string>
+ <string name="notify_ask_body">Clips land on your clipboard either way; the notification tells you when, and lets you copy or open what arrived.</string>
+ <string name="notify_ask_continue">Continue</string>
+ <string name="notify_ask_later">Not now</string>
+ <string name="notify_hint">Notifications are off. Clips still reach your clipboard, but nothing tells you when one arrives.</string>
+ <string name="notify_settings">Turn on notifications</string>
  <string name="linked_devices">Linked devices</string>
  <string name="link_more">+ Link</string>
  <string name="empty_title">Link your first device</string>
