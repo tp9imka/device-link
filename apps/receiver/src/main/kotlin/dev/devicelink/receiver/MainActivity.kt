@@ -196,9 +196,14 @@ class MainActivity : Activity() {
         }.show()
     }
 
-    /** Relay, registration, last poll/receive/send and last error, plus a test clip and a full reset. */
+    /**
+     * Relay, registration, last poll/receive/send and last error, plus a test clip. Reset is apart
+     * from those harmless actions (below the report, in the danger colour) and always confirms.
+     */
     private fun showDiagnostics() {
-        AlertDialog.Builder(this).setTitle(R.string.diagnostics_title).setMessage(link.diagnosticsReport())
+        val content = LayoutInflater.from(this).inflate(R.layout.diagnostics, null)
+        content.findViewById<TextView>(R.id.diagnostics_report).text = link.diagnosticsReport()
+        val dialog = AlertDialog.Builder(this).setTitle(R.string.diagnostics_title).setView(content)
             .setPositiveButton(R.string.diagnostics_copy) { _, _ ->
                 getSystemService(ClipboardManager::class.java).setPrimaryClip(android.content.ClipData.newPlainText("DeviceLink diagnostics", link.diagnosticsReport()))
                 Toast.makeText(this, R.string.diagnostics_copied, Toast.LENGTH_SHORT).show()
@@ -212,13 +217,15 @@ class MainActivity : Activity() {
                         else getString(dev.devicelink.sdk.R.string.dl_send_failed), Toast.LENGTH_SHORT).show()
                 }
             }
-            .setNegativeButton(R.string.diagnostics_reset) { _, _ -> confirmReset() }
+            .setNegativeButton(R.string.diagnostics_close, null)
             .show()
+        content.findViewById<Button>(R.id.diagnostics_reset).setOnClickListener { dialog.dismiss(); confirmReset() }
     }
 
+    /** Deletes the identity and unlinks every device: the user confirms in plain words first. */
     private fun confirmReset() {
         AlertDialog.Builder(this).setTitle(R.string.reset_title).setMessage(R.string.reset_body)
-            .setPositiveButton(R.string.diagnostics_reset) { _, _ ->
+            .setPositiveButton(R.string.reset_confirm) { _, _ ->
                 scope.launch {
                     link.resetDevice()
                     Toast.makeText(this@MainActivity, R.string.reset_done, Toast.LENGTH_LONG).show()
@@ -226,6 +233,7 @@ class MainActivity : Activity() {
                 }
             }
             .setNegativeButton(android.R.string.cancel, null).show()
+            .getButton(AlertDialog.BUTTON_POSITIVE).setTextColor(getColor(R.color.danger))
     }
 
     private fun platformGlyph(platform: String) = when (platform) { "ios" -> "📱"; "android" -> "🤖"; else -> "💻" }

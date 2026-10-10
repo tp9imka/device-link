@@ -31,4 +31,5 @@
  <style name="SecondaryButton" parent="@android:style/Widget.Material.Button.Borderless.Colored">
   <item name="android:minHeight">48dp</item><item name="android:textAllCaps">false</item><item name="android:textSize">15sp</item>
  </style>
+ <style name="DangerButton" parent="@style/SecondaryButton"><item name="android:textColor">@color/danger</item></style>
 </resources>

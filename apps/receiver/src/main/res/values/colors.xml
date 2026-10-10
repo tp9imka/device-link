@@ -8,6 +8,7 @@
  <color name="on_accent">#FFFFFF</color>
  <color name="ok">#1F9D55</color>
  <color name="warn">#C47F00</color>
+ <color name="danger">#C62828</color>
  <color name="line">#E3E6EB</color>
  <color name="kb_background">#E8EAEF</color>
  <color name="kb_key">#FFFFFF</color>
