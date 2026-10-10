@@ -39,6 +39,9 @@ class MemoryLinkStore(private var state: LinkState = LinkState()) : LinkStore {
 
 /** Atomic JSON file (write temp, fsync, rename). Place it in app-private storage. */
 class FileLinkStore(private val file: File) : LinkStore {
+    /** Encrypted chunks of files in transfer live next to the link state (same storage class, no backup). */
+    internal val chunkDirectory: File get() = File(file.parentFile, file.name + ".chunks")
+
     @Synchronized override fun load(): LinkState = runCatching {
         if (!file.isFile) LinkState() else wireJson.decodeFromString<LinkState>(file.readText())
     }.getOrDefault(LinkState())

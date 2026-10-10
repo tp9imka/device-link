@@ -67,33 +67,8 @@ public struct Diagnostics: Sendable, Equatable {
     public var lastErrorAt: Int64?
     public var received = 0
     public var sent = 0
-}
-
-/// Collects chunked-file parts per sender; bounded to 3 files in flight, dropped at envelope expiry.
-struct ChunkAssembler {
-    private struct Pending { var parts: Int; var size: Int64; var expiresAt: Int64; var data: [Data?] }
-    private var pending: [String: Pending] = [:]
-    private var order: [String] = []
-
-    mutating func add(peerId: String, payload: Payload, expiresAt: Int64, now: Int64) -> Data? {
-        for key in pending.keys where pending[key]!.expiresAt <= now { pending[key] = nil; order.removeAll { $0 == key } }
-        guard let group = payload.group, let parts = payload.parts, let part = payload.part, let size = payload.size,
-              let chunk = try? payload.dataBytes() else { return nil }
-        let key = "\(peerId)/\(group)"
-        if pending[key] == nil {
-            while order.count >= 3 { pending[order.removeFirst()] = nil }
-            pending[key] = Pending(parts: parts, size: size, expiresAt: expiresAt, data: Array(repeating: nil, count: parts))
-            order.append(key)
-        }
-        guard var entry = pending[key], entry.parts == parts, entry.size == size else { pending[key] = nil; return nil }
-        entry.data[part] = chunk
-        pending[key] = entry
-        guard entry.data.allSatisfy({ $0 != nil }) else { return nil }
-        pending[key] = nil
-        order.removeAll { $0 == key }
-        let whole = entry.data.reduce(into: Data()) { $0.append($1!) }
-        return Int64(whole.count) == size ? whole : nil
-    }
+    /// Envelopes from a linked peer that failed to authenticate or decrypt (for example after a silent re-key).
+    public var undecryptable = 0
 }
 
 public struct SendOutcome: Sendable {
@@ -123,7 +98,9 @@ public actor DeviceLinkClient {
     let transport: HTTPTransport
     let clock: @Sendable () -> Int64
     private var listeners: [UUID: AsyncStream<LinkEvent>.Continuation] = [:]
-    private var chunks = ChunkAssembler()
+    private let spool: ChunkSpool
+    /// Spooled files left by a previous process are resumed once, on the first receive.
+    private var spoolResumed = false
     public private(set) var diagnostics: Diagnostics
     public private(set) var status: ReceiverStatus = .idle
 
@@ -135,6 +112,7 @@ public actor DeviceLinkClient {
         self.localBundle = try KeyBundle.create(identity: identity, encryption: encryption, name: config.deviceName, platform: config.platform)
         self.crypto = EnvelopeCrypto(identity: identity, encryption: encryption)
         self.store = store
+        self.spool = (store as? ChunkSpoolLocation).map { FileChunkSpool(directory: $0.chunkDirectory) } ?? MemoryChunkSpool()
         self.config = config
         self.transport = transport
         self.clock = clock
@@ -420,63 +398,139 @@ public actor DeviceLinkClient {
     @discardableResult
     public func receiveOnce(wait: Int? = nil, handler: @Sendable (IncomingItem) async -> ReceiptStatus) async throws -> Int {
         let waitSeconds = wait ?? config.pollWaitSeconds
+        let resumed = isConfigured ? try await resumeSpooled(handler: handler) : 0
         note { $0.lastPollAt = clock() }
         let envelopes: [Envelope]
         do { envelopes = try await registered { try await $0.poll(wait: waitSeconds, limit: 1) } } catch {
             if !(error is CancellationError) { noteFailure(error) }
+            if resumed > 0 { note { $0.lastReceiveAt = clock(); $0.received += resumed } }
             throw error
         }
-        var delivered = 0
+        var delivered = resumed
         for envelope in envelopes where try await process(envelope, handler: handler) { delivered += 1 }
         if delivered > 0 { note { $0.lastReceiveAt = clock(); $0.received += delivered } }
         return delivered
     }
 
+    /// Delivery order for every envelope: apply -> record (seen, lastClip) -> acknowledge -> receipt.
+    /// Recording only after the handler ran means a crash never loses an item: the relay delivers it again.
+    /// The same clip can then reach the clipboard twice, but an OLDER clip never overwrites a newer one,
+    /// because `lastClip` is saved together with `seen` and the relay serves each sender's newest first.
     private func process(_ envelope: Envelope, handler: @Sendable (IncomingItem) async -> ReceiptStatus) async throws -> Bool {
         let relay = try relay()
         let state = store.load()
-        guard state.seen[envelope.id] == nil, let peer = state.peers.first(where: { $0.id == envelope.senderId }),
-              let payload = try? crypto.open(envelope, from: peer.bundle, now: clock()) else {
+        guard state.seen[envelope.id] == nil, let peer = state.peers.first(where: { $0.id == envelope.senderId }) else {
             try await relay.acknowledge(envelope.id)
             return false
         }
-        // Record before applying: a crash must never re-apply an old clip.
-        let recorded = try update { $0.seen[envelope.id] = envelope.expiresAt }
+        guard let payload = try? crypto.open(envelope, from: peer.bundle, now: clock()) else {
+            // It can never decrypt; drop it, but make a silent re-key or tampering visible.
+            note { $0.undecryptable += 1 }
+            try await relay.acknowledge(envelope.id)
+            return false
+        }
         switch payload.kind {
         case .receipt:
-            try await relay.acknowledge(envelope.id)
             if let original = payload.receiptFor, let status = payload.status { emit(.receipt(itemId: original, peerId: peer.id, status: status)) }
+            try update { $0.seen[envelope.id] = envelope.expiresAt }
+            await acknowledgeApplied(relay, envelope.id)
             return false
         case .unlink:
-            try await relay.acknowledge(envelope.id)
             try update { state in
                 state.peers.removeAll { $0.id == peer.id }
                 state.pendingRevocations.insert(peer.id)
                 state.lastClip[peer.id] = nil
+                state.seen[envelope.id] = envelope.expiresAt
             }
+            await acknowledgeApplied(relay, envelope.id)
             emit(.peerUnlinked(peerId: peer.id, byRemote: true))
             try? await flushRevocations()
             return false
         case .text, .image, .file:
-            var itemId = envelope.id
-            var item: IncomingItem
-            let stale = payload.kind != .file && envelope.sequence <= (recorded.lastClip[peer.id] ?? 0)
-            if payload.isChunk, let group = payload.group {
-                try await relay.acknowledge(envelope.id)
-                guard let whole = chunks.add(peerId: peer.id, payload: payload, expiresAt: envelope.expiresAt, now: clock()) else { return false }
-                itemId = group
-                var meta = payload
-                meta.data = nil; meta.part = nil; meta.parts = nil
-                item = IncomingItem(id: group, peer: peer, payload: meta, expiresAt: envelope.expiresAt, stale: stale, assembled: whole)
-            } else {
-                item = IncomingItem(id: envelope.id, peer: peer, payload: payload, expiresAt: envelope.expiresAt, stale: stale)
+            if payload.isChunk, let group = payload.group, let part = payload.part, let parts = payload.parts {
+                // Stored (still encrypted) before the acknowledgement, so a restart resumes the file.
+                let key = ChunkSpoolKey.key(peerId: peer.id, group: group)
+                spool.purge(now: clock())
+                try spool.put(key, part: part, envelope: envelope)
+                await acknowledgeApplied(relay, envelope.id)
+                guard spool.count(key) >= parts else { return false }
+                return try await assemble(key, peer: peer, handler: handler)
             }
-            let status = await handler(item)
-            if status == .copied { try update { $0.lastClip[peer.id] = max($0.lastClip[peer.id] ?? 0, envelope.sequence) } }
-            if !payload.isChunk { try await relay.acknowledge(envelope.id) }
-            _ = try? await deliver(.receipt(itemId, status), to: peer)
+            let stale = payload.kind != .file && envelope.sequence <= (state.lastClip[peer.id] ?? 0)
+            let item = IncomingItem(id: envelope.id, peer: peer, payload: payload, expiresAt: envelope.expiresAt, stale: stale)
+            let status = try await apply(item, envelopes: [envelope], handler: handler)
+            await acknowledgeApplied(relay, envelope.id)
+            _ = try? await deliver(.receipt(envelope.id, status), to: peer)
             return true
         }
+    }
+
+    /// Runs `handler`, then records the envelopes as seen (and the clip sequence) in one save.
+    private func apply(_ item: IncomingItem, envelopes: [Envelope], handler: @Sendable (IncomingItem) async -> ReceiptStatus) async throws -> ReceiptStatus {
+        let status = await handler(item)
+        let sequence = envelopes.map(\.sequence).max() ?? 0
+        try update { state in
+            for envelope in envelopes { state.seen[envelope.id] = envelope.expiresAt }
+            if status == .copied { state.lastClip[item.peer.id] = max(state.lastClip[item.peer.id] ?? 0, sequence) }
+        }
+        return status
+    }
+
+    /// Acknowledges an envelope whose effect is already recorded. A failure is not fatal: the relay delivers
+    /// it again, `seen` turns that into a plain acknowledgement, and the receipt still goes now.
+    private func acknowledgeApplied(_ relay: RelayClient, _ id: String) async {
+        do { try await relay.acknowledge(id) } catch { if !(error is CancellationError) { noteFailure(error) } }
+    }
+
+    /// Applies a spooled chunked file once every part is present. Returns whether the handler ran.
+    private func assemble(_ key: String, peer: LinkedPeer, handler: @Sendable (IncomingItem) async -> ReceiptStatus) async throws -> Bool {
+        let stored = spool.parts(key)
+        let state = store.load()
+        // Applied and recorded before a crash, only the cleanup was missed.
+        if !stored.isEmpty, stored.allSatisfy({ state.seen[$0.id] != nil }) { spool.remove(key); return false }
+        let now = clock()
+        var opened: [(Envelope, Payload)] = []
+        for envelope in stored {
+            guard let payload = try? crypto.open(envelope, from: peer.bundle, now: now), payload.isChunk else { spool.remove(key); return false }
+            opened.append((envelope, payload))
+        }
+        opened.sort { ($0.1.part ?? 0) < ($1.1.part ?? 0) }
+        guard let first = opened.first?.1, let parts = first.parts, let size = first.size else { return false }
+        let consistent = opened.map { $0.1.part ?? -1 } == Array(0..<parts) && opened.allSatisfy { _, p in
+            p.parts == parts && p.size == size && p.group == first.group && p.kind == first.kind
+        }
+        guard consistent else {
+            if opened.count >= parts { spool.remove(key) }
+            return false
+        }
+        var whole = Data(capacity: Int(size))
+        for (_, payload) in opened { whole.append(try payload.dataBytes() ?? Data()) }
+        guard Int64(whole.count) == size, let group = first.group else { spool.remove(key); return false }
+        let envelopes = opened.map(\.0)
+        let newest = envelopes.map(\.sequence).max() ?? 0
+        let stale = first.kind != .file && newest <= (state.lastClip[peer.id] ?? 0)
+        var meta = first
+        meta.data = nil; meta.part = nil; meta.parts = nil
+        let item = IncomingItem(id: group, peer: peer, payload: meta, expiresAt: envelopes.map(\.expiresAt).min() ?? 0,
+                                stale: stale, assembled: whole)
+        let status = try await apply(item, envelopes: envelopes, handler: handler)
+        spool.remove(key)
+        _ = try? await deliver(.receipt(group, status), to: peer)
+        return true
+    }
+
+    /// Completes files whose chunks were all stored by a previous process that stopped before applying.
+    private func resumeSpooled(handler: @Sendable (IncomingItem) async -> ReceiptStatus) async throws -> Int {
+        guard !spoolResumed else { return 0 }
+        spoolResumed = true
+        spool.purge(now: clock())
+        let peers = store.load().peers
+        var applied = 0
+        for key in spool.keys() {
+            guard let peer = peers.first(where: { $0.id == ChunkSpoolKey.peer(of: key) }) else { spool.remove(key); continue }
+            if try await assemble(key, peer: peer, handler: handler) { applied += 1 }
+        }
+        return applied
     }
 
     /// Decrypts one waiting item for a notification preview without consuming it: the app's receive

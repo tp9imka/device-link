@@ -55,6 +55,8 @@ public final class FileLinkStore: LinkStore, @unchecked Sendable {
     private let lock = NSLock()
     public init(url: URL) { self.url = url }
 
+
+
     public func load() -> LinkState {
         lock.lock(); defer { lock.unlock() }
         guard let data = try? Data(contentsOf: url), let state = try? Wire.decoder.decode(LinkState.self, from: data) else { return LinkState() }
@@ -70,4 +72,15 @@ public final class FileLinkStore: LinkStore, @unchecked Sendable {
         try Wire.encoder().encode(state).write(to: url, options: [.atomic])
         #endif
     }
+}
+
+
+/// Stores with a durable location keep chunked files in transfer on disk (see `ChunkSpool`).
+protocol ChunkSpoolLocation {
+    var chunkDirectory: URL { get }
+}
+
+extension FileLinkStore: ChunkSpoolLocation {
+    /// Encrypted chunks of files in transfer live next to the link state.
+    var chunkDirectory: URL { url.deletingLastPathComponent().appendingPathComponent(url.lastPathComponent + ".chunks") }
 }

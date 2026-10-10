@@ -104,8 +104,11 @@ Optional fields (all encrypted, all ignorable by older decoders):
   the clipboard where the platform supports it (iOS: 2 minutes).
 - Chunked files: content over 10 MiB is split into up to 10 chunks of ≤ 4 MiB (`MAX_FILE_BYTES` 40 MiB).
   Each chunk is its own envelope with the same `name`/`mime` plus `group` (UUID), `part` (0-based),
-  `parts` (2–10) and `size` (total bytes). Receivers acknowledge each chunk, reassemble when all parts
-  are present and the total equals `size`, and send one receipt for `group`. Senders retry the same
+  `parts` (2–10) and `size` (total bytes). Receivers store each chunk envelope (still encrypted) durably
+  on the device before acknowledging it, so a restart mid-transfer resumes the file; they reassemble when
+  all parts are present and the total equals `size`, delete the stored chunks, and send one receipt for
+  `group`. Chunks are not held unacknowledged on the relay: ten chunk envelopes (~71 MiB) exceed the
+  default 64 MiB mailbox quota, so the sender could never finish. Senders retry the same
   sealed envelope on network errors and wait (up to 90 s) on `429 mailbox_full` while the receiver drains.
 
 Decoders ignore unknown fields so future versions can add optional data.
@@ -124,6 +127,13 @@ Receivers keep a persisted ID ledger until each envelope's expiry and ignore
 duplicates. For clipboard kinds they also keep the highest applied sequence per
 sender; an older clip never overwrites a newer one (it is still listed in
 history). Acknowledge (`DELETE /v1/messages/{id}`) only after local processing.
+
+Receiver order per item: apply → record (ID ledger and highest clip sequence, one save) → acknowledge →
+receipt. A crash before the record means the relay delivers the item again (at least once; the same
+item may be applied twice, an older clip still never overwrites a newer one). A failed acknowledgement
+does not stop the receipt; the redelivered envelope hits the ledger and is only acknowledged. Envelopes
+from a linked sender that fail to verify or decrypt are acknowledged and dropped (they never can) and
+counted in the receiver's diagnostics.
 
 ## Pairing by QR
 

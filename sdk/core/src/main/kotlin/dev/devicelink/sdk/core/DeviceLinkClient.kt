@@ -72,6 +72,8 @@ data class Diagnostics(
     val lastErrorAt: Long? = null,
     val received: Int = 0,
     val sent: Int = 0,
+    /** Envelopes from a linked peer that failed to authenticate or decrypt (for example after a silent re-key). */
+    val undecryptable: Int = 0,
 )
 
 data class SendOutcome(val peerId: String, val itemId: String?, val error: String? = null) {
@@ -125,7 +127,9 @@ class DeviceLinkClient(
     private val mutableDiagnostics = MutableStateFlow(Diagnostics(deviceId, store.load().relayUrl,
         store.load().registeredRelay == store.load().relayUrl && store.load().relayUrl.isNotEmpty(), store.load().peers.size))
     val diagnostics: StateFlow<Diagnostics> = mutableDiagnostics.asStateFlow()
-    private val chunks = ChunkAssembler()
+    private val spool: ChunkSpool = (store as? FileLinkStore)?.let { FileChunkSpool(it.chunkDirectory) } ?: MemoryChunkSpool()
+    /** Spooled files left by a previous process are resumed once, on the first receive. */
+    @Volatile private var spoolResumed = false
 
     private fun note(transform: (Diagnostics) -> Diagnostics) {
         val state = store.load()
@@ -345,64 +349,144 @@ class DeviceLinkClient(
      * (receipts, unlink notices and duplicates are handled internally and not counted).
      */
     suspend fun receiveOnce(waitSeconds: Int = config.pollWaitSeconds, handler: suspend (IncomingItem) -> ReceiptStatus): Int {
+        val resumed = if (isConfigured) resumeSpooled(handler) else 0
         note { it.copy(lastPollAt = clock()) }
         val envelopes = try { registered { it.poll(waitSeconds, 1) } } catch (error: Exception) {
             if (error !is CancellationException) failure(error)
+            if (resumed > 0) note { it.copy(lastReceiveAt = clock(), received = it.received + resumed) }
             throw error
         }
-        return envelopes.count { process(it, handler) }.also { count ->
+        return (resumed + envelopes.count { process(it, handler) }).also { count ->
             if (count > 0) note { it.copy(lastReceiveAt = clock(), received = it.received + count) }
         }
     }
 
+    /**
+     * Delivery order for every envelope: apply -> record (seen, lastClip) -> acknowledge -> receipt.
+     * Recording only after the handler ran means a crash never loses an item: the relay delivers it again.
+     * The same clip can then reach the clipboard twice, but an OLDER clip never overwrites a newer one,
+     * because `lastClip` is saved together with `seen` and the relay serves each sender's newest first.
+     */
     private suspend fun process(envelope: Envelope, handler: suspend (IncomingItem) -> ReceiptStatus): Boolean {
         val relay = relay()
         val state = store.load()
         val peer = state.peers.firstOrNull { it.id == envelope.senderId }
         if (envelope.id in state.seen || peer == null) { relay.acknowledge(envelope.id); return false }
         val payload = try { crypto.open(envelope, peer.bundle, clock()) } catch (_: Exception) { null }
-        if (payload == null) { relay.acknowledge(envelope.id); return false }
-        // Record before applying: a crash must never re-apply an old clip on restart.
-        val recorded = update { it.copy(seen = it.seen + (envelope.id to envelope.expiresAt)) }
+        if (payload == null) {
+            // It can never decrypt; drop it, but make a silent re-key or tampering visible.
+            note { it.copy(undecryptable = it.undecryptable + 1) }
+            relay.acknowledge(envelope.id)
+            return false
+        }
         when (payload.kind) {
             PayloadKind.RECEIPT -> {
-                relay.acknowledge(envelope.id)
                 mutableEvents.tryEmit(LinkEvent.Receipt(payload.receiptFor!!, peer.id, payload.status!!))
+                update { it.copy(seen = it.seen + (envelope.id to envelope.expiresAt)) }
+                acknowledgeApplied(relay, envelope.id)
                 return false
             }
             PayloadKind.UNLINK -> {
-                relay.acknowledge(envelope.id)
                 update { s -> s.copy(peers = s.peers.filterNot { it.id == peer.id }, pendingRevocations = s.pendingRevocations + peer.id,
-                    lastClip = s.lastClip - peer.id) }
+                    lastClip = s.lastClip - peer.id, seen = s.seen + (envelope.id to envelope.expiresAt)) }
+                acknowledgeApplied(relay, envelope.id)
                 mutableEvents.tryEmit(LinkEvent.PeerUnlinked(peer.id, byRemote = true))
                 runCatching { flushRevocations() }
                 return false
             }
             PayloadKind.TEXT, PayloadKind.IMAGE, PayloadKind.FILE -> {
-                var itemId = envelope.id
-                var assembled: ByteArray? = null
                 if (payload.isChunk) {
-                    relay.acknowledge(envelope.id)
-                    assembled = chunks.add(peer.id, payload, envelope.expiresAt, clock()) ?: return false
-                    itemId = payload.group!!
+                    // Stored (still encrypted) before the acknowledgement, so a restart resumes the file.
+                    val key = ChunkSpool.key(peer.id, payload.group!!)
+                    spool.purge(clock())
+                    spool.put(key, payload.part!!, envelope)
+                    acknowledgeApplied(relay, envelope.id)
+                    if (spool.count(key) < payload.parts!!) return false
+                    return assemble(key, peer, handler)
                 }
-                val stale = payload.kind != PayloadKind.FILE && envelope.sequence <= (recorded.lastClip[peer.id] ?: 0)
-                val item = if (assembled == null) IncomingItem(itemId, peer, payload, envelope.expiresAt, stale)
-                    else IncomingItem(itemId, peer, payload.copy(data = null, part = null, parts = null), envelope.expiresAt, stale, assembled)
-                val status = try {
-                    handler(item)
-                } catch (cancelled: CancellationException) {
-                    throw cancelled
-                } catch (_: Exception) {
-                    ReceiptStatus.FAILED
-                }
-                if (status == ReceiptStatus.COPIED) update { s ->
-                    s.copy(lastClip = s.lastClip + (peer.id to maxOf(s.lastClip[peer.id] ?: 0, envelope.sequence)))
-                }
-                if (!payload.isChunk) relay.acknowledge(envelope.id)
-                runCatching { deliver(Payload.receipt(itemId, status), peer) }
+                val stale = payload.kind != PayloadKind.FILE && envelope.sequence <= (state.lastClip[peer.id] ?: 0)
+                val status = apply(IncomingItem(envelope.id, peer, payload, envelope.expiresAt, stale), listOf(envelope), handler)
+                acknowledgeApplied(relay, envelope.id)
+                runCatching { deliver(Payload.receipt(envelope.id, status), peer) }
                 return true
             }
+        }
+    }
+
+    /** Runs [handler], then records the envelopes as seen (and the clip sequence) in one save. */
+    private suspend fun apply(item: IncomingItem, envelopes: List<Envelope>, handler: suspend (IncomingItem) -> ReceiptStatus): ReceiptStatus {
+        val status = try {
+            handler(item)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            ReceiptStatus.FAILED
+        }
+        val sequence = envelopes.maxOf { it.sequence }
+        update { s ->
+            s.copy(seen = s.seen + envelopes.associate { it.id to it.expiresAt },
+                lastClip = if (status != ReceiptStatus.COPIED) s.lastClip
+                    else s.lastClip + (item.peer.id to maxOf(s.lastClip[item.peer.id] ?: 0, sequence)))
+        }
+        return status
+    }
+
+    /**
+     * Acknowledges an envelope whose effect is already recorded. A failure is not fatal: the relay
+     * delivers it again, `seen` turns that into a plain acknowledgement, and the receipt still goes now.
+     */
+    private suspend fun acknowledgeApplied(relay: RelayClient, id: String) {
+        try {
+            relay.acknowledge(id)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            failure(error)
+        }
+    }
+
+    /** Applies a spooled chunked file once every part is present. Returns whether the handler ran. */
+    private suspend fun assemble(key: String, peer: LinkedPeer, handler: suspend (IncomingItem) -> ReceiptStatus): Boolean {
+        val stored = spool.parts(key)
+        val state = store.load()
+        // Applied and recorded before a crash, only the cleanup was missed.
+        if (stored.isNotEmpty() && stored.all { it.id in state.seen }) { spool.remove(key); return false }
+        val now = clock()
+        val opened = stored.map { envelope ->
+            val payload = runCatching { crypto.open(envelope, peer.bundle, now) }.getOrNull()
+            if (payload == null || !payload.isChunk) { spool.remove(key); return false }
+            envelope to payload
+        }.sortedBy { it.second.part }
+        val first = opened.firstOrNull()?.second ?: return false
+        val consistent = opened.map { it.second.part } == (0 until first.parts!!).toList() &&
+            opened.all { (_, p) -> p.parts == first.parts && p.size == first.size && p.group == first.group && p.kind == first.kind }
+        if (!consistent) {
+            if (opened.size >= first.parts!!) spool.remove(key)
+            return false
+        }
+        val output = java.io.ByteArrayOutputStream(first.size!!.toInt())
+        opened.forEach { output.write(it.second.dataBytes()!!) }
+        if (output.size().toLong() != first.size) { spool.remove(key); return false }
+        val envelopes = opened.map { it.first }
+        val newest = envelopes.maxBy { it.sequence }
+        val stale = first.kind != PayloadKind.FILE && newest.sequence <= (state.lastClip[peer.id] ?: 0)
+        val item = IncomingItem(first.group!!, peer, first.copy(data = null, part = null, parts = null),
+            envelopes.minOf { it.expiresAt }, stale, output.toByteArray())
+        val status = apply(item, envelopes, handler)
+        spool.remove(key)
+        runCatching { deliver(Payload.receipt(item.id, status), peer) }
+        return true
+    }
+
+    /** Completes files whose chunks were all stored by a previous process that stopped before applying. */
+    private suspend fun resumeSpooled(handler: suspend (IncomingItem) -> ReceiptStatus): Int {
+        if (spoolResumed) return 0
+        spoolResumed = true
+        spool.purge(clock())
+        val peers = store.load().peers
+        return spool.keys().count { key ->
+            val peer = peers.firstOrNull { it.id == ChunkSpool.peerOf(key) }
+            if (peer == null) { spool.remove(key); false } else assemble(key, peer, handler)
         }
     }
 
@@ -449,34 +533,5 @@ class DeviceLinkClient(
         } finally {
             mutableStatus.value = ReceiverStatus.IDLE
         }
-    }
-}
-
-
-/**
- * Collects the parts of chunked files per sender until complete. Bounded: at most 3 files in flight,
- * dropped at envelope expiry, total size checked against the declared size.
- */
-internal class ChunkAssembler {
-    private class Pending(val parts: Int, val size: Long, val expiresAt: Long) { val data = arrayOfNulls<ByteArray>(parts) }
-    private val pending = LinkedHashMap<String, Pending>()
-
-    @Synchronized
-    fun add(peerId: String, payload: Payload, expiresAt: Long, now: Long): ByteArray? {
-        pending.entries.removeAll { it.value.expiresAt <= now }
-        val key = "$peerId/${payload.group}"
-        val entry = pending.getOrPut(key) {
-            while (pending.size >= 3) pending.remove(pending.keys.first())
-            Pending(payload.parts!!, payload.size!!, expiresAt)
-        }
-        if (entry.parts != payload.parts || entry.size != payload.size) { pending.remove(key); return null }
-        entry.data[payload.part!!] = payload.dataBytes()
-        if (entry.data.any { it == null }) return null
-        pending.remove(key)
-        val total = entry.data.sumOf { it!!.size }
-        if (total.toLong() != entry.size) return null
-        val output = java.io.ByteArrayOutputStream(total)
-        entry.data.forEach { output.write(it!!) }
-        return output.toByteArray()
     }
 }

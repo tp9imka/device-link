@@ -21,6 +21,11 @@ private class FakeRelay(private val clock: () -> Long) : HttpTransport {
     val mailbox = mutableListOf<Envelope>()
     val pairings = mutableMapOf<String, MutableMap<String, String>>()
     var requests = 0
+    /** Injected failures: the next N acknowledgements / mailbox polls / confirms answer with this error. */
+    var failAcks = 0
+    val pollErrors = ArrayDeque<Pair<Int, String>>()
+    var failConfirm: Pair<Int, String>? = null
+    val polls = mutableListOf<String>()
 
     override suspend fun execute(method: String, url: String, headers: Map<String, String>, body: ByteArray, timeoutMillis: Int): HttpResponse = synchronized(this) {
         requests++
@@ -47,6 +52,7 @@ private class FakeRelay(private val clock: () -> Long) : HttpTransport {
                 pairing += mapOf("state" to "joined", "joiner" to caller, "joinSealed" to json["sealed"]!!.jsonPrimitive.content); ok()
             }
             path.size == 4 && path[1] == "pairings" && path[3] == "confirm" -> {
+                failConfirm?.let { (status, code) -> return error(status, code) }
                 val pairing = pairings[path[2]]!!
                 check(pairing["creator"] == caller)
                 pairing += mapOf("state" to "confirmed", "confirmSealed" to json["sealed"]!!.jsonPrimitive.content); ok()
@@ -65,12 +71,21 @@ private class FakeRelay(private val clock: () -> Long) : HttpTransport {
                 mailbox += envelope; HttpResponse(201, "{}".toByteArray())
             }
             path == listOf("v1", "messages") && method == "GET" -> {
+                polls += target
+                pollErrors.removeFirstOrNull()?.let { (status, code) -> return error(status, code) }
                 mailbox.removeAll { it.expiresAt <= clock() }
-                val mine = mailbox.filter { it.recipientId == caller }.sortedByDescending { it.sequence }.take(1)
+                val query = uri.rawQuery.split('&').associate { it.substringBefore('=') to it.substringAfter('=') }
+                val excluded = query["exclude"]?.split(',').orEmpty()
+                check(excluded.size <= 20) { "relay caps exclude at 20" }
+                // Same order as server/relay/store.py: sender, sequence DESC, id.
+                val mine = mailbox.filter { it.recipientId == caller && it.id !in excluded }
+                    .sortedWith(compareBy<Envelope> { it.senderId }.thenByDescending { it.sequence }.thenBy { it.id })
+                    .take(query["limit"]?.toInt() ?: 20)
                 ok("[" + mine.joinToString(",") { it.encode().toString(Charsets.UTF_8) } + "]")
             }
             path.size == 3 && path[1] == "messages" && method == "GET" ->
                 mailbox.firstOrNull { it.id == path[2] && it.recipientId == caller }?.let { ok(it.encode().toString(Charsets.UTF_8)) } ?: error(404, "message_not_found")
+            path.size == 3 && path[1] == "messages" && method == "DELETE" && failAcks > 0 -> { failAcks--; error(503, "unavailable") }
             path.size == 3 && path[1] == "messages" && method == "DELETE" -> { mailbox.removeAll { it.id == path[2] && it.recipientId == caller }; HttpResponse(204, ByteArray(0)) }
             else -> error(404, "not_found")
         }
@@ -258,6 +273,95 @@ class DeviceLinkClientTest {
         assertEquals("peek", iphone.preview(sent.itemId!!)!!.text)
         assertEquals(1, relay.mailbox.size)
         assertEquals(1, iphone.receiveOnce { ReceiptStatus.COPIED })
+    }
+
+    private fun link(inviter: DeviceLinkClient, joiner: DeviceLinkClient) = runBlocking {
+        inviter.configure("https://relay.example")
+        val session = inviter.invite()
+        val waiting = async { session.awaitPeer() }
+        joiner.join(session.uri)
+        waiting.await()
+    }
+
+    /** A device whose process can be "restarted": same keys, same link file, fresh engine. */
+    private inner class Restartable(val name: String = "Desk") {
+        val file = java.io.File.createTempFile("link", ".json").apply { delete(); deleteOnExit() }
+        private val identity = SoftwareIdentity()
+        private val keys = EncryptionKeyPair.generate()
+        fun start() = DeviceLinkClient(identity, keys, FileLinkStore(file), LinkConfig(name, "desktop"), relay) { now }
+        fun spooled() = java.io.File(file.parentFile, file.name + ".chunks").listFiles().orEmpty().toList()
+    }
+
+    private class Crash : kotlinx.coroutines.CancellationException("process died")
+
+    private fun bigFile() = ByteArray(Limits.MAX_CONTENT_BYTES + 3 * 1024 * 1024) { (it * 31).toByte() }
+
+    @Test fun `a restart mid-transfer resumes a chunked file and receipts it`() = runBlocking {
+        val desk = Restartable()
+        val before = desk.start()
+        link(android, before)
+        val file = bigFile()
+        val sent = android.send(OutgoingContent.File("big.bin", "application/octet-stream", file)).single()
+        repeat(2) { assertEquals(0, before.receiveOnce { error("incomplete file must not be applied") }) }
+
+        val after = desk.start()
+        val items = mutableListOf<IncomingItem>()
+        repeat(2) { after.receiveOnce { items += it; ReceiptStatus.DELIVERED } }
+        assertEquals(sent.itemId, items.single().id)
+        assertTrue(file.contentEquals(items.single().bytes()!!))
+        val receipt = async(start = CoroutineStart.UNDISPATCHED) { android.events.first { it is LinkEvent.Receipt } }
+        android.receiveOnce { error("no content") }
+        assertEquals(sent.itemId, (withTimeout(1_000) { receipt.await() } as LinkEvent.Receipt).itemId)
+        assertTrue("spool is cleaned after apply", desk.spooled().isEmpty())
+    }
+
+    @Test fun `a file whose last chunk arrived just before a crash is applied on restart`() = runBlocking {
+        val desk = Restartable()
+        val before = desk.start()
+        link(android, before)
+        val file = bigFile()
+        android.send(OutgoingContent.File("big.bin", "application/octet-stream", file))
+        repeat(3) { before.receiveOnce { error("incomplete") } }
+        runCatching { before.receiveOnce { throw Crash() } }
+        assertTrue(relay.mailbox.none { it.recipientId == before.deviceId })
+
+        val items = mutableListOf<IncomingItem>()
+        desk.start().receiveOnce(waitSeconds = 0) { items += it; ReceiptStatus.DELIVERED }
+        assertTrue(file.contentEquals(items.single().bytes()!!))
+        assertEquals(0, desk.start().receiveOnce(waitSeconds = 0) { error("applied twice") })
+    }
+
+    @Test fun `a crash while applying an item does not lose it`() = runBlocking {
+        val desk = Restartable()
+        link(android, desk.start())
+        android.send(OutgoingContent.Text("survives"))
+        assertTrue(runCatching { desk.start().receiveOnce { throw Crash() } }.exceptionOrNull() is Crash)
+        val received = mutableListOf<String?>()
+        desk.start().receiveOnce { received += it.text; ReceiptStatus.COPIED }
+        assertEquals(listOf<String?>("survives"), received)
+    }
+
+    @Test fun `a failed acknowledgement still sends the receipt and never applies twice`() = runBlocking {
+        linked()
+        val sent = android.send(OutgoingContent.Text("ack me")).single()
+        relay.failAcks = 1
+        var calls = 0
+        assertEquals(1, iphone.receiveOnce { calls++; ReceiptStatus.COPIED })
+        val receipt = async(start = CoroutineStart.UNDISPATCHED) { android.events.first { it is LinkEvent.Receipt } }
+        android.receiveOnce { error("no content") }
+        assertEquals(sent.itemId, (withTimeout(1_000) { receipt.await() } as LinkEvent.Receipt).itemId)
+        assertEquals(0, iphone.receiveOnce { calls++; ReceiptStatus.COPIED })
+        assertEquals(1, calls)
+        assertTrue(relay.mailbox.none { it.recipientId == iphone.deviceId })
+    }
+
+    @Test fun `undecryptable envelopes are dropped and counted`() = runBlocking {
+        linked()
+        android.send(OutgoingContent.Text("tampered"))
+        relay.mailbox[0] = relay.mailbox[0].copy(ciphertext = Encoding.b64(ByteArray(64)))
+        assertEquals(0, iphone.receiveOnce { error("must not apply") })
+        assertEquals(1, iphone.diagnostics.value.undecryptable)
+        assertTrue(relay.mailbox.isEmpty())
     }
 
     @Test fun `unlink all forgets every peer`() = runBlocking {
