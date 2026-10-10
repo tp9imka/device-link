@@ -17,7 +17,7 @@ internal object ReceivedFiles {
     const val RETENTION_MILLIS = 24 * 60 * 60 * 1000L
     private val ID = Regex("[0-9a-f-]{36}")
 
-    fun root(context: Context) = File(context.filesDir, "devicelink/received")
+    fun root(context: Context) = File(PrivateStorage.root(context), "received")
     fun authority(context: Context) = "${context.packageName}.devicelink.files"
 
     fun store(context: Context, id: String, name: String, mime: String, bytes: ByteArray): Uri {
@@ -54,7 +54,8 @@ internal object ReceivedFiles {
 
 /** Minimal read-only provider; `grantUriPermissions` lets the clipboard and share sheet hand out reads. */
 class DeviceLinkFileProvider : ContentProvider() {
-    override fun onCreate() = true
+    // Runs before Application.onCreate, so URIs on the clipboard resolve after the storage move.
+    override fun onCreate(): Boolean { PrivateStorage.migrate(requireNotNull(context)); return true }
 
     override fun query(uri: Uri, projection: Array<out String>?, selection: String?, args: Array<out String>?, sort: String?): Cursor? {
         val file = ReceivedFiles.resolve(requireNotNull(context), uri) ?: return null
