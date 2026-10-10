@@ -169,14 +169,19 @@ class DeviceLinkInstance internal constructor(private val context: Context, val 
 
     /** [html] is an optional rich-text alternative; [sensitive] hides previews on the other device. */
     @JvmOverloads
-    suspend fun sendText(text: String, html: String? = null, sensitive: Boolean = false): List<SendOutcome> =
+    suspend fun sendText(text: String, html: String? = null, sensitive: Boolean = false): List<SendOutcome> = withContext(Dispatchers.Default) {
         record(client.send(OutgoingContent.Text(text, html, sensitive), targets()), "text", text = text, sensitive = sensitive)
+    }
 
     /** Sends a content/file URI: images go to the other clipboard, other files arrive as a share prompt. */
     suspend fun sendUri(uri: Uri, mimeHint: String? = null): List<SendOutcome> {
         val (name, mime, bytes) = withContext(Dispatchers.IO) { readUri(uri, mimeHint) }
         val content = if (mime in Limits.IMAGE_MIMES) OutgoingContent.Image(name, mime, bytes) else OutgoingContent.File(name, mime, bytes)
-        return record(client.send(content, targets()), if (content is OutgoingContent.Image) "image" else "file", name = name, mime = mime, uri = uri.toString())
+        // Base64, validation, HPKE sealing of up to 10 MiB and the Keystore signature are CPU work:
+        // keep them off the caller's (often the main) thread. The engine hops to IO for HTTP itself.
+        return withContext(Dispatchers.Default) {
+            record(client.send(content, targets()), if (content is OutgoingContent.Image) "image" else "file", name = name, mime = mime, uri = uri.toString())
+        }
     }
 
     /** Sends whatever a ClipData holds: first text item, otherwise its first URI. */
