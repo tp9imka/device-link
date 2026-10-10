@@ -191,6 +191,9 @@ final class LinkModel: ObservableObject {
             time.map { DateFormatter.localizedString(from: Date(timeIntervalSince1970: TimeInterval($0) / 1000), dateStyle: .short, timeStyle: .medium) } ?? "never"
         }
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
+        // Leaving the app cancels the open long poll; URLSession reports that as URLError.cancelled
+        // (-999), which the SDK records. A cancelled request is not an error.
+        let lastError = d.lastError == "network: \(URLError.Code.cancelled.rawValue)" ? nil : d.lastError
         return """
         DeviceLink \(version) on iOS \(UIDevice.current.systemVersion), \(LinkEnvironment.model)
         Device ID: \(d.deviceId.prefix(16))…
@@ -198,7 +201,7 @@ final class LinkModel: ObservableObject {
         Linked devices: \(d.peers) · status: \(status.rawValue)
         Last poll: \(at(d.lastPollAt)) · last receive: \(at(d.lastReceiveAt)) · last send: \(at(d.lastSendAt))
         Received: \(d.received) · sent: \(d.sent) (since app start)
-        Last error: \(d.lastError ?? "none")\(d.lastErrorAt.map { " at " + at($0) } ?? "")
+        Last error: \(lastError.map { $0 + (d.lastErrorAt.map { " at " + at($0) } ?? "") } ?? "none")
         """
     }
 
