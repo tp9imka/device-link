@@ -78,6 +78,16 @@ public struct SendOutcome: Sendable {
     public var accepted: Bool { itemId != nil && error == nil }
 }
 
+/// Outcome of `DeviceLinkClient.drain`.
+public struct DrainResult: Sendable, Equatable {
+    /// Items that reached the handler (receipts, unlink notices and duplicates are not counted).
+    public var applied: Int
+    /// The relay answered with an empty mailbox: nothing is left waiting.
+    public var complete: Bool
+    /// Another mailbox poll by this device was active (`poll_already_active`), so draining stopped early.
+    public var collided = false
+}
+
 public enum ReceiverStatus: String, Sendable { case idle, connecting, online, offline, needsSetup, rejected }
 
 public enum LinkEvent: Sendable, Equatable {
@@ -395,8 +405,46 @@ public actor DeviceLinkClient {
 
     // MARK: Receiving
 
+    /// Fetches everything waiting without long-polling, until the relay returns an empty mailbox, applying
+    /// each item through `handler`. Use it for one-shot actions (the notification Copy action, the
+    /// "Get DeviceLink clip" intent) instead of looping on `receiveOnce(wait: 0)` until it returns 0: that
+    /// stops early because receipts, unlink notices and duplicates count 0, and the relay serves a sender's
+    /// newest envelope (often a receipt) first.
+    ///
+    ///     let result = try await client.drain { item in await store.apply(item) }
+    ///     if result.collided { /* the app's receive loop is polling; it will deliver the items */ }
+    ///
+    /// At most `maxEnvelopes` envelopes are processed. Envelopes already handled in this call are excluded
+    /// from the next poll, so a failed acknowledgement cannot loop. Returns `collided = true` instead of
+    /// throwing on `poll_already_active`; other relay and network errors are thrown.
+    public func drain(maxEnvelopes: Int = 100, handler: @Sendable (IncomingItem) async -> ReceiptStatus) async throws -> DrainResult {
+        var applied = try await resumeSpooled(handler: handler)
+        defer { if applied > 0 { note { $0.lastReceiveAt = clock(); $0.received += applied } } }
+        var handled: [String] = []
+        for _ in 0..<maxEnvelopes {
+            note { $0.lastPollAt = clock() }
+            let envelopes: [Envelope]
+            do {
+                envelopes = try await registered { [handled] in try await $0.poll(wait: 0, limit: 1, exclude: handled) }
+            } catch DeviceLinkError.relay(_, Self.pollAlreadyActive) {
+                return DrainResult(applied: applied, complete: false, collided: true)
+            } catch {
+                if !(error is CancellationError) { noteFailure(error) }
+                throw error
+            }
+            if envelopes.isEmpty { return DrainResult(applied: applied, complete: true) }
+            for envelope in envelopes {
+                if try await process(envelope, handler: handler) { applied += 1 }
+                handled.append(envelope.id)
+                if handled.count > 20 { handled.removeFirst() }
+            }
+        }
+        return DrainResult(applied: applied, complete: false)
+    }
+
     /// Fetches and processes at most one envelope; [handler] applies it and returns the receipt status.
-    /// Returns how many items reached [handler] (receipts, unlink notices and duplicates are not counted).
+    /// Returns how many items reached [handler] (receipts, unlink notices and duplicates are not counted),
+    /// so 0 does not mean the mailbox is empty: use `drain` to fetch everything waiting.
     @discardableResult
     public func receiveOnce(wait: Int? = nil, handler: @Sendable (IncomingItem) async -> ReceiptStatus) async throws -> Int {
         let waitSeconds = wait ?? config.pollWaitSeconds

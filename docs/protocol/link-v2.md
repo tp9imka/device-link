@@ -135,6 +135,10 @@ does not stop the receipt; the redelivered envelope hits the ledger and is only 
 from a linked sender that fail to verify or decrypt are acknowledged and dropped (they never can) and
 counted in the receiver's diagnostics.
 
+One-shot fetches (notification actions, shortcuts) poll with `wait=0` until the mailbox is empty, passing
+the IDs already handled in `exclude`; a returned count of applied items is not an emptiness signal,
+because receipts and duplicates apply nothing and each sender's newest envelope is served first.
+
 ## Pairing by QR
 
 The inviter (any linked or new device) creates a one-time 32-byte secret `s`

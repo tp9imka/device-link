@@ -256,6 +256,42 @@ final class EngineTests: XCTestCase {
         XCTAssertLessThan(Date().timeIntervalSince(started), 10, "a collision must not take the 60 s rate-limit backoff")
     }
 
+    func testDrainAppliesEveryItemEvenWhenAReceiptIsServedFirst() async throws {
+        let android = try client("Pixel"), iphone = try client("iPhone")
+        try await link(android, iphone)
+        _ = try await iphone.send(.text("two"))
+        _ = try await iphone.send(.text("three"))
+        _ = try await android.send(.text("x"))
+        try await iphone.receiveOnce(wait: 0) { _ in .copied } // its receipt is iPhone's newest envelope for Android
+        let texts = Locked<[String?]>([])
+        let result = try await android.drain { item in texts.with { $0.append(item.text) }; return .delivered }
+        XCTAssertEqual(result, DrainResult(applied: 2, complete: true))
+        XCTAssertEqual(texts.get, ["three", "two"])
+        XCTAssertTrue(relay.mailbox.filter { $0.recipientId == android.deviceId }.isEmpty)
+    }
+
+    func testDrainStopsOnAFailedAcknowledgementInsteadOfLooping() async throws {
+        let android = try client("Pixel"), iphone = try client("iPhone")
+        try await link(android, iphone)
+        _ = try await android.send(.text("once"))
+        relay.state.with { $0.failAcks = 5 }
+        let calls = Locked(0)
+        let result = try await iphone.drain { _ in calls.with { $0 += 1 }; return .copied }
+        XCTAssertEqual(result, DrainResult(applied: 1, complete: true))
+        XCTAssertEqual(calls.get, 1)
+    }
+
+    func testDrainReportsAPollCollisionInsteadOfFailing() async throws {
+        let android = try client("Pixel"), iphone = try client("iPhone")
+        try await link(android, iphone)
+        _ = try await android.send(.text("waiting"))
+        relay.state.with { $0.pollErrors = [(429, "poll_already_active")] }
+        let first = try await iphone.drain { _ in .copied }
+        XCTAssertEqual(first, DrainResult(applied: 0, complete: false, collided: true))
+        let second = try await iphone.drain { _ in .copied }
+        XCTAssertEqual(second.applied, 1)
+    }
+
     func testUndecryptableEnvelopesAreDroppedAndCounted() async throws {
         let android = try client("Pixel"), iphone = try client("iPhone")
         try await link(android, iphone)

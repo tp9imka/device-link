@@ -111,8 +111,13 @@ public struct RelayClient: Sendable {
     public func cancelPairing(_ id: String) async throws { _ = try await call("DELETE", "/v1/pairings/\(id)") }
 
     public func upload(_ envelope: Envelope) async throws { _ = try await call("POST", "/v1/messages", body: try envelope.encode()) }
-    public func poll(wait: Int, limit: Int = 1) async throws -> [Envelope] {
-        try Envelope.decodeList(try await call("GET", "/v1/messages?wait=\(wait)&limit=\(limit)", timeout: TimeInterval(wait + 20)))
+    /// `exclude`: up to 20 envelope IDs the relay must skip (for example ones already processed this round).
+    public func poll(wait: Int, limit: Int = 1, exclude: [String] = []) async throws -> [Envelope] {
+        guard exclude.count <= 20, exclude.allSatisfy({ UUID(uuidString: $0)?.uuidString.lowercased() == $0 }) else {
+            throw DeviceLinkError.invalid("exclude")
+        }
+        let skip = exclude.isEmpty ? "" : "&exclude=" + exclude.joined(separator: ",")
+        return try Envelope.decodeList(try await call("GET", "/v1/messages?wait=\(wait)&limit=\(limit)\(skip)", timeout: TimeInterval(wait + 20)))
     }
     /// One waiting envelope by ID (notification previews). Does not acknowledge it.
     public func fetch(_ id: String) async throws -> Envelope { try Envelope.decode(try await call("GET", "/v1/messages/\(id)")) }

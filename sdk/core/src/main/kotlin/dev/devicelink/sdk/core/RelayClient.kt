@@ -130,8 +130,12 @@ class RelayClient(
     /** Returns 201/200 for new/idempotent retry; both mean the relay durably accepted the envelope. */
     suspend fun upload(envelope: Envelope) { call("POST", "/v1/messages", envelope.encode()) }
 
-    suspend fun poll(waitSeconds: Int, limit: Int = 1): List<Envelope> =
-        Envelope.decodeList(call("GET", "/v1/messages?wait=$waitSeconds&limit=$limit", timeoutMillis = (waitSeconds + 20) * 1000))
+    /** [exclude]: up to 20 envelope IDs the relay must skip (for example ones already processed this round). */
+    suspend fun poll(waitSeconds: Int, limit: Int = 1, exclude: Collection<String> = emptyList()): List<Envelope> {
+        require(exclude.size <= 20 && exclude.all { java.util.UUID.fromString(it).toString() == it })
+        val skip = if (exclude.isEmpty()) "" else "&exclude=" + exclude.joinToString(",")
+        return Envelope.decodeList(call("GET", "/v1/messages?wait=$waitSeconds&limit=$limit$skip", timeoutMillis = (waitSeconds + 20) * 1000))
+    }
 
     /** One waiting envelope by ID (notification previews). Does not acknowledge it. */
     suspend fun fetch(id: String): Envelope = Envelope.decode(String(call("GET", "/v1/messages/$id"), Charsets.UTF_8))

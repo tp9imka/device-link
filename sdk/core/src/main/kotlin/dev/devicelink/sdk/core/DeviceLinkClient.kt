@@ -82,6 +82,16 @@ data class SendOutcome(val peerId: String, val itemId: String?, val error: Strin
 
 enum class ReceiverStatus { IDLE, CONNECTING, ONLINE, OFFLINE, NEEDS_SETUP, REJECTED }
 
+/** Outcome of [DeviceLinkClient.drain]. */
+data class DrainResult(
+    /** Items that reached the handler (receipts, unlink notices and duplicates are not counted). */
+    val applied: Int,
+    /** The relay answered with an empty mailbox: nothing is left waiting. */
+    val complete: Boolean,
+    /** Another mailbox poll by this device was active (`poll_already_active`), so draining stopped early. */
+    val collided: Boolean = false,
+)
+
 sealed interface LinkEvent {
     data class PeerLinked(val peer: LinkedPeer) : LinkEvent
     data class PeerUnlinked(val peerId: String, val byRemote: Boolean) : LinkEvent
@@ -348,9 +358,51 @@ class DeviceLinkClient(
     }
 
     /**
+     * Fetches everything waiting without long-polling, until the relay returns an empty mailbox, and
+     * applies each item through [handler]. Use it for one-shot "get what is waiting" actions (a
+     * notification Copy action, a shortcut) instead of looping on `receiveOnce(0)` until it returns 0:
+     * that stops early because receipts, unlink notices and duplicates count 0, and the relay serves a
+     * sender's newest envelope (often a receipt) first.
+     *
+     * At most [maxEnvelopes] envelopes are processed. Envelopes already handled in this call are excluded
+     * from the next poll, so a failed acknowledgement cannot loop. Returns `collided = true` instead of
+     * throwing when this device's receive loop is polling at the same time (`poll_already_active`);
+     * other relay and network errors are thrown.
+     */
+    suspend fun drain(maxEnvelopes: Int = 100, handler: suspend (IncomingItem) -> ReceiptStatus): DrainResult {
+        var applied = resumeSpooled(handler)
+        val handled = ArrayDeque<String>()
+        try {
+            repeat(maxEnvelopes) {
+                note { it.copy(lastPollAt = clock()) }
+                val envelopes = try {
+                    registered { it.poll(0, 1, handled.toList()) }
+                } catch (failure: RelayException) {
+                    if (failure.code == POLL_ALREADY_ACTIVE) return DrainResult(applied, complete = false, collided = true)
+                    failure(failure)
+                    throw failure
+                } catch (error: Exception) {
+                    if (error !is CancellationException) failure(error)
+                    throw error
+                }
+                if (envelopes.isEmpty()) return DrainResult(applied, complete = true)
+                for (envelope in envelopes) {
+                    if (process(envelope, handler)) applied++
+                    handled.addLast(envelope.id)
+                    if (handled.size > 20) handled.removeFirst()
+                }
+            }
+            return DrainResult(applied, complete = false)
+        } finally {
+            if (applied > 0) note { it.copy(lastReceiveAt = clock(), received = it.received + applied) }
+        }
+    }
+
+    /**
      * Fetches and processes at most one envelope. [handler] applies the item (clipboard, notification)
      * and returns the receipt status reported back to the sender. Returns how many items reached [handler]
-     * (receipts, unlink notices and duplicates are handled internally and not counted).
+     * (receipts, unlink notices and duplicates are handled internally and not counted), so 0 does not
+     * mean the mailbox is empty: use [drain] to fetch everything waiting.
      */
     suspend fun receiveOnce(waitSeconds: Int = config.pollWaitSeconds, handler: suspend (IncomingItem) -> ReceiptStatus): Int {
         val resumed = if (isConfigured) resumeSpooled(handler) else 0

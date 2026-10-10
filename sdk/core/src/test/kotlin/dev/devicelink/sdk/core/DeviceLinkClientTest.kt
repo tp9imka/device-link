@@ -402,6 +402,37 @@ class DeviceLinkClientTest {
         assertEquals(null, receiverAfterPollError("rate_limit", withinMillis = 30_000))
     }
 
+    @Test fun `drain applies every item even when a receipt is served first`() = runBlocking {
+        linked()
+        iphone.send(OutgoingContent.Text("two"))
+        iphone.send(OutgoingContent.Text("three"))
+        android.send(OutgoingContent.Text("x"))
+        iphone.receiveOnce { ReceiptStatus.COPIED } // its receipt is iPhone's newest envelope for Android
+        val texts = mutableListOf<String?>()
+        val result = android.drain { texts += it.text; ReceiptStatus.DELIVERED }
+        assertEquals(DrainResult(applied = 2, complete = true), result)
+        assertEquals(listOf<String?>("three", "two"), texts)
+        assertTrue(relay.mailbox.none { it.recipientId == android.deviceId })
+    }
+
+    @Test fun `drain stops on a failed acknowledgement instead of looping`() = runBlocking {
+        linked()
+        android.send(OutgoingContent.Text("once"))
+        relay.failAcks = 5
+        var calls = 0
+        assertEquals(DrainResult(applied = 1, complete = true), iphone.drain { calls++; ReceiptStatus.COPIED })
+        assertEquals(1, calls)
+        assertTrue(relay.polls.last().contains("exclude="))
+    }
+
+    @Test fun `drain reports a poll collision instead of failing`() = runBlocking {
+        linked()
+        android.send(OutgoingContent.Text("waiting"))
+        relay.pollErrors += 429 to "poll_already_active"
+        assertEquals(DrainResult(applied = 0, complete = false, collided = true), iphone.drain { ReceiptStatus.COPIED })
+        assertEquals(1, iphone.drain { ReceiptStatus.COPIED }.applied)
+    }
+
     @Test fun `unlink all forgets every peer`() = runBlocking {
         linked()
         android.unlinkAll()
