@@ -99,7 +99,7 @@ SHA256_HEX_BODY
 | `DELETE /v1/messages/{id}` | Recipient acknowledgement. Deletes only the caller's item; always 204 for a valid UUID, without exposing another mailbox's item existence. |
 | `GET /v1/info` | Unauthenticated: version, `maxLifetimeSeconds`, enrollment mode, push providers. |
 | `POST /v1/pairings` | Body `{"id":"<32 hex>","expiresAt":ms}`; at most 5 open per device. |
-| `POST /v1/pairings/{id}/join` | Body `{"sealed":"<Base64>"}`; exactly one joiner. `X-Pairing-Id` on `/v1/register` admits a joiner without the enrollment token while the pairing is open. |
+| `POST /v1/pairings/{id}/join` | Body `{"sealed":"<Base64>"}`; exactly one joiner. `X-Pairing-Id` on `/v1/register` admits exactly one new identity without the enrollment token while the pairing is open; that identity may retry its registration, others get 403. |
 | `GET /v1/pairings/{id}?wait=0..25` | Creator or joiner only: `{"state","joinerId","sealed"}`; long-polls for the next state. |
 | `POST /v1/pairings/{id}/confirm` | Creator; records the link and allows the joiner into the creator's mailbox. |
 | `DELETE /v1/pairings/{id}` | Cancel. |

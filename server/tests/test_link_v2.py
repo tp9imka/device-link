@@ -90,6 +90,26 @@ def test_scanning_a_qr_enrolls_without_the_token(tmp_path):
         assert request(client, stranger, NOW, "POST", "/v1/register", {}, headers={"X-Pairing-Id": pairing_id()}).status_code == 403
 
 
+def test_one_qr_admits_exactly_one_new_device(tmp_path):
+    settings = Settings(database=tmp_path / "relay.sqlite3", enrollment_token="private-token")
+    inviter, joiner, second, third = Device(), Device(), Device(), Device()
+    pid = {"X-Pairing-Id": pairing_id()}
+    with TestClient(create_app(settings, lambda: NOW)) as client:
+        assert request(client, inviter, NOW, "POST", "/v1/register", {}, headers={"X-Enrollment-Token": "private-token"}).status_code == 200
+        create(client, inviter, NOW)
+        assert request(client, joiner, NOW, "POST", "/v1/register", {}, headers=pid).status_code == 200
+        # The pairing is still open (nobody joined yet), but its one admission is spent.
+        assert request(client, second, NOW, "POST", "/v1/register", {}, headers=pid).status_code == 403
+        # The admitted device may retry its own registration (lost response, app restart).
+        assert request(client, joiner, NOW, "POST", "/v1/register", {"platform": "ios"}, headers=pid).status_code == 200
+        assert request(client, joiner, NOW, "POST", f"/v1/pairings/{pairing_id()}/join", {"sealed": SEALED}).status_code == 204
+        # The enrollment token does not spend a pairing's admission.
+        create(client, inviter, NOW, pid=pairing_id(2))
+        both = {"X-Pairing-Id": pairing_id(2), "X-Enrollment-Token": "private-token"}
+        assert request(client, second, NOW, "POST", "/v1/register", {}, headers=both).status_code == 200
+        assert request(client, third, NOW, "POST", "/v1/register", {}, headers={"X-Pairing-Id": pairing_id(2)}).status_code == 200
+
+
 def test_pairing_long_poll_wakes_on_join(relay):
     _, now, client = relay
     inviter, joiner = Device(), Device()

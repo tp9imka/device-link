@@ -187,9 +187,10 @@ def create_app(settings=None, clock=None, push_transport=None):
                 supplied = request.headers.getlist("x-enrollment-token")
                 pairing = request.headers.getlist("x-pairing-id")
                 token_ok = len(supplied) == 1 and hmac.compare_digest(supplied[0].encode(), settings.enrollment_token.encode())
-                # Scanning a valid QR code is enough to enroll: the inviter is already trusted.
-                pairing_ok = (len(pairing) == 1 and PAIRING_ID.fullmatch(pairing[0])
-                              and await run_in_threadpool(store.open_pairing, pairing[0], now))
+                # Scanning a valid QR code is enough to enroll one device: the inviter is already trusted.
+                # The token is checked first so a token holder never spends a pairing's single admission.
+                pairing_ok = (not token_ok and len(pairing) == 1 and PAIRING_ID.fullmatch(pairing[0])
+                              and await run_in_threadpool(store.admit_pairing, pairing[0], identity.id, now))
                 if not (token_ok or pairing_ok):
                     raise RelayError(403, "enrollment_required")
             await run_in_threadpool(store.authorize, identity, now, registration)

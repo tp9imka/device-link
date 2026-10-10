@@ -37,6 +37,8 @@ MIGRATIONS = {
                 ("received_bytes", "INTEGER NOT NULL DEFAULT 0")],
     "peers": [("created", "INTEGER NOT NULL DEFAULT 0")],
     "messages": [("created", "INTEGER NOT NULL DEFAULT 0")],
+    # Identity that registered through this pairing's QR without the enrollment token.
+    "pairings": [("admitted", "TEXT")],
 }
 
 
@@ -116,10 +118,15 @@ class Store:
             if existing:
                 db.execute("UPDATE devices SET last_seen=? WHERE id=?", (now, identity.id))
 
-    def open_pairing(self, pairing, now):
-        """True when an unexpired, unjoined pairing exists: its QR admits one new device."""
+    def admit_pairing(self, pairing, device, now):
+        """True when an unexpired, unjoined pairing admits [device] without the enrollment token.
+
+        Each QR admits exactly one identity: the first registration binds the pairing to it, and
+        only that identity may register through it again (a retry after a lost response).
+        """
         with self.transaction() as db:
-            return db.execute("SELECT 1 FROM pairings WHERE id=? AND state='open' AND expires>?", (pairing, now)).fetchone() is not None
+            return db.execute("UPDATE pairings SET admitted=? WHERE id=? AND state='open' AND expires>? "
+                              "AND (admitted IS NULL OR admitted=?)", (device, pairing, now, device)).rowcount == 1
 
     def register(self, identity, now, metadata):
         with self.transaction() as db:
