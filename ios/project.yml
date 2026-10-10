@@ -23,6 +23,7 @@ targets:
     type: application
     platform: iOS
     sources: [DeviceLink, Shared]
+    scheme: {}
     dependencies:
       - package: DeviceLinkKit
         product: DeviceLinkKit
@@ -144,6 +145,7 @@ targets:
     type: application
     platform: iOS
     sources: [Sample, Shared]
+    scheme: {}
     dependencies:
       - package: DeviceLinkKit
         product: DeviceLinkKit
@@ -183,6 +185,10 @@ targets:
     type: application
     platform: macOS
     sources: [Mac, Shared/SendMessages.swift]
+    scheme:
+      # Platform-free app logic, run on the Mac so no simulator is needed:
+      # xcodebuild test -scheme DeviceLinkMac -destination 'platform=macOS'
+      testTargets: [DeviceLinkAppTests]
     dependencies:
       - package: DeviceLinkKit
         product: DeviceLinkKit
@@ -201,3 +207,15 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: $(DL_BUNDLE_PREFIX).mac
         # Required for notarization.
         ENABLE_HARDENED_RUNTIME: YES
+  DeviceLinkAppTests:
+    # Unit tests for app logic in Shared/ that does not need UIKit (see the DeviceLinkMac scheme).
+    type: bundle.unit-test
+    platform: macOS
+    sources: [Tools/AppTests, Shared/CopyFilter.swift, Shared/SendMessages.swift]
+    dependencies:
+      - package: DeviceLinkKit
+        product: DeviceLinkKit
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(DL_BUNDLE_PREFIX).apptests
+        GENERATE_INFOPLIST_FILE: YES
