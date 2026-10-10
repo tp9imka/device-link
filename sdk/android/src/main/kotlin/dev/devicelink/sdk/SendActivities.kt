@@ -15,9 +15,11 @@ import kotlinx.coroutines.withContext
 
 /** Shared toast wording for every "send" entry point: success, or the reason the user can act on. */
 internal fun Activity.reportSend(result: Result<List<SendOutcome>>, link: DeviceLinkInstance) {
-    val peers = link.peers.value.map { it.name }
+    val peers = link.peers.value
     val message = when (val problem = SendProblem.of(result, peers.isNotEmpty(), link.diagnostics.value.lastError)) {
-        null -> getString(R.string.dl_send_ok, peers.joinToString())
+        // Only the devices this went to: sendTargets may limit it to some of them.
+        null -> getString(R.string.dl_send_ok, result.getOrThrow().mapNotNull { outcome -> peers.firstOrNull { it.id == outcome.peerId }?.name }
+            .joinToString())
         SendProblem.TOO_LARGE -> getString(problem.message, Limits.MAX_FILE_BYTES / (1024 * 1024), Limits.MAX_TEXT_BYTES / 1024)
         else -> getString(problem.message)
     }
