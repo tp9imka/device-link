@@ -36,6 +36,20 @@
   </LinearLayout>
  </LinearLayout>
 
+ <!-- Receive has its own card, away from every other tap target: turning it off by mistake stops all clips. -->
+ <LinearLayout android:id="@+id/receive_card" style="@style/Card" android:layout_width="match_parent" android:layout_height="wrap_content"
+  android:orientation="vertical" android:layout_marginTop="8dp">
+  <Switch android:id="@+id/receive" android:layout_width="match_parent" android:layout_height="wrap_content" android:minHeight="48dp"
+   android:text="@string/receive" android:textColor="@color/on_surface" android:textSize="16sp" android:textStyle="bold"
+   android:switchPadding="16dp" />
+  <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="center_vertical">
+   <TextView android:id="@+id/receive_state" style="@style/Body" android:layout_width="0dp" android:layout_weight="1"
+    android:layout_height="wrap_content" android:accessibilityLiveRegion="polite" />
+   <Button android:id="@+id/receive_undo" style="@style/SecondaryButton" android:layout_width="wrap_content"
+    android:layout_height="wrap_content" android:layout_marginStart="16dp" android:text="@string/receive_undo" android:visibility="gone" />
+  </LinearLayout>
+ </LinearLayout>
+
  <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="center_vertical"
   android:layout_marginTop="16dp" android:paddingStart="4dp">
   <TextView style="@style/Heading" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="@string/clips" />

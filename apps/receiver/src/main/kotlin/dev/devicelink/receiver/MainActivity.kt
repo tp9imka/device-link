@@ -38,6 +38,8 @@ class MainActivity : Activity() {
     private lateinit var adapter: ClipAdapter
     private lateinit var header: View
     private lateinit var receive: Switch
+    private lateinit var undo: Button
+    private val hideUndo = Runnable { if (::undo.isInitialized) undo.visibility = View.GONE }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -59,8 +61,10 @@ class MainActivity : Activity() {
         list.setOnItemClickListener { _, _, position, _ -> recopy(adapter.getItem(position - list.headerViewsCount)) }
         list.setOnItemLongClickListener { _, view, position, _ -> menu(view, adapter.getItem(position - list.headerViewsCount)); true }
 
-        receive = findViewById(R.id.receive)
-        receive.setOnCheckedChangeListener { _, checked -> if (checked != link.receiverEnabled) link.receiverEnabled = checked }
+        receive = header.findViewById(R.id.receive)
+        undo = header.findViewById(R.id.receive_undo)
+        receive.setOnCheckedChangeListener { _, checked -> if (checked != link.receiverEnabled) setReceiving(checked, offerUndo = !checked) }
+        undo.setOnClickListener { setReceiving(true, offerUndo = false) }
         header.findViewById<Button>(R.id.show_code).setOnClickListener { DeviceLinkPairing.showCode(this) }
         header.findViewById<Button>(R.id.link_more).setOnClickListener { DeviceLinkPairing.showCode(this) }
         header.findViewById<Button>(R.id.scan_code).setOnClickListener { DeviceLinkPairing.startScan(this) }
@@ -90,11 +94,28 @@ class MainActivity : Activity() {
         DeviceLinkPairing.handleIntent(this, intent)
     }
 
+    override fun onResume() {
+        super.onResume()
+        // Receive can also be turned off from the notification while this screen is in the background.
+        render(link.peers.value, link.status.value)
+    }
+
+    /** User toggles only. Turning off offers Undo for a few seconds, since every clip stops arriving. */
+    private fun setReceiving(on: Boolean, offerUndo: Boolean) {
+        link.receiverEnabled = on
+        undo.removeCallbacks(hideUndo)
+        undo.visibility = if (offerUndo) View.VISIBLE else View.GONE
+        if (offerUndo) undo.postDelayed(hideUndo, UNDO_MILLIS)
+        render(link.peers.value, link.status.value)
+    }
+
     private fun render(peers: List<LinkedPeer>, status: ReceiverStatus) {
         header.findViewById<View>(R.id.empty).visibility = if (peers.isEmpty()) View.VISIBLE else View.GONE
         header.findViewById<View>(R.id.linked).visibility = if (peers.isEmpty()) View.GONE else View.VISIBLE
-        receive.visibility = if (peers.isEmpty()) View.GONE else View.VISIBLE
+        header.findViewById<View>(R.id.receive_card).visibility = if (peers.isEmpty()) View.GONE else View.VISIBLE
         receive.isChecked = link.receiverEnabled
+        header.findViewById<TextView>(R.id.receive_state).setText(if (link.receiverEnabled) R.string.receive_on else R.string.receive_off)
+        if (link.receiverEnabled) { undo.removeCallbacks(hideUndo); undo.visibility = View.GONE }
         val targets = link.sendTargets
         findViewById<TextView>(R.id.status).text = if (targets.isNotEmpty() && peers.size > 1)
             getString(R.string.sending_to, peers.filter { it.id in targets }.joinToString { it.name }) else getString(when {
@@ -234,7 +255,7 @@ class MainActivity : Activity() {
         }
     }
 
-    override fun onDestroy() { scope.cancel(); super.onDestroy() }
+    override fun onDestroy() { undo.removeCallbacks(hideUndo); scope.cancel(); super.onDestroy() }
 
-    private companion object { const val PICK_FILE = 41; const val NOTIFICATIONS = 42 }
+    private companion object { const val PICK_FILE = 41; const val NOTIFICATIONS = 42; const val UNDO_MILLIS = 8_000L }
 }
