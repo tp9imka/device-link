@@ -186,3 +186,5 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: $(DL_BUNDLE_PREFIX).mac
+        # Required for notarization.
+        ENABLE_HARDENED_RUNTIME: YES
