@@ -15,7 +15,7 @@ struct DeviceLinkApp: App {
                 .onContinueUserActivity(NSUserActivityTypeBrowsingWeb) { activity in
                     if let url = activity.webpageURL { model.open(url.absoluteString) }
                 }
-                .onAppear { delegate.model = model }
+                .onAppear { delegate.attach(model) }
         }
         .onChange(of: phase) { _, phase in
             switch phase {
@@ -29,7 +29,9 @@ struct DeviceLinkApp: App {
 
 /// Push registration (optional APNs wake-ups) and a short background grace period for in-flight clips.
 final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
-    weak var model: LinkModel?
+    private weak var model: LinkModel?
+    /// A token that arrived before the model was attached.
+    private var token: Data?
 
     func application(_ application: UIApplication, didFinishLaunchingWithOptions options: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         UNUserNotificationCenter.current().delegate = self
@@ -38,14 +40,30 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         UNUserNotificationCenter.current().setNotificationCategories([
             UNNotificationCategory(identifier: "DEVICELINK_ITEM", actions: [copy], intentIdentifiers: [], options: []),
         ])
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { granted, _ in
-            if granted { DispatchQueue.main.async { application.registerForRemoteNotifications() } }
-        }
+        // Getting the APNs token shows no prompt; the permission prompt waits for the first link.
+        application.registerForRemoteNotifications()
         return true
     }
 
+    @MainActor func attach(_ model: LinkModel) {
+        self.model = model
+        if let token { model.registerPush(token: token) }
+        model.onLinkConfirmed = { [weak model] in
+            UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in
+                Task { @MainActor in model?.asksForNotifications = false }
+            }
+        }
+        UNUserNotificationCenter.current().getNotificationSettings { settings in
+            let undecided = settings.authorizationStatus == .notDetermined
+            Task { @MainActor in model.asksForNotifications = undecided }
+        }
+    }
+
     func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
-        Task { @MainActor in model?.registerPush(token: deviceToken) }
+        Task { @MainActor in
+            token = deviceToken
+            model?.registerPush(token: deviceToken)
+        }
     }
 
     func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {}

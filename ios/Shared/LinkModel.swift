@@ -53,7 +53,10 @@ final class LinkModel: ObservableObject {
         case .status(let value): status = value
         case .receipt(let id, _, let status):
             clips.update(id, status == .copied ? .copied : status == .delivered ? .delivered : .failed)
-        case .peerLinked, .peerUnlinked: await refresh()
+        case .peerLinked:
+            await refresh()
+            registerStoredPush() // the launch-time token arrived while nothing was linked yet
+        case .peerUnlinked: await refresh()
         }
     }
 
@@ -151,8 +154,26 @@ final class LinkModel: ObservableObject {
         send(image ? .image(name: name, mime: mime, data: data) : .file(name: name, mime: mime, data: data), preview: nil, fileName: name, mime: mime)
     }
 
+    /// The APNs token from this launch. Kept so a device linked later in the same launch registers it too.
+    private var pushToken: Data?
+
+    /// Set by apps that use notifications: asked once the user confirms their first link (not at launch).
+    var onLinkConfirmed: (@MainActor () -> Void)?
+    /// When true, the link confirmation says why a notification prompt follows.
+    @Published var asksForNotifications = false
+
+    func confirmLink() {
+        linkedConfirmation = nil
+        onLinkConfirmed?()
+    }
+
     func registerPush(token: Data) {
-        guard let client, !peers.isEmpty else { return }
+        pushToken = token
+        registerStoredPush()
+    }
+
+    private func registerStoredPush() {
+        guard let client, let token = pushToken, !peers.isEmpty else { return }
         let hex = token.map { String(format: "%02x", $0) }.joined()
         // Same build setting as the aps-environment entitlement, so the relay targets the matching APNs host.
         let environment = LinkEnvironment.info("DLAPSEnvironment") == "production" ? "production" : "sandbox"
