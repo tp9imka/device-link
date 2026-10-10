@@ -298,16 +298,46 @@ def test_concurrent_enqueue_is_atomic_for_final_mailbox_slot(tmp_path):
         assert len(request(client, recipient, now, "GET", "/v1/messages").json()) == 1
 
 
-def test_only_one_pending_poll_per_recipient(setup):
-    _, now, client = setup
-    device = Device()
-    register(client, device, now[0])
-    thread = threading.Thread(target=lambda: request(client, device, now[0], "GET", "/v1/messages?wait=1"))
-    thread.start()
-    time.sleep(0.1)
-    response = request(client, device, now[0], "GET", "/v1/messages?wait=1")
-    thread.join(timeout=2)
-    assert response.status_code == 429
+def test_reconnecting_poll_supersedes_the_stale_one(tmp_path):
+    """A phone back from a network blip must not collide with its own dead long poll."""
+    pushes = []
+
+    async def transport(url, headers, payload):
+        pushes.append(payload["m"])
+        return 200, ""
+
+    now = 1_800_000_000_000
+    with TestClient(create_app(Settings(database=tmp_path / "relay.sqlite3"), lambda: now, push_transport=transport)) as client:
+        sender, recipient = paired(client, now)
+        assert request(client, recipient, now, "PUT", "/v1/push", {"provider": "apns", "token": "ab" * 32,
+                                                                    "environment": "sandbox", "topic": "dev.devicelink.ios"}).status_code == 204
+        stale, fresh = [], []
+        stale_poll = threading.Thread(target=lambda: stale.append((request(client, recipient, now, "GET", "/v1/messages?wait=10"), time.monotonic())))
+        stale_poll.start()
+        time.sleep(0.2)
+        fresh_poll = threading.Thread(target=lambda: fresh.append(request(client, recipient, now, "GET", "/v1/messages?wait=10")))
+        superseded_at = time.monotonic()
+        fresh_poll.start()
+        stale_poll.join(timeout=3)
+        assert not stale_poll.is_alive(), "the stale poll must end promptly once superseded"
+        response, ended = stale[0]
+        assert response.status_code == 200 and response.json() == []
+        assert ended - superseded_at < 2
+        # The fresh poll is still the live one: it gets the item, and APNs stays quiet while it is open.
+        item = envelope(sender, recipient, now, version=2)
+        assert request(client, sender, now, "POST", "/v1/messages", item).status_code == 201
+        fresh_poll.join(timeout=3)
+        assert not fresh_poll.is_alive()
+        assert fresh[0].json() == [item]
+        time.sleep(0.1)
+        assert pushes == []
+        # With no poll open, the next item wakes the phone.
+        later = envelope(sender, recipient, now, version=2, sequence=2)
+        assert request(client, sender, now, "POST", "/v1/messages", later).status_code == 201
+        deadline = time.monotonic() + 2
+        while not pushes and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert pushes == [later["id"]]
 
 
 def test_ciphertext_size_limit(tmp_path):

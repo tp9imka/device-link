@@ -99,7 +99,8 @@ class Runtime:
 
     def __init__(self):
         self.started = time.time()
-        self.polling = set()
+        # Identity -> token of its one live long poll.
+        self.polling = {}
         self.counters = {"auth_failures": 0, "rate_limited": 0, "requests": 0, "push_sent": 0, "push_failed": 0}
         # Monotonic times of recent rejections, for dashboard alerts (bounded).
         self.rejections = collections.deque(maxlen=1000)
@@ -343,18 +344,29 @@ def create_app(settings=None, clock=None, push_transport=None):
                 raise ValueError()
         except ValueError:
             raise RelayError(400, "invalid_wait") from None
-        if identity.id in runtime.polling:
-            raise RelayError(429, "poll_already_active")
-        runtime.polling.add(identity.id)
+        # At most one live poll per identity. A new poll supersedes the previous one (a reconnect
+        # after a network blip or service restart), which then answers [] promptly. Abuse is bounded
+        # by the per-device request rate limit, since every poll is a signed, nonce-consuming request.
+        token = object()
+        superseded = runtime.polling.get(identity.id) is not None
+        runtime.polling[identity.id] = token
+        if superseded:
+            await notify()
         try:
             async def available():
+                if runtime.polling.get(identity.id) is not token:
+                    return []
                 items = await run_in_threadpool(store.mailbox, identity.id, clock(), excluded, limit)
+                if runtime.polling.get(identity.id) is not token:
+                    return []
                 return items or None
 
             items = await wait_for(available, wait) or []
             return Response(b"[" + b",".join(items) + b"]", media_type="application/json")
         finally:
-            runtime.polling.discard(identity.id)
+            # Only the live poll clears the entry, so APNs suppression keeps meaning "a poll is open".
+            if runtime.polling.get(identity.id) is token:
+                del runtime.polling[identity.id]
 
     @app.get("/v1/messages/{message}")
     async def fetch_one(message: str, request: Request):
