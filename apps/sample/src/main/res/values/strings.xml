@@ -3,8 +3,8 @@
  <string name="subtitle">SDK integration: every copy made in this app is sent to your linked devices.</string>
  <string name="not_linked">No device linked yet</string>
  <string name="linked_with">Linked with %1$s</string>
- <string name="show_code">Show code</string>
- <string name="scan_code">Scan code</string>
+ <string name="show_code">Show my code</string>
+ <string name="scan_code">Scan a code</string>
  <string name="try_heading">Copy something</string>
  <string name="try_body">Select and copy text below, or use Copy on a sample. The other device gets it on its clipboard within a second or two.</string>
  <string name="scratch_hint">Type or paste anything here, then select it and choose Copy</string>

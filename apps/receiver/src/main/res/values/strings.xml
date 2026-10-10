@@ -19,11 +19,11 @@
  <string name="notify_settings">Turn on notifications</string>
  <string name="linked_devices">Linked devices</string>
  <string name="link_more">+ Link</string>
- <string name="empty_title">Link your first device</string>
- <string name="empty_body">Show your code and scan it with the other device, or scan the other device\'s code. One scan links both ways.</string>
+ <string name="empty_title">Link another device</string>
+ <string name="empty_body">Show my code here and scan it with the other device, or scan the code the other device shows. One scan links both ways. Got a link code as text? Paste it.</string>
  <string name="show_code">Show my code</string>
  <string name="scan_code">Scan a code</string>
- <string name="paste_link">Paste link</string>
+ <string name="paste_link">Paste a link code</string>
  <string name="paste_send">Paste &amp; send</string>
  <string name="send_file">Send file</string>
  <string name="clips">Clips</string>
@@ -46,7 +46,7 @@
  <string name="share">Share…</string>
  <string name="remove">Remove</string>
  <string name="tile_send">Send clipboard</string>
- <string name="paste_link_title">Paste a DeviceLink link</string>
+ <string name="paste_link_title">Paste a link code</string>
  <string name="clipboard_empty">The clipboard is empty</string>
  <string name="image">Image</string>
  <string name="diagnostics">Info</string>

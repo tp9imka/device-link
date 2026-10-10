@@ -39,6 +39,7 @@ class MainActivity : Activity() {
     private lateinit var link: DeviceLinkInstance
     private lateinit var adapter: ClipAdapter
     private lateinit var header: View
+    private lateinit var footer: View
     private lateinit var receive: Switch
     private lateinit var undo: Button
     private val prefs by lazy { getSharedPreferences("receiver_ui", MODE_PRIVATE) }
@@ -58,7 +59,8 @@ class MainActivity : Activity() {
         val list = findViewById<ListView>(R.id.clips)
         header = LayoutInflater.from(this).inflate(R.layout.header, list, false)
         list.addHeaderView(header, null, false)
-        list.addFooterView(LayoutInflater.from(this).inflate(R.layout.footer, list, false), null, false)
+        footer = LayoutInflater.from(this).inflate(R.layout.footer, list, false)
+        list.addFooterView(footer, null, false)
         adapter = ClipAdapter(this)
         list.adapter = adapter
         list.setOnItemClickListener { _, _, position, _ -> recopy(adapter.getItem(position - list.headerViewsCount)) }
@@ -145,6 +147,8 @@ class MainActivity : Activity() {
     private fun render(peers: List<LinkedPeer>, status: ReceiverStatus) {
         header.findViewById<View>(R.id.empty).visibility = if (peers.isEmpty()) View.VISIBLE else View.GONE
         header.findViewById<View>(R.id.linked).visibility = if (peers.isEmpty()) View.GONE else View.VISIBLE
+        // Sending tips only make sense once something is linked; the first screen is about linking.
+        footer.visibility = if (peers.isEmpty()) View.GONE else View.VISIBLE
         header.findViewById<View>(R.id.receive_card).visibility = if (peers.isEmpty()) View.GONE else View.VISIBLE
         receive.isChecked = link.receiverEnabled
         header.findViewById<TextView>(R.id.receive_state).setText(if (link.receiverEnabled) R.string.receive_on else R.string.receive_off)
