@@ -56,7 +56,12 @@ clip*; Triple Tap → a shortcut *Get Clipboard → Send to DeviceLink*.
 ```sh
 swift test --package-path DeviceLinkKit          # protocol, RFC 9180 vector, Kotlin interop vectors
 ../scripts/interop_e2e.sh                       # live relay: Kotlin <-> Swift pairing and exchange
+xcodebuild test -project DeviceLink.xcodeproj -scheme DeviceLinkMac -destination 'platform=macOS'
+                                                 # app logic in Shared/ (Tools/AppTests), no simulator
 ```
+
+App icons are generated from the Android receiver's adaptive icon: run
+`swift ios/Tools/make_app_icon.swift` from the repository root after changing it.
 
 The app targets are compiled in CI (`xcodebuild`, simulator, signing disabled). Device behaviour
 (clipboard, push, Back Tap) still needs a manual check on real hardware; see `docs/validation.md`.
