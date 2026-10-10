@@ -170,9 +170,11 @@ object DeviceLinkPairing {
 
     private fun showError(activity: Activity, failure: Throwable) {
         if (activity.isFinishing) return
-        val message = when (failure) {
-            is PairingException -> failure.message
-            is java.io.IOException -> activity.getString(R.string.dl_error_network)
+        val problem = PairingProblem.of(failure)
+        val message = when {
+            problem != null -> activity.getString(problem.message)
+            failure is PairingException -> failure.message
+            failure is java.io.IOException -> activity.getString(R.string.dl_error_network)
             else -> failure.message
         } ?: activity.getString(R.string.dl_error_generic)
         AlertDialog.Builder(activity).setTitle(R.string.dl_pair_failed).setMessage(message).setPositiveButton(android.R.string.ok, null).show()

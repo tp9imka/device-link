@@ -7,20 +7,21 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.widget.Toast
+import dev.devicelink.sdk.core.Limits
 import dev.devicelink.sdk.core.SendOutcome
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-/** Shared toast wording for every "send" entry point. */
-internal fun Activity.reportSend(outcomes: List<SendOutcome>, peers: List<String>) {
-    val message = when {
-        peers.isEmpty() -> getString(R.string.dl_send_no_devices)
-        outcomes.isEmpty() -> getString(R.string.dl_send_nothing)
-        outcomes.all { it.accepted } -> getString(R.string.dl_send_ok, peers.joinToString())
-        else -> getString(R.string.dl_send_failed)
+/** Shared toast wording for every "send" entry point: success, or the reason the user can act on. */
+internal fun Activity.reportSend(result: Result<List<SendOutcome>>, link: DeviceLinkInstance) {
+    val peers = link.peers.value.map { it.name }
+    val message = when (val problem = SendProblem.of(result, peers.isNotEmpty(), link.diagnostics.value.lastError)) {
+        null -> getString(R.string.dl_send_ok, peers.joinToString())
+        SendProblem.TOO_LARGE -> getString(problem.message, Limits.MAX_FILE_BYTES / (1024 * 1024), Limits.MAX_TEXT_BYTES / 1024)
+        else -> getString(problem.message)
     }
-    Toast.makeText(applicationContext, message, Toast.LENGTH_SHORT).show()
+    Toast.makeText(applicationContext, message, Toast.LENGTH_LONG).show()
 }
 
 /**
@@ -41,8 +42,8 @@ class SendClipboardActivity : Activity() {
             finish(); return
         }
         link.scope.launch {
-            val outcomes = runCatching { link.sendClip(clip) }.getOrDefault(emptyList())
-            withContext(Dispatchers.Main) { reportSend(outcomes, link.peers.value.map { it.name }); finish() }
+            val result = runCatching { link.sendClip(clip) }
+            withContext(Dispatchers.Main) { reportSend(result, link); finish() }
         }
     }
 }
@@ -57,8 +58,8 @@ class ShareToDeviceActivity : Activity() {
         val link = DeviceLink.get(this)
         val intent = intent
         link.scope.launch {
-            val outcomes = runCatching { send(link, intent) }.getOrDefault(emptyList())
-            withContext(Dispatchers.Main) { reportSend(outcomes, link.peers.value.map { it.name }); finish() }
+            val result = runCatching { send(link, intent) }
+            withContext(Dispatchers.Main) { reportSend(result, link); finish() }
         }
     }
 

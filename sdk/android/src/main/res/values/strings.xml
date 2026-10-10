@@ -22,6 +22,13 @@
  <string name="dl_send_ok">Sent to %1$s</string>
  <string name="dl_send_failed">Could not send. Check the connection and try again.</string>
  <string name="dl_send_nothing">Nothing to send</string>
+ <string name="dl_send_too_large">Too big to send. Files can be up to %1$d MB, text up to %2$d KB.</string>
+ <string name="dl_send_unreadable">Could not read this item. Try sharing it again from the app it came from.</string>
+ <string name="dl_send_mailbox_full">The other device has too many items waiting. Open DeviceLink there, then try again.</string>
+ <string name="dl_send_storage_full">The relay is out of space. Try again later.</string>
+ <string name="dl_send_rate_limited">Too many sends in a short time. Wait a minute and try again.</string>
+ <string name="dl_send_not_authorized">The other device no longer accepts items from this one. Link them again.</string>
+ <string name="dl_send_rejected">The relay refused this device. Open DeviceLink.</string>
  <string name="dl_send_no_devices">No linked device yet. Open DeviceLink to link one.</string>
  <string name="dl_pair_show_title">Link another device</string>
  <string name="dl_pair_creating">Creating a one-time code…</string>
@@ -31,6 +38,7 @@
  <string name="dl_pair_joining">Linking…</string>
  <string name="dl_pair_linked">Linked with %1$s</string>
  <string name="dl_pair_failed">Could not link</string>
+ <string name="dl_pair_code_used">This code has expired or was already used. Show a new code on the other device.</string>
  <string name="dl_pair_not_a_code">This is not a DeviceLink code.</string>
  <string name="dl_setup_applied">Relay configured. You can now show a code to link devices.</string>
  <string name="dl_error_network">The relay could not be reached. Check the internet connection.</string>

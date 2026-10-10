@@ -170,6 +170,7 @@ class DeviceLinkInstance internal constructor(private val context: Context, val 
     /** [html] is an optional rich-text alternative; [sensitive] hides previews on the other device. */
     @JvmOverloads
     suspend fun sendText(text: String, html: String? = null, sensitive: Boolean = false): List<SendOutcome> = withContext(Dispatchers.Default) {
+        if (text.toByteArray(Charsets.UTF_8).size > Limits.MAX_TEXT_BYTES) throw ContentTooLargeException(Limits.MAX_TEXT_BYTES)
         record(client.send(OutgoingContent.Text(text, html, sensitive), targets()), "text", text = text, sensitive = sensitive)
     }
 
@@ -216,13 +217,13 @@ class DeviceLinkInstance internal constructor(private val context: Context, val 
             .ifBlank { "file" }.let { if (it == "." || it == "..") "file" else it }
         val mime = resolver.getType(uri) ?: mimeHint ?: Mime.forName(name)
         if ('.' !in name && mime != "application/octet-stream") name = "$name.${Mime.extension(mime)}"
-        val bytes = requireNotNull(resolver.openInputStream(uri)).use { input ->
+        val bytes = (resolver.openInputStream(uri) ?: throw java.io.FileNotFoundException("No content")).use { input ->
             val output = ByteArrayOutputStream()
             val buffer = ByteArray(64 * 1024)
             while (true) {
                 val count = input.read(buffer)
                 if (count < 0) break
-                require(output.size() + count <= Limits.MAX_FILE_BYTES) { "File is larger than ${Limits.MAX_FILE_BYTES / (1024 * 1024)} MB" }
+                if (output.size() + count > Limits.MAX_FILE_BYTES) throw ContentTooLargeException(Limits.MAX_FILE_BYTES)
                 output.write(buffer, 0, count)
             }
             output.toByteArray()
