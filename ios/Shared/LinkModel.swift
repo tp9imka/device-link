@@ -35,7 +35,7 @@ final class LinkModel: ObservableObject {
             }
             Task { await refresh() }
         } catch {
-            message = "DeviceLink could not create its device keys: \(error)"
+            message = "DeviceLink could not create its device keys. Restart the app; if this repeats, reinstall it."
         }
     }
 
@@ -136,8 +136,11 @@ final class LinkModel: ObservableObject {
                                          peerName: names[outcome.peerId] ?? "", kind: fileName == nil ? "text" : "file",
                                          text: preview, fileName: fileName, mime: mime, at: Date(), state: outcome.accepted ? .pending : .failed))
                 }
-                if outcomes.isEmpty { message = "Link a device first" }
-                else if outcomes.contains(where: { !$0.accepted }) { message = "Could not send to every device" }
+                if outcomes.isEmpty { message = SendMessages.notLinked }
+                else if let failed = outcomes.first(where: { !$0.accepted }) {
+                    let reason = SendMessages.describe(outcomeError: failed.error)
+                    message = outcomes.count > 1 ? "Could not send to every device. \(reason)" : reason
+                }
             } catch {
                 message = describe(error)
             }
@@ -227,21 +230,10 @@ final class LinkModel: ObservableObject {
                 await refresh()
                 message = "Device reset. Show or scan a code to link again."
             } catch {
-                message = "Reset failed: \(error)"
+                message = "Reset failed. Restart the app and try again."
             }
         }
     }
 
-    private func describe(_ error: Error) -> String {
-        if let error = error as? DeviceLinkError {
-            switch error {
-            case .notConfigured: return "No relay configured. Scan a code from a linked device or the relay's Setup page."
-            case .pairing(let reason): return reason
-            case .relay(let status, _) where status == 403: return "The relay refused this device."
-            default: return error.description
-            }
-        }
-        if error is URLError { return "The relay could not be reached. Check the internet connection." }
-        return error.localizedDescription
-    }
+    private func describe(_ error: Error) -> String { SendMessages.describe(error) }
 }

@@ -182,7 +182,7 @@ targets:
     # Menu-bar app: pair by code or link, then two-way automatic clipboard sync.
     type: application
     platform: macOS
-    sources: [Mac]
+    sources: [Mac, Shared/SendMessages.swift]
     dependencies:
       - package: DeviceLinkKit
         product: DeviceLinkKit

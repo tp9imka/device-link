@@ -68,7 +68,7 @@ final class MacModel: ObservableObject {
                                                              defaultEnrollmentToken: Bundle.main.object(forInfoDictionaryKey: "DLEnrollmentToken") as? String ?? ""))
             Task { await refresh(); start() }
         } catch {
-            message = "Could not create device keys: \(error)"
+            message = "Could not create device keys. Restart DeviceLink; if this repeats, check Keychain Access."
         }
     }
 
@@ -150,7 +150,7 @@ final class MacModel: ObservableObject {
                 await refresh(); start()
             } catch {
                 pairingURI = nil
-                message = "\(error)"
+                message = SendMessages.describe(error)
             }
         }
     }
@@ -163,7 +163,7 @@ final class MacModel: ObservableObject {
                 let peer = try await client.join(link)
                 message = "Linked with \(peer.name) · code \(peer.pairingCode ?? "")"
                 await refresh(); start()
-            } catch { message = "\(error)" }
+            } catch { message = SendMessages.describe(error) }
         }
     }
 

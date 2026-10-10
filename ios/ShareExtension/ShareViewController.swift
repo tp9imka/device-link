@@ -30,19 +30,38 @@ final class ShareViewController: UIViewController {
         Task { await send() }
     }
 
+    /// Thrown before a file is read when it is over the SDK's size limit.
+    private struct TooLarge: Error {}
+
     @MainActor
     private func send() async {
         do {
             let client = try LinkEnvironment.client()
+            if await client.peers.isEmpty { return finish(SendMessages.notLinked) }
             guard let content = try await loadContent() else { return finish("Nothing to send") }
             let outcomes = try await client.send(content)
             let peers = await client.peers
-            if outcomes.isEmpty { return finish("No linked device yet. Open DeviceLink to link one.") }
+            if outcomes.isEmpty { return finish(SendMessages.notLinked) }
             let names = peers.filter { peer in outcomes.contains { $0.peerId == peer.id && $0.accepted } }.map(\.name)
-            finish(names.isEmpty ? "Could not send. Check the connection." : "Sent to \(names.joined(separator: ", ")) ✓")
+            if names.isEmpty { return finish(SendMessages.describe(outcomeError: outcomes.first?.error)) }
+            finish("Sent to \(names.joined(separator: ", ")) ✓")
+        } catch is TooLarge {
+            finish(SendMessages.tooLarge)
         } catch {
-            finish("Could not send: \(error)")
+            finish(SendMessages.describe(error))
         }
+    }
+
+    /// Reads a shared file only after its size is known to fit; a large video would otherwise be
+    /// loaded whole and get the extension killed for memory.
+    private func readFile(_ url: URL) throws -> Data? {
+        if let size = try? url.resourceValues(forKeys: [.fileSizeKey, .totalFileSizeKey]),
+           let bytes = size.totalFileSize ?? size.fileSize, !SendMessages.fits(bytes: bytes) {
+            throw TooLarge()
+        }
+        guard let data = try? Data(contentsOf: url, options: .mappedIfSafe) else { return nil }
+        guard SendMessages.fits(bytes: data.count) else { throw TooLarge() }
+        return data
     }
 
     private func loadContent() async throws -> OutgoingContent? {
@@ -50,16 +69,18 @@ final class ShareViewController: UIViewController {
         for provider in providers {
             if provider.hasItemConformingToTypeIdentifier(UTType.image.identifier) {
                 let item = try await provider.loadItem(forTypeIdentifier: UTType.image.identifier)
-                if let url = item as? URL, let data = try? Data(contentsOf: url) {
+                if let url = item as? URL, let data = try readFile(url) {
                     let type = UTType(filenameExtension: url.pathExtension) ?? .jpeg
                     return .image(name: url.lastPathComponent, mime: type.preferredMIMEType ?? "image/jpeg", data: data)
                 }
                 if let image = item as? UIImage, let data = image.pngData() { return .image(name: "image.png", mime: "image/png", data: data) }
-                if let data = item as? Data { return .image(name: "image.jpg", mime: "image/jpeg", data: data) }
+                if let data = item as? Data {
+                    guard SendMessages.fits(bytes: data.count) else { throw TooLarge() }
+                    return .image(name: "image.jpg", mime: "image/jpeg", data: data) }
             }
             if provider.hasItemConformingToTypeIdentifier(UTType.url.identifier),
                let url = try await provider.loadItem(forTypeIdentifier: UTType.url.identifier) as? URL {
-                if url.isFileURL, let data = try? Data(contentsOf: url) {
+                if url.isFileURL, let data = try readFile(url) {
                     let type = UTType(filenameExtension: url.pathExtension)
                     return .file(name: url.lastPathComponent, mime: type?.preferredMIMEType ?? "application/octet-stream", data: data)
                 }
@@ -70,7 +91,7 @@ final class ShareViewController: UIViewController {
                 return .text(text)
             }
             if provider.hasItemConformingToTypeIdentifier(UTType.data.identifier),
-               let url = try await provider.loadItem(forTypeIdentifier: UTType.data.identifier) as? URL, let data = try? Data(contentsOf: url) {
+               let url = try await provider.loadItem(forTypeIdentifier: UTType.data.identifier) as? URL, let data = try readFile(url) {
                 let type = UTType(filenameExtension: url.pathExtension)
                 return .file(name: url.lastPathComponent, mime: type?.preferredMIMEType ?? "application/octet-stream", data: data)
             }

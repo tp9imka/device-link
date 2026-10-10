@@ -48,7 +48,12 @@ struct ContentView: View {
             .fileImporter(isPresented: $importing, allowedContentTypes: [.item]) { result in
                 guard let url = try? result.get(), url.startAccessingSecurityScopedResource() else { return }
                 defer { url.stopAccessingSecurityScopedResource() }
-                if let data = try? Data(contentsOf: url) {
+                // Size first: reading a large video whole only to have the SDK reject it wastes memory.
+                if let bytes = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize, !SendMessages.fits(bytes: bytes) {
+                    model.message = SendMessages.tooLarge
+                    return
+                }
+                if let data = try? Data(contentsOf: url, options: .mappedIfSafe) {
                     model.sendData(data, name: url.lastPathComponent, mime: UTType(filenameExtension: url.pathExtension)?.preferredMIMEType ?? "application/octet-stream")
                 }
             }
