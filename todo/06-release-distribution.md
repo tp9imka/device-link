@@ -2,32 +2,37 @@
 
 ## Goal
 
-Installable signed builds for testers: Android APK/AAB, iOS TestFlight, macOS notarized app.
+Installable signed builds for testers and the stores: Android AAB/APK, iOS TestFlight, macOS notarized app.
+The step-by-step checklist, store declaration texts and Data safety / nutrition label answers are in
+[docs/release.md](../docs/release.md); the privacy policy page is [docs/wiki/Privacy.md](../docs/wiki/Privacy.md).
 
-## Needs (owner)
+## Done in the repo
 
-Android upload keystore (kept outside git), Google Play Console (optional, internal testing),
-Apple Developer Program (TestFlight, Developer ID for the Mac app).
+- Android release signing hook in `apps/receiver` and `apps/sample` (`devicelink.signing.*` in
+  `local.properties` or `DEVICELINK_SIGNING_*`); unsigned release builds keep working without it.
+- `aps-environment` is `development` for Debug and `production` for Release (`DL_APS_ENVIRONMENT`).
+- Hardened runtime on `DeviceLinkMac`.
+- Privacy manifests for DeviceLink, DeviceLinkShare and DeviceLinkSample.
+- Play Console texts (remoteMessaging service, keyboard, notifications, camera), Data safety answers,
+  App Store privacy label answers, relay operator obligations: `docs/release.md`.
+- Privacy policy draft with placeholders: `docs/wiki/Privacy.md`, linked from the wiki sidebar.
+- `targetSdk = 36` meets the current Play requirement.
 
-## Android
+## Needs the owner
 
-1. Create a keystore outside the repo. Add a `signingConfigs.release` that reads path/passwords from
-   `local.properties` or environment variables only; never commit the keystore or passwords.
-2. `./gradlew :apps:receiver:assembleRelease :apps:sample:assembleRelease` (R8 is enabled; verify the
-   SDK keeps its manifest components and kotlinx-serialization classes — add keep rules if a release
-   build fails at runtime, and test pairing + a file send on the release build).
-3. Play Console: the receiver uses a `remoteMessaging` foreground service; the declaration form must
-   describe "receiving items the user sent from their own linked devices while the receiver is on".
-   The optional keyboard (input method) needs the IME declaration; its clipboard use is user-visible
-   and opt-in.
+1. Android upload keystore, created and backed up outside git; signing properties set locally.
+2. Google Play Console account; app entry for `dev.devicelink.receiver`; paste the declarations and
+   the Data safety answers; publish the privacy page and fill its placeholders.
+3. Apple Developer Program team: `ios/Config/Private.xcconfig`, App IDs, App Group, push capability,
+   Developer ID certificate and a `notarytool` keychain profile.
+4. Real APNs `.p8` key on the production relay (`apns_key_path`, `apns_key_id`, `apns_team_id`).
+5. A production relay over HTTPS with enrollment token, admin password hash, session secret and backups.
 
-## iOS / macOS
+## Still to verify
 
-1. Switch `aps-environment` to `production` for distribution builds (or use a separate config).
-2. Archive DeviceLink (with share + notification extensions) → TestFlight. Privacy manifest: the app
-   uses the pasteboard on user action and on receipt; declare `UserDefaults` and file timestamp
-   API reasons if Xcode's privacy report requires them.
-3. DeviceLinkMac: archive, sign with Developer ID, notarize (`xcrun notarytool`), staple.
+- R8 release build at runtime on a real phone: pairing, text, image, file (cases P1, D1, D7 in `docs/validation-kit.md`).
+- TestFlight build on two real devices including a push wake-up.
+- A notarized, stapled Developer ID build of DeviceLinkMac.
 
 ## Done when
 
