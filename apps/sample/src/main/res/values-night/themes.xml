@@ -8,5 +8,17 @@
   <item name="android:windowLightStatusBar">false</item>
   <item name="android:textColorPrimary">@color/on_surface</item>
   <item name="android:textColorSecondary">@color/muted</item>
+  <item name="android:colorBackgroundFloating">@color/surface</item>
+  <!-- Every dialog, including the SDK's pairing dialogs (AlertDialog.Builder(activity)), uses these. -->
+  <item name="android:alertDialogTheme">@style/Theme.Sample.Dialog</item>
+  <item name="android:dialogTheme">@style/Theme.Sample.Dialog</item>
+ </style>
+ <style name="Theme.Sample.Dialog" parent="@android:style/Theme.Material.Dialog.Alert">
+  <item name="android:colorPrimary">@color/accent</item>
+  <item name="android:colorAccent">@color/accent</item>
+  <item name="android:colorBackground">@color/surface</item>
+  <item name="android:colorBackgroundFloating">@color/surface</item>
+  <item name="android:textColorPrimary">@color/on_surface</item>
+  <item name="android:textColorSecondary">@color/muted</item>
  </style>
 </resources>
