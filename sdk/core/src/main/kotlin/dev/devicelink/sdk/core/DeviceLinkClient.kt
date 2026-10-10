@@ -282,7 +282,7 @@ class DeviceLinkClient(
         try {
             relay.joinPairing(invite.pairingId, invite.sealJoin(localBundle))
         } catch (failure: RelayException) {
-            throw PairingException(if (failure.status == 404 || failure.status == 410) "Pairing code expired or already used" else "Relay refused pairing (${failure.code})")
+            throw PairingException(if (failure.status in listOf(404, 409, 410)) "Pairing code expired or already used" else "Relay refused pairing (${failure.code})")
         }
         val deadline = clock() + 2 * 60_000L
         while (clock() < deadline) {
@@ -293,7 +293,15 @@ class DeviceLinkClient(
                 "confirmed" -> {
                     val bundle = invite.openConfirm(requireNotNull(status.sealed))
                     if (bundle.id != invite.inviterId) throw PairingException("Inviter identity does not match the code")
-                    relay.allow(bundle.id)
+                    // The relay deletes the pairing once the joiner has read "confirmed", so a network error
+                    // here is retried in place: re-polling would only find the pairing gone.
+                    var attempt = 0
+                    while (true) {
+                        try { relay.allow(bundle.id); break } catch (failure: IOException) {
+                            if (++attempt >= 5 || clock() >= deadline) throw failure
+                            delay(2_000L * attempt)
+                        }
+                    }
                     val peer = LinkedPeer(bundle, clock(), invite.confirmationCode(deviceId))
                     update { state -> state.copy(peers = state.peers.filterNot { it.id == bundle.id } + peer,
                         pendingRevocations = state.pendingRevocations - bundle.id) }

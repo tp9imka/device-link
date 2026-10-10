@@ -31,6 +31,8 @@ private class FakeRelay(private val clock: () -> Long) : HttpTransport {
     var failConfirm: Pair<Int, String>? = null
     /** The confirm is stored, then the response is lost (answered with [failConfirm]). */
     var confirmCommitsBeforeFailing = false
+    /** The next `PUT /v1/peers/…` by this device ID fails with a network error. */
+    var failNextAllowBy: String? = null
     val polls = mutableListOf<String>()
 
     /** Empty mailbox polls wait out `wait` (virtual time under runTest), like the real long poll. */
@@ -82,6 +84,10 @@ private class FakeRelay(private val clock: () -> Long) : HttpTransport {
                 ok("""{"state":"${p["state"]}","joinerId":${p["joiner"]?.let { "\"$it\"" }},"sealed":${sealed?.let { "\"$it\"" }}}""")
             }
             path.size == 3 && path[1] == "pairings" && method == "DELETE" -> { pairings.remove(path[2]); ok() }
+            path.size == 3 && path[1] == "peers" && method == "PUT" && failNextAllowBy == caller -> {
+                failNextAllowBy = null
+                throw java.io.IOException("connection reset")
+            }
             path.size == 3 && path[1] == "peers" -> { if (method == "PUT") allow += caller to path[2] else allow -= caller to path[2]; HttpResponse(204, ByteArray(0)) }
             path == listOf("v1", "messages") && method == "POST" -> {
                 val envelope = Envelope.decode(body.toString(Charsets.UTF_8))
@@ -460,6 +466,13 @@ class DeviceLinkClientTest {
         linked()
         assertEquals(listOf(iphone.deviceId), android.peers.value.map { it.id })
         assertEquals(listOf(android.deviceId), iphone.peers.value.map { it.id })
+    }
+
+    @Test fun `a network error on the joiner's allow after confirm is retried`() {
+        relay.failNextAllowBy = iphone.deviceId
+        linked()
+        assertEquals(listOf(android.deviceId), iphone.peers.value.map { it.id })
+        assertTrue((iphone.deviceId to android.deviceId) in relay.allow)
     }
 
     @Test fun `unlink all forgets every peer`() = runBlocking {

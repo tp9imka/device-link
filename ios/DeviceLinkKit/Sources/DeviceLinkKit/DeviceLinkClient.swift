@@ -323,7 +323,16 @@ public actor DeviceLinkClient {
             case "confirmed":
                 let bundle = try invite.openConfirm(status.sealed ?? "")
                 guard bundle.id == invite.inviterId else { throw DeviceLinkError.pairing("Inviter identity does not match the code") }
-                try await relay.allow(bundle.id)
+                // The relay deletes the pairing once the joiner has read "confirmed", so a network error
+                // here is retried in place: re-polling would only find the pairing gone.
+                var attempt: UInt64 = 0
+                while true {
+                    do { try await relay.allow(bundle.id); break } catch let error as URLError {
+                        attempt += 1
+                        if attempt >= 5 || clock() >= deadline { throw error }
+                        try await Task.sleep(nanoseconds: 2_000_000_000 * attempt)
+                    }
+                }
                 let peer = try addPeer(bundle, code: invite.confirmationCode(joinerId: deviceId))
                 emit(.peerLinked(peer))
                 return peer

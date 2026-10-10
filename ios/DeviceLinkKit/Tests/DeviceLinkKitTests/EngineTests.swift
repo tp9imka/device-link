@@ -23,6 +23,8 @@ final class FakeRelay: HTTPTransport, @unchecked Sendable {
         var failConfirm: (Int, String)?
         /// The confirm is stored, then the response is lost (answered with `failConfirm`).
         var confirmCommitsBeforeFailing = false
+        /// The next `PUT /v1/peers/…` by this device ID fails with a network error.
+        var failNextAllowBy: String?
         var polls = 0
     }
     let state = Locked(State())
@@ -35,6 +37,14 @@ final class FakeRelay: HTTPTransport, @unchecked Sendable {
     let longPoll = Locked(false)
 
     func send(method: String, url: URL, headers: [String: String], body: Data, timeout: TimeInterval) async throws -> HTTPResponse {
+        if method == "PUT", url.path.hasPrefix("/v1/peers/"), let key = try? Encoding.unb64(headers["X-Device-Key"] ?? "", maxBytes: 128),
+           state.with({ state in
+               guard state.failNextAllowBy == Identity.deviceId(key) else { return false }
+               state.failNextAllowBy = nil
+               return true
+           }) {
+            throw URLError(.networkConnectionLost)
+        }
         let response = state.with { handle(method: method, url: url, headers: headers, body: body, state: &$0) }
         if longPoll.get, method == "GET", url.path == "/v1/messages", response.body == Data("[]".utf8),
            let wait = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "wait" })?.value.flatMap(UInt64.init) {
@@ -324,6 +334,15 @@ final class EngineTests: XCTestCase {
         let inviterPeers = await android.peers, joinerPeers = await iphone.peers
         XCTAssertEqual(inviterPeers.map(\.id), [iphone.deviceId])
         XCTAssertEqual(joinerPeers.map(\.id), [android.deviceId])
+    }
+
+    func testNetworkErrorOnJoinersAllowAfterConfirmIsRetried() async throws {
+        let android = try client("Pixel"), iphone = try client("iPhone")
+        relay.state.with { $0.failNextAllowBy = iphone.deviceId }
+        try await link(android, iphone)
+        let joinerPeers = await iphone.peers
+        XCTAssertEqual(joinerPeers.map(\.id), [android.deviceId])
+        XCTAssertTrue(relay.state.get.allow.contains("\(iphone.deviceId)>\(android.deviceId)"))
     }
 
     func testUndecryptableEnvelopesAreDroppedAndCounted() async throws {
