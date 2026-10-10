@@ -2,8 +2,11 @@ package dev.devicelink.sdk
 
 import android.app.Activity
 import android.app.AlertDialog
+import android.app.Application
 import android.app.Dialog
+import android.app.KeyguardManager
 import android.content.Intent
+import android.os.Bundle
 import android.graphics.Typeface
 import android.view.Gravity
 import android.widget.ImageView
@@ -95,13 +98,58 @@ object DeviceLinkPairing {
         return true
     }
 
-    /** Handles VIEW intents for `https://<relay>/pair#…`, `devicelink://pair…` and setup links. */
+    private val pending = PendingPairing<(LinkedPeer) -> Unit>()
+    @Volatile private var watching = false
+
+    /**
+     * Handles VIEW intents for `https://<relay>/pair#…`, `devicelink://pair…` and setup links. Call it from
+     * `onCreate` and `onNewIntent`. The link runs once [activity] is resumed with the phone unlocked, so a
+     * code opened from the camera on a locked phone continues after unlocking instead of being lost.
+     * Resumes are observed automatically; [resumePending] is only needed for unusual hosts.
+     */
     @JvmStatic @JvmOverloads
     fun handleIntent(activity: Activity, intent: Intent?, onLinked: (LinkedPeer) -> Unit = {}): Boolean {
         val data = intent?.takeIf { it.action == Intent.ACTION_VIEW }?.dataString ?: return false
-        open(activity, data, onLinked)
         intent.data = null
+        pending.put(activity.javaClass, data, onLinked, System.currentTimeMillis())
+        watchResumes(activity.application)
+        if (activity.hasWindowFocus()) resumePending(activity) // called while already in front
         return true
+    }
+
+    /**
+     * Runs a link that [handleIntent] deferred, if [activity] is the one it was opened for. Behind a secure
+     * lock screen it asks to unlock first (for activities shown over it) and waits for the next resume.
+     */
+    @JvmStatic
+    fun resumePending(activity: Activity) {
+        if (pending.isEmpty() || activity.isFinishing) return
+        val keyguard = activity.getSystemService(KeyguardManager::class.java)
+        if (keyguard?.isKeyguardLocked == true) {
+            keyguard.requestDismissKeyguard(activity, object : KeyguardManager.KeyguardDismissCallback() {
+                override fun onDismissSucceeded() { resumePending(activity) }
+            })
+            return
+        }
+        val (link, onLinked) = pending.take(activity.javaClass, System.currentTimeMillis()) ?: return
+        open(activity, link, onLinked)
+    }
+
+    private fun watchResumes(application: Application) {
+        if (watching) return
+        synchronized(this) {
+            if (watching) return
+            watching = true
+            application.registerActivityLifecycleCallbacks(object : Application.ActivityLifecycleCallbacks {
+                override fun onActivityResumed(activity: Activity) = resumePending(activity)
+                override fun onActivityCreated(activity: Activity, state: Bundle?) {}
+                override fun onActivityStarted(activity: Activity) {}
+                override fun onActivityPaused(activity: Activity) {}
+                override fun onActivityStopped(activity: Activity) {}
+                override fun onActivitySaveInstanceState(activity: Activity, state: Bundle) {}
+                override fun onActivityDestroyed(activity: Activity) {}
+            })
+        }
     }
 
     /** Joins a pairing link, or applies an admin setup link. Text pasted by the user works too. */
