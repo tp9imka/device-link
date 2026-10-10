@@ -102,7 +102,24 @@ enum LinkEnvironment {
         return name.isEmpty ? UIDevice.current.model : name
     }
 
-    @MainActor static func makeClient() throws -> DeviceLinkClient {
+    @MainActor private static var current: DeviceLinkClient?
+
+    /// The process's one client. The app model, intents, push actions and extensions all share it, so
+    /// link state, sequence numbers, the seen-set and the single long poll are owned by one actor.
+    @MainActor static func client() throws -> DeviceLinkClient {
+        if let current { return current }
+        let made = try makeClient()
+        current = made
+        return made
+    }
+
+    /// After "Reset device" wiped keys and links: builds the client for the new identity.
+    @MainActor static func replaceClient() throws -> DeviceLinkClient {
+        current = nil
+        return try client()
+    }
+
+    @MainActor private static func makeClient() throws -> DeviceLinkClient {
         #if DEBUG
         let insecure = true
         #else

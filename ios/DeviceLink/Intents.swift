@@ -17,7 +17,7 @@ struct GetLatestClipIntent: AppIntent {
 
     @MainActor
     func perform() async throws -> some IntentResult & ReturnsValue<String> & ProvidesDialog {
-        let client = try LinkEnvironment.makeClient()
+        let client = try LinkEnvironment.client()
         let store = ClipStore.shared
         let box = LatestBox()
         for _ in 0..<10 {
@@ -51,7 +51,7 @@ struct SendTextIntent: AppIntent {
 
     @MainActor
     func perform() async throws -> some IntentResult & ProvidesDialog {
-        let client = try LinkEnvironment.makeClient()
+        let client = try LinkEnvironment.client()
         let outcomes = try await client.send(.text(text))
         let peers = await client.peers
         if outcomes.isEmpty { return .result(dialog: "No linked device yet.") }

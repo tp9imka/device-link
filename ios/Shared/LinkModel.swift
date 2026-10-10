@@ -28,7 +28,7 @@ final class LinkModel: ObservableObject {
 
     init() {
         do {
-            let client = try LinkEnvironment.makeClient()
+            let client = try LinkEnvironment.client()
             self.client = client
             events = Task { [weak self] in
                 for await event in await client.events() { await self?.handle(event) }
@@ -196,7 +196,7 @@ final class LinkModel: ObservableObject {
             try? FileManager.default.removeItem(at: LinkEnvironment.container.appendingPathComponent("DeviceLink/links.json"))
             sendTargets = []
             do {
-                let fresh = try LinkEnvironment.makeClient()
+                let fresh = try LinkEnvironment.replaceClient()
                 self.client = fresh
                 events?.cancel()
                 events = Task { [weak self] in for await event in await fresh.events() { await self?.handle(event) } }

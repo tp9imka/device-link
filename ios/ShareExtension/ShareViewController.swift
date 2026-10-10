@@ -33,7 +33,7 @@ final class ShareViewController: UIViewController {
     @MainActor
     private func send() async {
         do {
-            let client = try LinkEnvironment.makeClient()
+            let client = try LinkEnvironment.client()
             guard let content = try await loadContent() else { return finish("Nothing to send") }
             let outcomes = try await client.send(content)
             let peers = await client.peers

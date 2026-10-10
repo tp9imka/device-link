@@ -15,7 +15,7 @@ final class NotificationService: UNNotificationServiceExtension {
         content.categoryIdentifier = "DEVICELINK_ITEM"
         guard let messageId = request.content.userInfo["m"] as? String else { return contentHandler(content) }
         Task { @MainActor in
-            if let client = try? LinkEnvironment.makeClient(), let item = try? await client.preview(messageId: messageId) {
+            if let client = try? LinkEnvironment.client(), let item = try? await client.preview(messageId: messageId) {
                 content.title = "From \(item.peer.name)"
                 switch item.kind {
                 case .text: content.body = item.sensitive ? "Sensitive content · tap Copy" : String((item.text ?? "").prefix(180))
