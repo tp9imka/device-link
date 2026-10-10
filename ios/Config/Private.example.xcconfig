@@ -1,0 +1,7 @@
+// Copy to Private.xcconfig (git-ignored). Do not commit real values.
+// Host only: "//" starts a comment in xcconfig files, so the scheme is separate.
+DEVELOPMENT_TEAM = ABCDE12345
+DL_BUNDLE_PREFIX = com.example.devicelink
+DEVICELINK_RELAY_HOST = relay.example.org
+DEVICELINK_ENROLLMENT_TOKEN = replace-with-the-relay-enrollment-token
+// For a relay on your LAN during development: DEVICELINK_RELAY_SCHEME = http and a 192.168.x.x host

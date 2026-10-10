@@ -1,0 +1,170 @@
+# XcodeGen spec: `brew install xcodegen && cd ios && xcodegen` then open DeviceLink.xcodeproj.
+name: DeviceLink
+options:
+  bundleIdPrefix: dev.devicelink
+  deploymentTarget:
+    iOS: "17.0"
+    macOS: "14.0"
+  createIntermediateGroups: true
+configFiles:
+  Debug: Config/Base.xcconfig
+  Release: Config/Base.xcconfig
+packages:
+  DeviceLinkKit:
+    path: DeviceLinkKit
+settings:
+  base:
+    SWIFT_VERSION: "5.10"
+    MARKETING_VERSION: "2.0.0"
+    CURRENT_PROJECT_VERSION: "1"
+    CODE_SIGN_STYLE: Automatic
+targets:
+  DeviceLink:
+    type: application
+    platform: iOS
+    sources: [DeviceLink, Shared]
+    dependencies:
+      - package: DeviceLinkKit
+        product: DeviceLinkKit
+      - target: DeviceLinkShare
+      - target: DeviceLinkNotify
+    info:
+      path: DeviceLink/Info.plist
+      properties:
+        CFBundleDisplayName: DeviceLink
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+        NSCameraUsageDescription: Scan the pairing code shown on your other device.
+        CFBundleURLTypes:
+          - CFBundleURLName: dev.devicelink.link
+            CFBundleURLSchemes: [devicelink]
+        UIBackgroundModes: [remote-notification]
+        DLRelayScheme: $(DEVICELINK_RELAY_SCHEME)
+        DLRelayHost: $(DEVICELINK_RELAY_HOST)
+        DLEnrollmentToken: $(DEVICELINK_ENROLLMENT_TOKEN)
+        DLAppGroup: $(DL_APP_GROUP)
+        DLKeychainGroup: $(AppIdentifierPrefix)$(DL_BUNDLE_PREFIX).ios.shared
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+    entitlements:
+      path: DeviceLink/DeviceLink.entitlements
+      properties:
+        com.apple.security.application-groups: [$(DL_APP_GROUP)]
+        keychain-access-groups: [$(AppIdentifierPrefix)$(DL_BUNDLE_PREFIX).ios.shared]
+        # Optional APNs wake-ups (relay apns_* settings). Universal links: add
+        # com.apple.developer.associated-domains [applinks:<relay host>] and RELAY_APPLE_APP_IDS.
+        aps-environment: development
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(DL_BUNDLE_PREFIX).ios
+        DL_KEYCHAIN_GROUP: $(AppIdentifierPrefix)$(DL_BUNDLE_PREFIX).ios.shared
+        TARGETED_DEVICE_FAMILY: "1,2"
+  DeviceLinkShare:
+    type: app-extension
+    platform: iOS
+    sources: [ShareExtension, Shared]
+    dependencies:
+      - package: DeviceLinkKit
+        product: DeviceLinkKit
+    info:
+      path: ShareExtension/Info.plist
+      properties:
+        CFBundleDisplayName: Send to device
+        DLRelayScheme: $(DEVICELINK_RELAY_SCHEME)
+        DLRelayHost: $(DEVICELINK_RELAY_HOST)
+        DLEnrollmentToken: $(DEVICELINK_ENROLLMENT_TOKEN)
+        DLAppGroup: $(DL_APP_GROUP)
+        DLKeychainGroup: $(AppIdentifierPrefix)$(DL_BUNDLE_PREFIX).ios.shared
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.share-services
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).ShareViewController
+          NSExtensionAttributes:
+            NSExtensionActivationRule:
+              NSExtensionActivationSupportsText: true
+              NSExtensionActivationSupportsWebURLWithMaxCount: 1
+              NSExtensionActivationSupportsImageWithMaxCount: 1
+              NSExtensionActivationSupportsFileWithMaxCount: 1
+    entitlements:
+      path: ShareExtension/DeviceLinkShare.entitlements
+      properties:
+        com.apple.security.application-groups: [$(DL_APP_GROUP)]
+        keychain-access-groups: [$(AppIdentifierPrefix)$(DL_BUNDLE_PREFIX).ios.shared]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(DL_BUNDLE_PREFIX).ios.share
+  DeviceLinkNotify:
+    # Decrypts push previews on the device ("From Pixel: …") and adds the Copy action.
+    type: app-extension
+    platform: iOS
+    sources: [NotificationService, Shared/LinkEnvironment.swift]
+    dependencies:
+      - package: DeviceLinkKit
+        product: DeviceLinkKit
+    info:
+      path: NotificationService/Info.plist
+      properties:
+        CFBundleDisplayName: DeviceLink
+        DLRelayScheme: $(DEVICELINK_RELAY_SCHEME)
+        DLRelayHost: $(DEVICELINK_RELAY_HOST)
+        DLEnrollmentToken: $(DEVICELINK_ENROLLMENT_TOKEN)
+        DLAppGroup: $(DL_APP_GROUP)
+        DLKeychainGroup: $(AppIdentifierPrefix)$(DL_BUNDLE_PREFIX).ios.shared
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.usernotifications.service
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).NotificationService
+    entitlements:
+      path: NotificationService/DeviceLinkNotify.entitlements
+      properties:
+        com.apple.security.application-groups: [$(DL_APP_GROUP)]
+        keychain-access-groups: [$(AppIdentifierPrefix)$(DL_BUNDLE_PREFIX).ios.shared]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(DL_BUNDLE_PREFIX).ios.notify
+  DeviceLinkSample:
+    type: application
+    platform: iOS
+    sources: [Sample, Shared]
+    dependencies:
+      - package: DeviceLinkKit
+        product: DeviceLinkKit
+    info:
+      path: Sample/Info.plist
+      properties:
+        CFBundleDisplayName: DeviceLink Sample
+        UILaunchScreen: {}
+        NSCameraUsageDescription: Scan the pairing code shown on your other device.
+        DLRelayScheme: $(DEVICELINK_RELAY_SCHEME)
+        DLRelayHost: $(DEVICELINK_RELAY_HOST)
+        DLEnrollmentToken: $(DEVICELINK_ENROLLMENT_TOKEN)
+        DLAppGroup: $(DL_APP_GROUP).sample
+        DLKeychainGroup: $(AppIdentifierPrefix)$(DL_BUNDLE_PREFIX).ios.sample
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+    entitlements:
+      path: Sample/DeviceLinkSample.entitlements
+      properties:
+        com.apple.security.application-groups: [$(DL_APP_GROUP).sample]
+        keychain-access-groups: [$(AppIdentifierPrefix)$(DL_BUNDLE_PREFIX).ios.sample]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(DL_BUNDLE_PREFIX).ios.sample
+        DL_KEYCHAIN_GROUP: $(AppIdentifierPrefix)$(DL_BUNDLE_PREFIX).ios.sample
+  DeviceLinkMac:
+    # Menu-bar app: pair by code or link, then two-way automatic clipboard sync.
+    type: application
+    platform: macOS
+    sources: [Mac]
+    dependencies:
+      - package: DeviceLinkKit
+        product: DeviceLinkKit
+    info:
+      path: Mac/Info.plist
+      properties:
+        CFBundleDisplayName: DeviceLink
+        LSUIElement: true
+        DLRelayScheme: $(DEVICELINK_RELAY_SCHEME)
+        DLRelayHost: $(DEVICELINK_RELAY_HOST)
+        DLEnrollmentToken: $(DEVICELINK_ENROLLMENT_TOKEN)
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(DL_BUNDLE_PREFIX).mac

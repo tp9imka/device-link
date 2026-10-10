@@ -1,5 +1,9 @@
 # DeviceLink
 
+> **Link (v2):** copy on one device, paste on another — Android, iPhone and desktop, paired with one
+> QR scan through your own relay. Start with [[Link]] and [[Hosting]]. The nearby Wi-Fi Direct app
+> described below remains available for two Android phones without a server.
+
 A standalone Android tool that links two phones for text, images and files,
 using nearby Wi-Fi Direct or an optional self-hosted encrypted Internet Link.
 It runs on normal Android phones without Fortress, root or Google Play services.

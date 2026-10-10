@@ -70,7 +70,7 @@ at most 8 MiB. **Allow clipboard updates** is off by default: enable it on the
 receiver only when fresh incoming Copy actions should write automatically.
 Otherwise use the received item's Copy action.
 
-An uploaded file/text can wait in the encrypted mailbox for up to 24 hours;
+An uploaded file/text can wait in the encrypted mailbox for up to 10 minutes (relay cap);
 clipboard actions expire after 60 seconds. The receiving phone must start an
 internet session before expiry. Upload accepted does not mean received/copied;
 the sender waits for an encrypted result. No push service wakes an off phone.

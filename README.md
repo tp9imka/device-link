@@ -1,5 +1,55 @@
 # DeviceLink
 
+**Copy on one device, paste on the other.** Android, iPhone and desktop devices linked with one QR
+scan through your own relay. Content is end-to-end encrypted, waits at most 5 minutes in the relay
+"sandbox" and is deleted as soon as it is delivered.
+
+```
+ Android app with the SDK ──copy──▶  relay (sandbox, E2E-encrypted, 5 min)  ──▶ iPhone / Android receiver
+   (or any linked device)   ◀─────────────── Share / Send to device ─────────────── (clipboard + notification)
+```
+
+| Part | Path | Status |
+| --- | --- | --- |
+| Relay + admin dashboard | [`server/`](server/README.md) | 52 contract tests; `/admin` with alerts and export, `/metrics`, backups, [VM recipe](server/deploy/README.md) |
+| Protocol v2 | [`docs/protocol/link-v2.md`](docs/protocol/link-v2.md) | Kotlin and Swift exchange checked-in vectors |
+| Kotlin SDK core (JVM/Android) | `sdk/core` | Unit tests incl. RFC 9180/5869 vectors, live-relay test |
+| Android SDK | `sdk/android` | Keystore identity, foreground receiver, clipboard, share prompts, pairing UI |
+| Android receiver app | `apps/receiver` | Thin clip list, Quick Settings tile, share-sheet and text-selection send, optional DeviceLink keyboard (full QWERTY; every copy is sent while it is active), diagnostics |
+| Android SDK sample | `apps/sample` | Auto-sends every in-app copy; synthetic samples and test scenarios |
+| Swift SDK + CLI | [`ios/DeviceLinkKit`](ios/README.md) | Builds/tests on Linux and macOS; `devicelink` CLI with two-way clipboard `sync` |
+| iOS app, share extension, notification previews, Shortcuts, sample | [`ios/`](ios/README.md) | Compiled in CI (`xcodebuild`); needs on-device validation |
+| macOS menu bar app | [`ios/Mac`](ios/README.md) | Mirrors the Mac clipboard both ways; compiled in CI |
+
+### Quick start
+
+1. Run the relay locally and expose it with a Cloudflare tunnel: [Hosting](docs/wiki/Hosting.md).
+2. Build the apps with the relay URL in private config (`local.properties` /
+   `ios/Config/Private.xcconfig`). The first device then needs no setup at all.
+3. Device A: **Show my code**. Device B: **Scan a code** (or the camera). Linked both ways.
+4. Copy in the sample app (or Share › *Send to device*, select text › *Send to device*) and paste on
+   the other device. Details per platform: [Link guide](docs/wiki/Link.md).
+
+```sh
+./gradlew check                                   # Android + Kotlin SDK (needs Android SDK)
+(cd server && python -m pytest -q)                # relay
+swift test --package-path ios/DeviceLinkKit       # Swift SDK
+scripts/interop_e2e.sh                            # live relay, Kotlin <-> Swift pairing and exchange
+```
+
+Honest limits: neither Android nor iOS lets an ordinary app read the clipboard in the background, so
+sending from *other* apps is one explicit gesture (share sheet, text selection, tile, Back Tap
+shortcut). Receiving into the clipboard is automatic on Android and while the iOS app runs; a closed
+iPhone app relies on a push alert or the Shortcuts action within the 5-minute window. Automated tests
+and CI builds are not two-device evidence; see [validation](docs/validation.md), the device
+[validation kit](docs/validation-kit.md) and the [handoff specs](todo/README.md) for hardware work.
+Design record: [ADR 0005](docs/adr/0005-link-v2-cross-platform.md).
+
+## Nearby Android app (Wi-Fi Direct)
+
+The original two-phone Android app remains in `app/`, `core/` and `feature/`.
+
+
 **Your other phone, one share away.** A native Android app for exchanging text,
 links, photos and files between two phones. Nearby sharing uses Wi-Fi Direct;
 optional **Internet Link** uses a self-hosted encrypted mailbox. Both phones install
@@ -21,7 +71,7 @@ DeviceLink uses Android Wi-Fi Direct and an authenticated, encrypted channel.
 Start a temporary session, select the other phone, compare the pairing code once,
 and send through Android's Share menu or DeviceLink's clipboard/file actions.
 
-## Get started
+### Get started
 
 Requirements: Android 8 or newer, Wi-Fi Direct support, Wi-Fi enabled on both
 phones. Some devices also require Location enabled for Wi-Fi Direct discovery.
@@ -42,7 +92,7 @@ Add the **DeviceLink Quick Settings tile** through Android's tile editor to open
 or stop a session quickly. Settings lets you rename the device, forget pairings,
 choose 5/15/30-minute sessions, and change the appearance without rebuilding.
 
-## Clipboard integration sample
+### Clipboard integration sample
 
 Open the local chat sample to try explicit copy between paired phones. **Send**
 adds a message to this phone's private history; it does not send a chat message
@@ -71,7 +121,7 @@ image still transferring.
 See [Clipboard integration](docs/wiki/Clipboard.md) for the contract and failure
 semantics. Local chat Send remains local with either transport.
 
-## Internet Link
+### Internet Link
 
 Deploy the [relay server](server/README.md) behind HTTPS, then save the same relay
 URL and any enrollment token on both phones. Connect the phones nearby once after
@@ -80,7 +130,7 @@ keys. Select the trusted peer and start Internet Link on each phone when remote
 delivery is wanted. It is a separate, visible 15-minute session.
 
 The relay holds complete end-to-end encrypted envelopes: text/files expire after
-24 hours, clipboard actions after 60 seconds. Relay files are limited to 8 MiB;
+10 minutes (relay cap), clipboard actions after 60 seconds. Relay files are limited to 8 MiB;
 receivers explicitly accept ordinary files. **Allow clipboard updates** is off by
 default. With it off, incoming content stays available for manual Copy. Chat Copy
 uses an active nearby connection first, otherwise an enabled Internet Link; a copy
@@ -91,7 +141,7 @@ is no FCM/vendor push, no automatic session restart, and no background clipboard
 capture. Internet Link polls while enabled and stops on timeout/manual off. See
 [Internet Link](docs/wiki/Internet-Link.md) for setup, trust, receipts and limits.
 
-## Build and verify
+### Build and verify
 
 JDK 17 and Android SDK platform 37 / build tools are required. The Gradle wrapper
 pins the build; create a git-ignored `local.properties` containing your `sdk.dir`.
@@ -112,7 +162,7 @@ passed 32 contract tests.
 Two-phone radio and UX checks are documented separately; a green JVM test suite
 is not evidence of physical radio compatibility or battery life.
 
-## Documentation
+### Documentation
 
 - [Architecture](docs/wiki/Architecture.md): modules, trust, data paths and lifecycle.
 - [User workflow](docs/wiki/Workflow.md): first pairing, sharing, return path and recovery.
@@ -132,7 +182,7 @@ is not evidence of physical radio compatibility or battery life.
 The pages can also be published to the repository's Git wiki with
 `scripts/publish-wiki.sh` after its first page has been initialized on the server.
 
-## Honest limits
+### Honest limits
 
 - Android does not allow an ordinary background app to read every clipboard
   change. Clipboard transfer requires a deliberate foreground action.

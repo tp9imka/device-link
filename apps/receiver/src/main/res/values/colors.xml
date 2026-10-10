@@ -1,0 +1,18 @@
+<resources>
+ <color name="background">#F4F5F8</color>
+ <color name="surface">#FFFFFF</color>
+ <color name="surface_variant">#EEF2FF</color>
+ <color name="on_surface">#151820</color>
+ <color name="muted">#636B78</color>
+ <color name="accent">#2F6FED</color>
+ <color name="on_accent">#FFFFFF</color>
+ <color name="ok">#1F9D55</color>
+ <color name="warn">#C47F00</color>
+ <color name="line">#E3E6EB</color>
+ <color name="kb_background">#E8EAEF</color>
+ <color name="kb_key">#FFFFFF</color>
+ <color name="kb_key_function">#CBD0D9</color>
+ <color name="kb_key_pressed">#B4BBC7</color>
+ <color name="kb_label">#151820</color>
+ <color name="kb_hint">#636B78</color>
+</resources>

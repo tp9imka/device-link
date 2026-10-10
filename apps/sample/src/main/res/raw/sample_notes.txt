@@ -1,0 +1,4 @@
+DeviceLink sample file (synthetic data)
+
+This text file is sent as a "file" item. Files are not placed on the clipboard;
+the receiving device shows a notification with Share… so you can hand it to any app.

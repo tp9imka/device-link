@@ -15,7 +15,8 @@ object RelayCodec {
     const val MAX_BUNDLE_BYTES = 16 * 1024
     const val MAX_TEXT_BYTES = 8192
     const val CLIP_TTL_MILLIS = 60_000L
-    const val MESSAGE_TTL_MILLIS = 86_400_000L
+    // Must not exceed the relay sandbox cap (server max_ttl_ms, default 10 minutes).
+    const val MESSAGE_TTL_MILLIS = 600_000L
     const val MAX_CLOCK_SKEW_MILLIS = 30_000L
     private val json = Json { encodeDefaults = true; ignoreUnknownKeys = false; isLenient = false }
     private val mimePattern = Regex("[A-Za-z0-9!#$&^_.+-]+/[A-Za-z0-9!#$&^_.+-]+")

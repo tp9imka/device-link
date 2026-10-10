@@ -1,0 +1,8 @@
+<resources>
+ <!-- DeviceLink keyboard -->
+ <dimen name="kb_key_height">50dp</dimen>
+ <dimen name="kb_key_gap">5dp</dimen>
+ <dimen name="kb_row_gap">8dp</dimen>
+ <dimen name="kb_padding">4dp</dimen>
+ <dimen name="kb_toolbar_height">44dp</dimen>
+</resources>

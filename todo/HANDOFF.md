@@ -1,4 +1,55 @@
-# DeviceLink handoff (2026-10-09)
+# DeviceLink handoff (updated 2026-10-09, Link v2)
+
+## Where we stopped
+
+Branch `claude/zen-gates-e4f4lj`, draft PR tp9imka/device-link#1. Link v2 is implemented end to end:
+QR pairing through the relay, Android + iOS + desktop clients, 5-minute encrypted sandbox, admin
+dashboard. Read `docs/adr/0005-link-v2-cross-platform.md` and `docs/protocol/link-v2.md` first.
+
+| Area | Path | State |
+| --- | --- | --- |
+| Relay + `/admin` dashboard | `server/` | 52 pytest tests green; alerts, CSV/JSON export, `/metrics`, `python -m relay.backup`, VM recipe in `server/deploy/README.md` |
+| Kotlin core | `sdk/core` | JVM tests incl. RFC vectors, chunking (40 MB files), html/sensitive, confirmation code, diagnostics |
+| Swift core + CLI | `ios/DeviceLinkKit` | Tests on Linux; Kotlin<->Swift vectors both ways; `devicelink sync` two-way desktop clipboard |
+| Live interop | `scripts/interop_e2e.sh` | Passes locally and in CI (Kotlin <-> Swift CLI, both directions) |
+| Android SDK + apps | `sdk/android`, `apps/receiver`, `apps/sample` | CI green (lint, assemble). Diagnostics, send targets, reset, optional DeviceLink keyboard |
+| iOS apps | `ios/` (XcodeGen) | CI builds app, share + notification extensions, sample, macOS menu bar app; never run on a device |
+
+**Hardware/account work is specified for agents in `todo/README.md` (specs 01–07).** The device
+checklist is `docs/validation-kit.md`; battery script `scripts/android_battery.sh`.
+
+Linking is one-time: the 6-digit code is display-only, shown once after a QR scan; linked devices
+never ask for a code again (links persist across restarts and updates until unlinked or reset).
+
+Decisions taken without the user (they asked for autonomy):
+- First device needs no setup: relay URL/token are built in from private config
+  (`local.properties` `devicelink.relayUrl`, `ios/Config/Private.xcconfig` `DEVICELINK_RELAY_HOST`).
+  The admin Setup QR is only a fallback.
+- Sandbox lifetime 5 min (client), cap 10 min (relay). Legacy v1 Internet Link lifetimes reduced to fit.
+- HPKE X25519/HKDF-SHA256/ChaCha20-Poly1305 (CryptoKit preset), P-256 identities (Keystore/Secure Enclave).
+- Android receiving = visible `remoteMessaging` foreground service long poll; no FCM.
+- iOS receiving = app open (+25 s grace), optional APNs content-free alert, "Get DeviceLink clip" App Intent.
+- Sending from other apps is one gesture (text selection / share sheet / tile / Back Tap shortcut);
+  SDK host apps auto-send in-app copies.
+- Android SDK and apps use framework views only (no AndroidX) so they could be compile-checked offline.
+
+## Next
+
+1. `todo/01` relay behind a named tunnel + private builds (owner's machine).
+2. `todo/02` device validation run with `docs/validation-kit.md`; `todo/03` battery; `todo/04` APNs/iOS.
+3. `todo/05` fixes from findings; `todo/06` signed releases; `todo/07` independent security review.
+
+## Environment notes for agents
+
+The cloud container had no Android SDK/Google Maven and no Swift toolchain. What worked:
+`dockerd &`, `docker pull cimg/android:<tag>` and copy `platforms/android-37.0`, `build-tools/37.0.0`
+and JDK 17 out of it; Maven Central via `https://maven-central.storage-download.googleapis.com/maven2/`;
+`swift:6.2-jammy` image with swift-crypto/swift-asn1 cloned on the host and used as SwiftPM mirrors.
+
+---
+
+# Previous handoff (2026-10-09, before Link v2)
+
 
 Migrated from `https://git.oryxlabs.internal/ivan-antsimonau/device-link` to
 `https://github.com/tp9imka/device-link`. Local checkout: `~/Projects/device-link`.

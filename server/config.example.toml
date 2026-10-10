@@ -1,0 +1,32 @@
+# Copy to a private path (not in git), then: RELAY_CONFIG=/path/to/relay.toml python -m relay
+# Every key can also be set as an environment variable: RELAY_<KEY> (environment wins).
+
+database = "data/relay.sqlite3"
+
+# Public base URL the phones use, e.g. your Cloudflare tunnel hostname. Shown in admin setup QR codes.
+public_url = "https://relay.example.org"
+
+# Required for private relays: the first device enrolls with this token (admin Setup QR);
+# every further device enrolls by scanning that device's pairing QR code.
+enrollment_token = "replace-with-a-long-random-string"
+
+# Admin dashboard at /admin. Prefer a hash: python -m relay.passwd
+admin_username = "admin"
+admin_password_hash = ""
+# admin_password = ""          # plain-text alternative for local testing only
+session_secret = "replace-with-64-random-hex-characters"
+# Optional bearer token for Prometheus scraping of /metrics (metadata counts only).
+# metrics_token = "replace-with-a-long-random-string"
+
+# Sandbox: items are deleted on delivery or after this lifetime (clients default to 5 minutes).
+max_ttl_ms = 600000
+max_poll_wait = 50            # keep below your proxy's idle timeout (Cloudflare: 100 s)
+
+# Optional APNs wake-ups for the iOS app (token-based .p8 key from your Apple developer account).
+# apns_key_path = "/secure/AuthKey_XXXXXXXXXX.p8"
+# apns_key_id = "XXXXXXXXXX"
+# apns_team_id = "YYYYYYYYYY"
+
+# Optional verified app links so scanning a pairing QR opens the app directly.
+# android_app_links = "dev.devicelink.receiver:AA:BB:...:FF"
+# apple_app_ids = "TEAMID.dev.devicelink.receiver"

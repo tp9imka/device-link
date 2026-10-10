@@ -10,5 +10,6 @@ tasks.register<Exec>("checkArchitecture") {
 }
 tasks.register("check") {
  group = "verification"
- dependsOn("checkArchitecture", ":core:model:test", ":app:lintDebug", ":app:testDebugUnitTest", ":core:transfer:testDebugUnitTest", ":app:assembleDebug")
+ dependsOn("checkArchitecture", ":core:model:test", ":app:lintDebug", ":app:testDebugUnitTest", ":core:transfer:testDebugUnitTest", ":app:assembleDebug",
+  ":sdk:core:test", ":sdk:android:lintDebug", ":apps:receiver:lintDebug", ":apps:receiver:assembleDebug", ":apps:sample:assembleDebug")
 }
