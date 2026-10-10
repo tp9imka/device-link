@@ -93,6 +93,10 @@ class PairingException(message: String) : Exception(message)
 /** Pause between pairing polls; real relays long-poll, this only guards against a tight loop. */
 private const val POLL_PAUSE_MILLIS = 200L
 
+/** Relay error for a second concurrent mailbox poll by the same device; see [DeviceLinkClient.runReceiver]. */
+internal const val POLL_ALREADY_ACTIVE = "poll_already_active"
+private const val POLL_COLLISION_MILLIS = 2_000L
+
 /**
  * Platform-neutral DeviceLink engine: QR pairing, fan-out send, receive loop with receipts.
  * Android and the JVM CLI wrap it; the Swift package mirrors it one-to-one.
@@ -520,6 +524,12 @@ class DeviceLinkClient(
                     throw cancelled
                 } catch (failure: RelayException) {
                     failure(failure)
+                    if (failure.code == POLL_ALREADY_ACTIVE) {
+                        // The relay still holds this device's previous long poll (for example after a reconnect).
+                        // Transient: retry soon instead of the 60 s rate-limit backoff, status unchanged.
+                        delay(POLL_COLLISION_MILLIS + Random.nextLong(1_000))
+                        continue
+                    }
                     mutableStatus.value = if (failure.status in listOf(401, 403)) ReceiverStatus.REJECTED else ReceiverStatus.OFFLINE
                     delay(if (failure.status == 429) 60_000L else maxOf(backoff, 15_000L))
                     backoff = (backoff * 2).coerceAtMost(60_000L)

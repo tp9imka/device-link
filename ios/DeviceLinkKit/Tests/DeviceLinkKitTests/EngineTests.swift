@@ -29,8 +29,16 @@ final class FakeRelay: HTTPTransport, @unchecked Sendable {
 
     var mailbox: [Envelope] { state.get.mailbox }
 
+    /// Empty mailbox polls wait out `wait`, like the real long poll (keeps receive loops from spinning).
+    let longPoll = Locked(false)
+
     func send(method: String, url: URL, headers: [String: String], body: Data, timeout: TimeInterval) async throws -> HTTPResponse {
-        state.with { handle(method: method, url: url, headers: headers, body: body, state: &$0) }
+        let response = state.with { handle(method: method, url: url, headers: headers, body: body, state: &$0) }
+        if longPoll.get, method == "GET", url.path == "/v1/messages", response.body == Data("[]".utf8),
+           let wait = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "wait" })?.value.flatMap(UInt64.init) {
+            try await Task.sleep(nanoseconds: wait * 1_000_000_000)
+        }
+        return response
     }
 
     private func handle(method: String, url: URL, headers: [String: String], body: Data, state: inout State) -> HTTPResponse {
@@ -229,6 +237,23 @@ final class EngineTests: XCTestCase {
         XCTAssertEqual(second, 0)
         XCTAssertEqual(calls.get, 1)
         XCTAssertTrue(relay.mailbox.filter { $0.recipientId == iphone.deviceId }.isEmpty)
+    }
+
+    func testPollCollisionAfterReconnectRetriesWithinSeconds() async throws {
+        let android = try client("Pixel"), iphone = try client("iPhone")
+        try await link(android, iphone)
+        relay.longPoll.with { $0 = true }
+        _ = try await android.send(.text("after collision"))
+        relay.state.with { $0.pollErrors = [(429, "poll_already_active")] }
+        let started = Date()
+        let received = expectation(description: "item after the collision")
+        let loop = Task { await iphone.runReceiver { item in
+            if item.text == "after collision" { received.fulfill() }
+            return .copied
+        } }
+        await fulfillment(of: [received], timeout: 10)
+        loop.cancel()
+        XCTAssertLessThan(Date().timeIntervalSince(started), 10, "a collision must not take the 60 s rate-limit backoff")
     }
 
     func testUndecryptableEnvelopesAreDroppedAndCounted() async throws {

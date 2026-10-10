@@ -1,8 +1,12 @@
 package dev.devicelink.sdk.core
 
 import java.net.URI
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.async
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -27,7 +31,17 @@ private class FakeRelay(private val clock: () -> Long) : HttpTransport {
     var failConfirm: Pair<Int, String>? = null
     val polls = mutableListOf<String>()
 
-    override suspend fun execute(method: String, url: String, headers: Map<String, String>, body: ByteArray, timeoutMillis: Int): HttpResponse = synchronized(this) {
+    /** Empty mailbox polls wait out `wait` (virtual time under runTest), like the real long poll. */
+    var longPoll = false
+
+    override suspend fun execute(method: String, url: String, headers: Map<String, String>, body: ByteArray, timeoutMillis: Int): HttpResponse {
+        val response = synchronized(this) { handle(method, url, headers, body) }
+        val wait = Regex("[?&]wait=([0-9]+)").find(url)?.groupValues?.get(1)?.toLong() ?: 0
+        if (longPoll && method == "GET" && "/v1/messages?" in url && String(response.body) == "[]") kotlinx.coroutines.delay(wait * 1000)
+        return response
+    }
+
+    private fun handle(method: String, url: String, headers: Map<String, String>, body: ByteArray): HttpResponse {
         requests++
         val uri = URI(url)
         val target = uri.rawPath + (uri.rawQuery?.let { "?$it" } ?: "")
@@ -41,7 +55,7 @@ private class FakeRelay(private val clock: () -> Long) : HttpTransport {
         if (path == listOf("v1", "register")) { devices += caller; return ok() }
         if (caller !in devices) return error(403, "registration_required")
         val json = if (body.isEmpty()) JsonObject(emptyMap()) else wireJson.decodeFromString<JsonObject>(body.toString(Charsets.UTF_8))
-        when {
+        return when {
             path == listOf("v1", "pairings") && method == "POST" -> {
                 pairings[json["id"]!!.jsonPrimitive.content] = mutableMapOf("creator" to caller, "state" to "open", "expires" to json["expiresAt"]!!.jsonPrimitive.long.toString())
                 ok()
@@ -362,6 +376,30 @@ class DeviceLinkClientTest {
         assertEquals(0, iphone.receiveOnce { error("must not apply") })
         assertEquals(1, iphone.diagnostics.value.undecryptable)
         assertTrue(relay.mailbox.isEmpty())
+    }
+
+    /** Runs the receive loop in virtual time; returns the first item text, or null if none arrived within [withinMillis]. */
+    private fun receiverAfterPollError(code: String, withinMillis: Long): String? {
+        linked()
+        relay.longPoll = true
+        runBlocking { android.send(OutgoingContent.Text("after $code")) }
+        relay.pollErrors += 429 to code
+        var text: String? = null
+        runTest {
+            val received = CompletableDeferred<String?>()
+            val loop = launch { iphone.runReceiver { received.complete(it.text); ReceiptStatus.COPIED } }
+            text = withTimeoutOrNull(withinMillis) { received.await() }
+            loop.cancel()
+        }
+        return text
+    }
+
+    @Test fun `a poll collision after a reconnect retries within seconds`() {
+        assertEquals("after poll_already_active", receiverAfterPollError("poll_already_active", withinMillis = 10_000))
+    }
+
+    @Test fun `a relay rate limit keeps the long backoff`() {
+        assertEquals(null, receiverAfterPollError("rate_limit", withinMillis = 30_000))
     }
 
     @Test fun `unlink all forgets every peer`() = runBlocking {

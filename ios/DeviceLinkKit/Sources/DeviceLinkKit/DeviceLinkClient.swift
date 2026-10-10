@@ -89,6 +89,8 @@ public enum LinkEvent: Sendable, Equatable {
 
 /// Platform-neutral DeviceLink engine, the Swift twin of the Kotlin `DeviceLinkClient`.
 public actor DeviceLinkClient {
+    /// Relay error for a second concurrent mailbox poll by the same device.
+    static let pollAlreadyActive = "poll_already_active"
     public nonisolated let deviceId: String
     public nonisolated let localBundle: KeyBundle
     let identity: DeviceIdentity
@@ -558,6 +560,10 @@ public actor DeviceLinkClient {
                 backoff = 1_000
             } catch is CancellationError {
                 return
+            } catch DeviceLinkError.relay(_, Self.pollAlreadyActive) {
+                // The relay still holds this device's previous long poll (for example after a reconnect).
+                // Transient: retry soon instead of the 60 s rate-limit backoff, status unchanged.
+                try? await Task.sleep(nanoseconds: (2_000 + UInt64.random(in: 0...1_000)) * 1_000_000)
             } catch DeviceLinkError.relay(let status, _) {
                 setStatus(status == 401 || status == 403 ? .rejected : .offline)
                 try? await Task.sleep(nanoseconds: (status == 429 ? 60_000 : max(backoff, 15_000)) * 1_000_000)
