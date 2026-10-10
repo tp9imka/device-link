@@ -64,6 +64,11 @@
  <string name="kb_auto_on">Auto-send on</string>
  <string name="kb_auto_off">Auto-send off</string>
  <string name="kb_not_linked">Not linked</string>
+ <string name="kb_disclosure_title">Send every copy automatically?</string>
+ <string name="kb_disclosure_body">While DeviceLink is your keyboard, whatever you copy in any app (text, links, images) is sent, end-to-end encrypted, to your linked devices: %1$s.\n\nCopies that password managers mark as sensitive are skipped.\n\nTo stop, tap Auto-send on in the bar above the keys.</string>
+ <string name="kb_disclosure_body_unlinked">While DeviceLink is your keyboard, whatever you copy in any app (text, links, images) is sent, end-to-end encrypted, to every device you link to this phone.\n\nCopies that password managers mark as sensitive are skipped.\n\nTo stop, tap Auto-send on in the bar above the keys.</string>
+ <string name="kb_disclosure_accept">Turn on</string>
+ <string name="kb_disclosure_decline">Not now</string>
  <string name="kb_paste_clip">Paste: %1$s</string>
  <string name="kb_paste_sensitive">Paste: sensitive clip</string>
  <string name="kb_mode_symbols">\?123</string>
