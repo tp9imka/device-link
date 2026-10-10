@@ -46,6 +46,7 @@ targets:
         DLEnrollmentToken: $(DEVICELINK_ENROLLMENT_TOKEN)
         DLAppGroup: $(DL_APP_GROUP)
         DLKeychainGroup: $(AppIdentifierPrefix)$(DL_BUNDLE_PREFIX).ios.shared
+        DLAPSEnvironment: $(DL_APS_ENVIRONMENT)
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
     entitlements:
@@ -55,12 +56,19 @@ targets:
         keychain-access-groups: [$(AppIdentifierPrefix)$(DL_BUNDLE_PREFIX).ios.shared]
         # Optional APNs wake-ups (relay apns_* settings). Universal links: add
         # com.apple.developer.associated-domains [applinks:<relay host>] and RELAY_APPLE_APP_IDS.
-        aps-environment: development
+        # One source of truth: DL_APS_ENVIRONMENT (below) also feeds DLAPSEnvironment, which the
+        # app reports to the relay when registering its push token.
+        aps-environment: $(DL_APS_ENVIRONMENT)
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: $(DL_BUNDLE_PREFIX).ios
         DL_KEYCHAIN_GROUP: $(AppIdentifierPrefix)$(DL_BUNDLE_PREFIX).ios.shared
         TARGETED_DEVICE_FAMILY: "1,2"
+      configs:
+        Debug:
+          DL_APS_ENVIRONMENT: development
+        Release:
+          DL_APS_ENVIRONMENT: production
   DeviceLinkShare:
     type: app-extension
     platform: iOS

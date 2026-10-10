@@ -154,11 +154,8 @@ final class LinkModel: ObservableObject {
     func registerPush(token: Data) {
         guard let client, !peers.isEmpty else { return }
         let hex = token.map { String(format: "%02x", $0) }.joined()
-        #if DEBUG
-        let environment = "sandbox"
-        #else
-        let environment = "production"
-        #endif
+        // Same build setting as the aps-environment entitlement, so the relay targets the matching APNs host.
+        let environment = LinkEnvironment.info("DLAPSEnvironment") == "production" ? "production" : "sandbox"
         let topic = Bundle.main.bundleIdentifier ?? ""
         Task {
             guard let info = try? await client.relayInfo(), info.push?.contains("apns") == true else { return }
