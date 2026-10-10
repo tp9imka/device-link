@@ -2,6 +2,16 @@
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android" android:layout_width="match_parent"
  android:layout_height="wrap_content" android:orientation="vertical">
 
+ <!-- Keys unreadable (KeyState.LOST): nothing can be received or linked until this phone is reset. -->
+ <LinearLayout android:id="@+id/keys_lost" style="@style/Card" android:layout_width="match_parent" android:layout_height="wrap_content"
+  android:orientation="vertical" android:layout_marginTop="8dp" android:visibility="gone">
+  <TextView style="@style/Heading" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="@string/keys_lost_title" />
+  <TextView style="@style/Body" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="6dp"
+   android:text="@string/keys_lost_body" />
+  <Button android:id="@+id/keys_lost_reset" style="@style/DangerButton" android:layout_width="wrap_content" android:layout_height="wrap_content"
+   android:text="@string/diagnostics_reset" />
+ </LinearLayout>
+
  <LinearLayout android:id="@+id/empty" style="@style/Card" android:layout_width="match_parent" android:layout_height="wrap_content"
   android:orientation="vertical" android:layout_marginTop="8dp">
   <TextView style="@style/Heading" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="@string/empty_title" />

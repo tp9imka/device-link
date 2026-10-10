@@ -11,6 +11,9 @@
  <string name="status_offline">Offline · retrying</string>
  <string name="status_rejected">The relay refused this device</string>
  <string name="status_setup">No relay configured</string>
+ <string name="status_keys_lost">Keys unreadable · reset to link again</string>
+ <string name="keys_lost_title">This phone can\'t open clips</string>
+ <string name="keys_lost_body">Its encryption keys could not be read, so nothing sent to it can be opened and it can\'t link. Reset this phone, then link your devices again.</string>
  <string name="notify_ask_title">Get a notification when a clip arrives?</string>
  <string name="notify_ask_body">Clips land on your clipboard either way; the notification tells you when, and lets you copy or open what arrived.</string>
  <string name="notify_ask_continue">Continue</string>

@@ -24,6 +24,7 @@ import dev.devicelink.sdk.ClipRecord
 import dev.devicelink.sdk.DeviceLink
 import dev.devicelink.sdk.DeviceLinkInstance
 import dev.devicelink.sdk.DeviceLinkPairing
+import dev.devicelink.sdk.KeyState
 import dev.devicelink.sdk.core.LinkedPeer
 import dev.devicelink.sdk.core.ReceiverStatus
 import kotlinx.coroutines.CoroutineScope
@@ -80,6 +81,7 @@ class MainActivity : Activity() {
         }
         header.findViewById<Button>(R.id.clear).setOnClickListener { link.clearHistory() }
         findViewById<Button>(R.id.diagnostics).setOnClickListener { showDiagnostics() }
+        header.findViewById<Button>(R.id.keys_lost_reset).setOnClickListener { confirmReset() }
 
         scope.launch { combine(link.peers, link.status) { peers, status -> peers to status }.collect { (peers, status) -> render(peers, status) } }
         scope.launch { link.history.collect { records ->
@@ -115,7 +117,7 @@ class MainActivity : Activity() {
     }
 
     private fun askForNotificationsOnce() {
-        if (Build.VERSION.SDK_INT < 33 || link.peers.value.isEmpty() || prefs.getBoolean(ASKED_NOTIFICATIONS, false)) return
+        if (Build.VERSION.SDK_INT < 33 || link.peers.value.isEmpty() || link.keyState == KeyState.LOST || prefs.getBoolean(ASKED_NOTIFICATIONS, false)) return
         if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) return
         prefs.edit().putBoolean(ASKED_NOTIFICATIONS, true).apply()
         AlertDialog.Builder(this).setTitle(R.string.notify_ask_title).setMessage(R.string.notify_ask_body)
@@ -145,18 +147,22 @@ class MainActivity : Activity() {
     }
 
     private fun render(peers: List<LinkedPeer>, status: ReceiverStatus) {
-        header.findViewById<View>(R.id.empty).visibility = if (peers.isEmpty()) View.VISIBLE else View.GONE
+        // With unreadable keys the SDK refuses to link or receive; offer the one way out instead.
+        val keysLost = link.keyState == KeyState.LOST
+        header.findViewById<View>(R.id.keys_lost).visibility = if (keysLost) View.VISIBLE else View.GONE
+        header.findViewById<View>(R.id.empty).visibility = if (peers.isEmpty() && !keysLost) View.VISIBLE else View.GONE
         header.findViewById<View>(R.id.linked).visibility = if (peers.isEmpty()) View.GONE else View.VISIBLE
         // Sending tips only make sense once something is linked; the first screen is about linking.
         footer.visibility = if (peers.isEmpty()) View.GONE else View.VISIBLE
-        header.findViewById<View>(R.id.receive_card).visibility = if (peers.isEmpty()) View.GONE else View.VISIBLE
+        header.findViewById<View>(R.id.receive_card).visibility = if (peers.isEmpty() || keysLost) View.GONE else View.VISIBLE
         receive.isChecked = link.receiverEnabled
         header.findViewById<TextView>(R.id.receive_state).setText(if (link.receiverEnabled) R.string.receive_on else R.string.receive_off)
         if (link.receiverEnabled) { undo.removeCallbacks(hideUndo); undo.visibility = View.GONE }
         header.findViewById<View>(R.id.notify_hint).visibility = if (notificationsHintVisible(peers)) View.VISIBLE else View.GONE
         val targets = link.sendTargets
-        findViewById<TextView>(R.id.status).text = if (targets.isNotEmpty() && peers.size > 1)
+        findViewById<TextView>(R.id.status).text = if (!keysLost && targets.isNotEmpty() && peers.size > 1)
             getString(R.string.sending_to, peers.filter { it.id in targets }.joinToString { it.name }) else getString(when {
+            keysLost -> R.string.status_keys_lost
             peers.isEmpty() -> if (link.client.isConfigured) R.string.status_idle else R.string.status_setup
             !link.receiverEnabled -> R.string.status_off
             status == ReceiverStatus.ONLINE -> R.string.status_online
