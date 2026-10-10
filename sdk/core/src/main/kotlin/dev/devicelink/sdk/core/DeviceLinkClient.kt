@@ -126,10 +126,11 @@ class DeviceLinkClient(
     private val mutableEvents = MutableSharedFlow<LinkEvent>(extraBufferCapacity = 64)
     val events: SharedFlow<LinkEvent> = mutableEvents.asSharedFlow()
     init {
-        val state = store.load()
-        if (state.relayUrl.isEmpty() && config.defaultRelayUrl.isNotEmpty()) {
-            store.save(state.copy(relayUrl = RelayUrl.normalize(config.defaultRelayUrl, config.allowInsecureRelay),
-                enrollmentToken = config.defaultEnrollmentToken))
+        if (store.load().relayUrl.isEmpty() && config.defaultRelayUrl.isNotEmpty()) {
+            val relayUrl = RelayUrl.normalize(config.defaultRelayUrl, config.allowInsecureRelay)
+            store.update { state ->
+                if (state.relayUrl.isNotEmpty()) state else state.copy(relayUrl = relayUrl, enrollmentToken = config.defaultEnrollmentToken)
+            }
         }
     }
 
@@ -167,8 +168,7 @@ class DeviceLinkClient(
 
     private suspend fun update(transform: (LinkState) -> LinkState): LinkState = lock.withLock {
         val now = clock()
-        val next = transform(store.load()).let { state -> state.copy(seen = state.seen.filterValues { it > now }) }
-        store.save(next)
+        val next = store.update { current -> transform(current).let { state -> state.copy(seen = state.seen.filterValues { it > now }) } }
         mutablePeers.value = next.peers
         next
     }

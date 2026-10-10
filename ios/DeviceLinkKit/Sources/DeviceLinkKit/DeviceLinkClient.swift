@@ -129,11 +129,14 @@ public actor DeviceLinkClient {
         self.transport = transport
         self.clock = clock
         self.diagnostics = Diagnostics(deviceId: identity.deviceId)
-        var state = store.load()
-        if state.relayUrl.isEmpty, !config.defaultRelayURL.isEmpty {
-            state.relayUrl = try RelayURL.normalize(config.defaultRelayURL, allowInsecure: config.allowInsecureRelay)
-            state.enrollmentToken = config.defaultEnrollmentToken
-            try store.save(state)
+        if store.load().relayUrl.isEmpty, !config.defaultRelayURL.isEmpty {
+            let relayURL = try RelayURL.normalize(config.defaultRelayURL, allowInsecure: config.allowInsecureRelay)
+            let token = config.defaultEnrollmentToken
+            try store.update { state in
+                guard state.relayUrl.isEmpty else { return }
+                state.relayUrl = relayURL
+                state.enrollmentToken = token
+            }
         }
     }
 
@@ -177,12 +180,11 @@ public actor DeviceLinkClient {
 
     @discardableResult
     private func update(_ transform: (inout LinkState) throws -> Void) throws -> LinkState {
-        var state = store.load()
-        try transform(&state)
         let now = clock()
-        state.seen = state.seen.filter { $0.value > now }
-        try store.save(state)
-        return state
+        return try store.update { state in
+            try transform(&state)
+            state.seen = state.seen.filter { $0.value > now }
+        }
     }
 
     func relay(_ url: String? = nil) throws -> RelayClient {
