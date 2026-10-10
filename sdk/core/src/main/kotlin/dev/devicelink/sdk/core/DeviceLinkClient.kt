@@ -214,7 +214,12 @@ class DeviceLinkClient(
         /** QR payload. */
         val uri: String get() = invite.uri
 
-        /** Waits for a joiner, pins its bundle, allows it on the relay and confirms. */
+        /**
+         * Waits for a joiner, pins its bundle, allows it on the relay and confirms. The link is saved and
+         * announced only once the relay accepted the confirmation, so a failed confirm never leaves the
+         * inviter showing a link the joiner does not have. A confirm whose response was lost is checked
+         * against the pairing state; if it really failed, the relay allowance is withdrawn and this throws.
+         */
         suspend fun awaitPeer(): LinkedPeer {
             val relay = relay(invite.relayUrl)
             while (true) {
@@ -227,15 +232,31 @@ class DeviceLinkClient(
                         val bundle = invite.openJoin(requireNotNull(status.sealed))
                         if (bundle.id != status.joinerId || bundle.id == deviceId) throw PairingException("Pairing data does not match joiner")
                         relay.allow(bundle.id)
+                        // "confirmed" here means an earlier confirm by this inviter was accepted (response lost).
+                        if (status.state == "joined") confirm(relay, bundle.id)
                         val peer = LinkedPeer(bundle, clock(), invite.confirmationCode(bundle.id))
                         update { state -> state.copy(peers = state.peers.filterNot { it.id == bundle.id } + peer,
                             pendingRevocations = state.pendingRevocations - bundle.id) }
-                        relay.confirmPairing(invite.pairingId, invite.sealConfirm(localBundle))
                         mutableEvents.tryEmit(LinkEvent.PeerLinked(peer))
                         return peer
                     }
                     else -> throw PairingException("Pairing ${status.state}")
                 }
+            }
+        }
+
+        private suspend fun confirm(relay: RelayClient, joinerId: String) {
+            try {
+                relay.confirmPairing(invite.pairingId, invite.sealConfirm(localBundle))
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                val committed = runCatching { relay.pollPairing(invite.pairingId, 0).state == "confirmed" }.getOrDefault(false)
+                if (committed) return
+                // Keep an existing link to the same device (re-pairing) allowed.
+                if (store.load().peers.none { it.id == joinerId }) runCatching { relay.revoke(joinerId) }
+                failure(failure)
+                throw PairingException(if (failure is RelayException) "Relay refused pairing (${failure.code})" else "Could not reach the relay to confirm the link")
             }
         }
 

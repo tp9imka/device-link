@@ -172,8 +172,12 @@ Flow:
    A pairing accepts exactly one joiner.
 3. Inviter long-polls `GET /v1/pairings/{id}?wait=25`, opens the joiner bundle,
    verifies its signature and that its ID equals the authenticated `joinerId`,
-   pins it, allows it (`PUT /v1/peers/{joiner}`) and confirms:
+   allows it (`PUT /v1/peers/{joiner}`) and confirms:
    `POST /v1/pairings/{id}/confirm {"sealed": Base64(seal(confirmKey, "confirm", inviterBundle))}`.
+   It pins and shows the link only after the confirm succeeded. If the confirm fails, it re-reads the
+   pairing (`wait=0`): `confirmed` means the response was lost and the link stands; otherwise it
+   withdraws the allowance (`DELETE /v1/peers/{joiner}`, unless that device was already linked) and
+   reports the failure.
 4. Joiner long-polls the same pairing, opens the inviter bundle, checks that its
    ID equals the ID in the QR, pins it and allows it. The relay records the link
    for the admin dashboard and deletes the pairing.

@@ -251,7 +251,10 @@ public actor DeviceLinkClient {
         return PairingSession(invite: invite, expiresAt: expiresAt)
     }
 
-    /// Waits for a joiner, pins it, allows it on the relay and confirms.
+    /// Waits for a joiner, pins it, allows it on the relay and confirms. The link is saved and announced only
+    /// once the relay accepted the confirmation, so a failed confirm never leaves the inviter showing a link
+    /// the joiner does not have. A confirm whose response was lost is checked against the pairing state; if
+    /// it really failed, the relay allowance is withdrawn and this throws.
     public func awaitPeer(_ session: PairingSession) async throws -> LinkedPeer {
         let relay = try relay(session.invite.relayURL)
         while true {
@@ -267,12 +270,28 @@ public actor DeviceLinkClient {
                 let bundle = try session.invite.openJoin(status.sealed ?? "")
                 guard bundle.id == status.joinerId, bundle.id != deviceId else { throw DeviceLinkError.pairing("Pairing data does not match joiner") }
                 try await relay.allow(bundle.id)
+                // "confirmed" here means an earlier confirm by this inviter was accepted (response lost).
+                if status.state == "joined" { try await confirm(session, relay: relay, joinerId: bundle.id) }
                 let peer = try addPeer(bundle, code: session.invite.confirmationCode(joinerId: bundle.id))
-                try await relay.confirmPairing(session.invite.pairingId, sealed: try session.invite.sealConfirm(localBundle))
                 emit(.peerLinked(peer))
                 return peer
             default: throw DeviceLinkError.pairing("Pairing \(status.state)")
             }
+        }
+    }
+
+    private func confirm(_ session: PairingSession, relay: RelayClient, joinerId: String) async throws {
+        do {
+            try await relay.confirmPairing(session.invite.pairingId, sealed: try session.invite.sealConfirm(localBundle))
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            if (try? await relay.pollPairing(session.invite.pairingId, wait: 0))?.state == "confirmed" { return }
+            // Keep an existing link to the same device (re-pairing) allowed.
+            if !peers.contains(where: { $0.id == joinerId }) { try? await relay.revoke(joinerId) }
+            noteFailure(error)
+            if case DeviceLinkError.relay(_, let code) = error { throw DeviceLinkError.pairing("Relay refused pairing (\(code))") }
+            throw DeviceLinkError.pairing("Could not reach the relay to confirm the link")
         }
     }
 

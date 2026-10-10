@@ -21,6 +21,8 @@ final class FakeRelay: HTTPTransport, @unchecked Sendable {
         var failAcks = 0
         var pollErrors: [(Int, String)] = []
         var failConfirm: (Int, String)?
+        /// The confirm is stored, then the response is lost (answered with `failConfirm`).
+        var confirmCommitsBeforeFailing = false
         var polls = 0
     }
     let state = Locked(State())
@@ -67,10 +69,12 @@ final class FakeRelay: HTTPTransport, @unchecked Sendable {
             state.pairings[path[2]] = pairing
             return ok()
         case ("POST", 4, "pairings") where path[3] == "confirm":
-            if let (status, code) = state.failConfirm { return error(status, code) }
+            if let (status, code) = state.failConfirm, !state.confirmCommitsBeforeFailing { return error(status, code) }
             guard var pairing = state.pairings[path[2]], pairing["creator"] == caller else { return error(404, "pairing_not_found") }
+            guard pairing["state"] == "joined" else { return error(409, "pairing_not_joined") }
             pairing["state"] = "confirmed"; pairing["confirmSealed"] = json["sealed"] as? String
             state.pairings[path[2]] = pairing
+            if let (status, code) = state.failConfirm { return error(status, code) }
             return ok()
         case ("GET", 3, "pairings"):
             guard let p = state.pairings[path[2]] else { return error(404, "pairing_not_found") }
@@ -290,6 +294,36 @@ final class EngineTests: XCTestCase {
         XCTAssertEqual(first, DrainResult(applied: 0, complete: false, collided: true))
         let second = try await iphone.drain { _ in .copied }
         XCTAssertEqual(second.applied, 1)
+    }
+
+    func testFailedConfirmLeavesNeitherSideLinked() async throws {
+        let android = try client("Pixel"), iphone = try client("iPhone")
+        try await android.configure(relayURL: "https://relay.example")
+        let session = try await android.invite()
+        relay.state.with { $0.failConfirm = (503, "unavailable") }
+        let events = await android.events()
+        let linkedEvents = Locked(0)
+        let collector = Task { for await event in events { if case .peerLinked = event { linkedEvents.with { $0 += 1 } } } }
+        let joiner = Task { _ = try? await iphone.join(session.uri) }
+        do {
+            _ = try await android.awaitPeer(session)
+            XCTFail("confirm failed, awaitPeer must throw")
+        } catch DeviceLinkError.pairing {}
+        joiner.cancel(); collector.cancel()
+        let inviterPeers = await android.peers, joinerPeers = await iphone.peers
+        XCTAssertTrue(inviterPeers.isEmpty)
+        XCTAssertTrue(joinerPeers.isEmpty)
+        XCTAssertFalse(relay.state.get.allow.contains("\(android.deviceId)>\(iphone.deviceId)"))
+        XCTAssertEqual(linkedEvents.get, 0)
+    }
+
+    func testConfirmWhoseResponseWasLostStillLinksBothSides() async throws {
+        let android = try client("Pixel"), iphone = try client("iPhone")
+        relay.state.with { $0.failConfirm = (503, "unavailable"); $0.confirmCommitsBeforeFailing = true }
+        try await link(android, iphone)
+        let inviterPeers = await android.peers, joinerPeers = await iphone.peers
+        XCTAssertEqual(inviterPeers.map(\.id), [iphone.deviceId])
+        XCTAssertEqual(joinerPeers.map(\.id), [android.deviceId])
     }
 
     func testUndecryptableEnvelopesAreDroppedAndCounted() async throws {

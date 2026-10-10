@@ -29,6 +29,8 @@ private class FakeRelay(private val clock: () -> Long) : HttpTransport {
     var failAcks = 0
     val pollErrors = ArrayDeque<Pair<Int, String>>()
     var failConfirm: Pair<Int, String>? = null
+    /** The confirm is stored, then the response is lost (answered with [failConfirm]). */
+    var confirmCommitsBeforeFailing = false
     val polls = mutableListOf<String>()
 
     /** Empty mailbox polls wait out `wait` (virtual time under runTest), like the real long poll. */
@@ -66,10 +68,13 @@ private class FakeRelay(private val clock: () -> Long) : HttpTransport {
                 pairing += mapOf("state" to "joined", "joiner" to caller, "joinSealed" to json["sealed"]!!.jsonPrimitive.content); ok()
             }
             path.size == 4 && path[1] == "pairings" && path[3] == "confirm" -> {
-                failConfirm?.let { (status, code) -> return error(status, code) }
+                if (failConfirm != null && !confirmCommitsBeforeFailing) return error(failConfirm!!.first, failConfirm!!.second)
                 val pairing = pairings[path[2]]!!
                 check(pairing["creator"] == caller)
-                pairing += mapOf("state" to "confirmed", "confirmSealed" to json["sealed"]!!.jsonPrimitive.content); ok()
+                if (pairing["state"] != "joined") return error(409, "pairing_not_joined")
+                pairing += mapOf("state" to "confirmed", "confirmSealed" to json["sealed"]!!.jsonPrimitive.content)
+                failConfirm?.let { (status, code) -> return error(status, code) }
+                ok()
             }
             path.size == 3 && path[1] == "pairings" && method == "GET" -> {
                 val p = pairings[path[2]] ?: return error(404, "pairing_not_found")
@@ -431,6 +436,30 @@ class DeviceLinkClientTest {
         relay.pollErrors += 429 to "poll_already_active"
         assertEquals(DrainResult(applied = 0, complete = false, collided = true), iphone.drain { ReceiptStatus.COPIED })
         assertEquals(1, iphone.drain { ReceiptStatus.COPIED }.applied)
+    }
+
+    @Test fun `a failed confirm leaves neither side linked`() = runBlocking {
+        android.configure("https://relay.example")
+        val session = android.invite()
+        relay.failConfirm = 503 to "unavailable"
+        val events = mutableListOf<LinkEvent>()
+        val collector = launch(start = CoroutineStart.UNDISPATCHED) { android.events.collect { events += it } }
+        val joiner = launch { runCatching { iphone.join(session.uri) } }
+        val failure = runCatching { session.awaitPeer() }.exceptionOrNull()
+        joiner.cancel(); collector.cancel()
+        assertTrue(failure is PairingException)
+        assertTrue(android.peers.value.isEmpty())
+        assertTrue(iphone.peers.value.isEmpty())
+        assertFalse((android.deviceId to iphone.deviceId) in relay.allow)
+        assertTrue(events.none { it is LinkEvent.PeerLinked })
+    }
+
+    @Test fun `a confirm whose response was lost still links both sides`() {
+        relay.failConfirm = 503 to "unavailable"
+        relay.confirmCommitsBeforeFailing = true
+        linked()
+        assertEquals(listOf(iphone.deviceId), android.peers.value.map { it.id })
+        assertEquals(listOf(android.deviceId), iphone.peers.value.map { it.id })
     }
 
     @Test fun `unlink all forgets every peer`() = runBlocking {
