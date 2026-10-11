@@ -144,6 +144,27 @@ struct LinkedConfirmation: ViewModifier {
     }
 }
 
+/// Shown instead of the linking controls while `model.keysLost` is set: nothing can be sent or received
+/// with the old links, so the one action offered is Reset.
+struct KeysLostSection: View {
+    @ObservedObject var model: LinkModel
+    @State private var confirmReset = false
+
+    var body: some View {
+        Section {
+            Label(KeysLostError.message, systemImage: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+            Button("Reset device", role: .destructive) { confirmReset = true }
+                .disabled(model.resetting)
+        }
+        .confirmationDialog("Reset this device?", isPresented: $confirmReset, titleVisibility: .visible) {
+            Button("Reset device", role: .destructive) { model.resetDevice() }
+        } message: {
+            Text("Deletes this device's keys, links and clip history and creates a new identity. Unlink this device on your other devices, then link again.")
+        }
+    }
+}
+
 /// Relay, registration, last poll/receive/send and last error; test clip; reset device.
 struct DiagnosticsSheet: View {
     @ObservedObject var model: LinkModel

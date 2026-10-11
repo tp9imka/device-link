@@ -17,8 +17,11 @@ struct ContentView: View {
     var body: some View {
         NavigationStack {
             List {
-                statusSection
-                if model.peers.isEmpty { linkSection } else { devicesSection; sendSection }
+                if model.keysLost != nil { KeysLostSection(model: model) }
+                else {
+                    statusSection
+                    if model.peers.isEmpty { linkSection } else { devicesSection; sendSection }
+                }
                 clipsSection
                 Section {
                     EmptyView()

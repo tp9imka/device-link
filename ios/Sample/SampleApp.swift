@@ -68,7 +68,8 @@ struct SampleView: View {
     var body: some View {
         NavigationStack {
             List {
-                Section {
+                if model.keysLost != nil { KeysLostSection(model: model) }
+                else { Section {
                     if model.peers.isEmpty {
                         Text("No device linked yet").font(.headline)
                     } else {
@@ -78,7 +79,7 @@ struct SampleView: View {
                         Button("Show code") { showingCode = true }.buttonStyle(.borderedProminent)
                         Button("Scan code") { scanning = true }.buttonStyle(.bordered)
                     }
-                } footer: { Text("Every copy made in this app is sent automatically: the other device can paste it right away.") }
+                } footer: { Text("Every copy made in this app is sent automatically: the other device can paste it right away.") } }
 
                 Section("Copy something") {
                     TextField("Type here, select, Copy", text: $scratch, axis: .vertical).lineLimit(3...6)

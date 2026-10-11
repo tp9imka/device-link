@@ -36,11 +36,18 @@ final class LinkModel: ObservableObject {
                 for await event in await client.events() { await self?.handle(event) }
             }
             Task { await refresh() }
+        } catch let error as KeysLostError {
+            // Linked devices pinned the old keys; a new one would make everything they send undecryptable.
+            keysLost = error
         } catch {
             // Keychain items survive a reinstall, so reset (it works without a client) is the way out.
             message = "DeviceLink could not read its device keys. Restart the app; if this repeats, open Diagnostics (ⓘ) and reset this device."
         }
     }
+
+    /// Set when the keys were missing or unreadable at launch while devices are linked (for example after
+    /// restoring a backup to a new iPhone). There is no client then; Reset is the way out.
+    @Published private(set) var keysLost: KeysLostError?
 
     func refresh() async {
         guard let client else { return }
@@ -192,17 +199,24 @@ final class LinkModel: ObservableObject {
 
     /// Plain-text report for bug reports. Contains no clipboard content or device names.
     var diagnosticsReport: String {
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
+        if let keysLost {
+            return """
+            DeviceLink \(version) on iOS \(UIDevice.current.systemVersion), \(LinkEnvironment.model)
+            Keys: LOST (\(keysLost.summary)); reset and link again
+            """
+        }
         guard let d = diagnostics else { return "No diagnostics yet" }
         func at(_ time: Int64?) -> String {
             time.map { DateFormatter.localizedString(from: Date(timeIntervalSince1970: TimeInterval($0) / 1000), dateStyle: .short, timeStyle: .medium) } ?? "never"
         }
-        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
         // Leaving the app cancels the open long poll; URLSession reports that as URLError.cancelled
         // (-999), which the SDK records. A cancelled request is not an error.
         let lastError = d.lastError == "network: \(URLError.Code.cancelled.rawValue)" ? nil : d.lastError
         return """
         DeviceLink \(version) on iOS \(UIDevice.current.systemVersion), \(LinkEnvironment.model)
         Device ID: \(d.deviceId.prefix(16))…
+        Keys: ok
         Relay: \(d.relayURL.isEmpty ? "not configured" : d.relayURL) · registered: \(d.registered)
         Linked devices: \(d.peers) · status: \(status.rawValue)
         Last poll: \(at(d.lastPollAt)) · last receive: \(at(d.lastReceiveAt)) · last send: \(at(d.lastSendAt))
@@ -233,11 +247,12 @@ final class LinkModel: ObservableObject {
             if let client { removed = await Self.unregister(client, within: Self.resetUnregisterTimeout) }
             clips.clear()
             Keychain.delete("identity.se"); Keychain.delete("identity.sw"); Keychain.delete("encryption.x25519")
-            try? FileManager.default.removeItem(at: LinkEnvironment.container.appendingPathComponent("DeviceLink/links.json"))
+            try? FileManager.default.removeItem(at: LinkEnvironment.linksURL)
             sendTargets = []
             do {
                 let fresh = try LinkEnvironment.replaceClient()
                 self.client = fresh
+                keysLost = nil
                 events?.cancel()
                 events = Task { [weak self] in for await event in await fresh.events() { await self?.handle(event) } }
                 await refresh()

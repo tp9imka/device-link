@@ -24,6 +24,8 @@ struct GetLatestClipIntent: AppIntent {
             let client = try LinkEnvironment.client()
             if await client.peers.isEmpty { return .result(value: "", dialog: "\(SendMessages.notLinked)") }
             result = try await drainWaiting(client, into: box)
+        } catch is KeysLostError {
+            return .result(value: "", dialog: "\(KeysLostError.message)")
         } catch {
             return .result(value: "", dialog: "\(SendMessages.describe(error))")
         }
@@ -76,6 +78,8 @@ struct SendTextIntent: AppIntent {
         do {
             client = try LinkEnvironment.client()
             outcomes = try await client.send(.text(text))
+        } catch is KeysLostError {
+            return .result(dialog: "\(KeysLostError.message)")
         } catch {
             return .result(dialog: "\(SendMessages.describe(error))")
         }

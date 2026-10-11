@@ -21,12 +21,16 @@ enum Keychain {
         return query
     }
 
-    static func read(_ account: String) -> Data? {
+    /// Tells "no such item" apart from "could not read it" (for example before the first unlock).
+    static func read(_ account: String) -> StoredKey {
         var query = query(account)
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
         var result: AnyObject?
-        return SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess ? result as? Data : nil
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        if status == errSecItemNotFound { return .missing }
+        guard status == errSecSuccess, let data = result as? Data else { return .unreadable }
+        return .found(data)
     }
 
     static func delete(_ account: String) { SecItemDelete(query(account) as CFDictionary) }
@@ -39,6 +43,67 @@ enum Keychain {
         SecItemDelete(query(account) as CFDictionary)
         let status = SecItemAdd(item as CFDictionary, nil)
         guard status == errSecSuccess else { throw DeviceLinkError.invalid("keychain \(status)") }
+    }
+}
+
+/// One keychain read: the bytes, no such item, or a failure to read (locked, access denied).
+enum StoredKey: Equatable {
+    case found(Data)
+    case missing
+    case unreadable
+}
+
+/// This device's keys are missing or unreadable. Linked peers pinned the old ones, so nothing new is
+/// made: the user resets and links again. The message is user-facing; nothing in it is secret.
+struct KeysLostError: Error, Equatable {
+    enum Key: String { case identity = "device identity", encryption = "encryption key" }
+    enum Reason: String { case missing, unreadable }
+    let key: Key
+    let reason: Reason
+
+    static let message = "This device's keys could not be read. Reset and link again."
+    /// For the diagnostics report.
+    var summary: String { "\(key.rawValue) \(reason.rawValue)" }
+}
+
+/// When a stored key may be replaced. Peers pin this device's identity and encryption key at linking,
+/// so a fresh key while links exist would leave both sides showing "Linked" while every item fails to
+/// decrypt or verify. A fresh key is only made on a device without links; an item that exists but could
+/// not be read is never overwritten (a locked keychain recovers by itself).
+enum KeyPolicy {
+    /// What the stored key turned out to be.
+    enum Read: Equatable { case readable, missing, corrupt, unreadable }
+    enum Outcome: Equatable { case use, create, lost(KeysLostError.Reason) }
+
+    static func decide(_ read: Read, hasLinks: Bool) -> Outcome {
+        switch read {
+        case .readable: return .use
+        case .missing: return hasLinks ? .lost(.missing) : .create
+        case .corrupt: return hasLinks ? .lost(.unreadable) : .create
+        case .unreadable: return .lost(.unreadable)
+        }
+    }
+
+    /// Reads `account`, decodes it, or creates and stores a new key when `decide` allows it.
+    static func load<Key>(_ account: String, as key: KeysLostError.Key, hasLinks: Bool,
+                          decode: (Data) throws -> Key, create: () throws -> (Key, Data)) throws -> Key {
+        let read: Read
+        var decoded: Key?
+        switch Keychain.read(account) {
+        case .found(let data):
+            decoded = try? decode(data)
+            read = decoded == nil ? .corrupt : .readable
+        case .missing: read = .missing
+        case .unreadable: read = .unreadable
+        }
+        switch decide(read, hasLinks: hasLinks) {
+        case .use: return decoded!
+        case .create:
+            let (made, data) = try create()
+            try Keychain.write(account, data)
+            return made
+        case .lost(let reason): throw KeysLostError(key: key, reason: reason)
+        }
     }
 }
 
@@ -76,25 +141,33 @@ enum LinkEnvironment {
         }
     }
 
-    static func identity() throws -> DeviceIdentity {
-        if SecureEnclave.isAvailable {
-            if let blob = Keychain.read("identity.se") { return SecureEnclaveIdentity(key: try SecureEnclave.P256.Signing.PrivateKey(dataRepresentation: blob)) }
-            let key = try SecureEnclave.P256.Signing.PrivateKey()
-            try Keychain.write("identity.se", key.dataRepresentation)
-            return SecureEnclaveIdentity(key: key)
-        }
-        // Simulator: software key in the keychain.
-        if let raw = Keychain.read("identity.sw") { return try SoftwareIdentity(rawRepresentation: raw) }
-        let identity = SoftwareIdentity()
-        try Keychain.write("identity.sw", identity.privateKey.rawRepresentation)
-        return identity
+    static var linksURL: URL { container.appendingPathComponent("DeviceLink/links.json") }
+
+    /// True when devices are linked, or when the link file exists but cannot be read (data protection
+    /// before the first unlock): then nobody can tell, so no key may be replaced.
+    static func hasLinks() -> Bool {
+        let url = linksURL
+        guard FileManager.default.fileExists(atPath: url.path) else { return false }
+        guard (try? Data(contentsOf: url)) != nil else { return true }
+        return !FileLinkStore(url: url).load().peers.isEmpty
     }
 
-    static func encryptionKey() throws -> EncryptionKeyPair {
-        if let raw = Keychain.read("encryption.x25519") { return try EncryptionKeyPair(rawRepresentation: raw) }
-        let pair = EncryptionKeyPair()
-        try Keychain.write("encryption.x25519", pair.privateKey.rawRepresentation)
-        return pair
+    static func identity(hasLinks: Bool) throws -> DeviceIdentity {
+        if SecureEnclave.isAvailable {
+            return try KeyPolicy.load("identity.se", as: .identity, hasLinks: hasLinks,
+                                      decode: { SecureEnclaveIdentity(key: try SecureEnclave.P256.Signing.PrivateKey(dataRepresentation: $0)) },
+                                      create: { let key = try SecureEnclave.P256.Signing.PrivateKey(); return (SecureEnclaveIdentity(key: key), key.dataRepresentation) })
+        }
+        // Simulator: software key in the keychain.
+        return try KeyPolicy.load("identity.sw", as: .identity, hasLinks: hasLinks,
+                                  decode: { try SoftwareIdentity(rawRepresentation: $0) },
+                                  create: { let identity = SoftwareIdentity(); return (identity, identity.privateKey.rawRepresentation) })
+    }
+
+    static func encryptionKey(hasLinks: Bool) throws -> EncryptionKeyPair {
+        try KeyPolicy.load("encryption.x25519", as: .encryption, hasLinks: hasLinks,
+                           decode: { try EncryptionKeyPair(rawRepresentation: $0) },
+                           create: { let pair = EncryptionKeyPair(); return (pair, pair.privateKey.rawRepresentation) })
     }
 
     @MainActor static var deviceName: String {
@@ -126,9 +199,10 @@ enum LinkEnvironment {
         let insecure = info("DLRelayScheme") == "http"
         #endif
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
+        let linked = hasLinks()
         return try DeviceLinkClient(
-            identity: identity(), encryption: encryptionKey(),
-            store: FileLinkStore(url: container.appendingPathComponent("DeviceLink/links.json")),
+            identity: identity(hasLinks: linked), encryption: encryptionKey(hasLinks: linked),
+            store: FileLinkStore(url: linksURL),
             config: LinkConfig(deviceName: deviceName, platform: "ios", model: model, appVersion: version,
                                allowInsecureRelay: insecure, defaultRelayURL: defaultRelayURL,
                                defaultEnrollmentToken: info("DLEnrollmentToken")))
