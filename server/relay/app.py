@@ -194,7 +194,7 @@ def create_app(settings=None, clock=None, push_transport=None):
                 raise RelayError(413, "body_too_large")
             body.extend(chunk)
 
-    async def signed(request, registration=False):
+    async def signed(request, registration=False, unknown_ok=False):
         maximum = settings.body_limit if request.method == "POST" and request.url.path == "/v1/messages" else 32 * 1024
         declared = request.headers.get("content-length", "")
         expected = int(declared) if declared.isdigit() else maximum
@@ -221,7 +221,7 @@ def create_app(settings=None, clock=None, push_transport=None):
                               and await run_in_threadpool(store.admit_pairing, pairing[0], identity.id, now))
                 if not (token_ok or pairing_ok):
                     raise RelayError(403, "enrollment_required")
-            await run_in_threadpool(store.authorize, identity, now, registration)
+            await run_in_threadpool(store.authorize, identity, now, registration or unknown_ok)
             return identity, body
 
     def empty_body(body):
@@ -278,6 +278,15 @@ def create_app(settings=None, clock=None, push_transport=None):
         if not identifier(sender):
             raise RelayError(400, "invalid_peer")
         await run_in_threadpool(store.peer, identity.id, sender, clock(), True)
+        return Response(status_code=204)
+
+    @app.delete("/v1/devices/self")
+    async def unregister(request: Request):
+        # Idempotent: an identity the relay does not know (already unregistered or removed, a retry after a
+        # lost response) also gets 204, since it has nothing left here. A blocked device gets 403 device_blocked.
+        identity, _ = await signed(request, unknown_ok=True)
+        await run_in_threadpool(store.remove_device, identity.id, clock(), "device_unregistered")
+        await notify()
         return Response(status_code=204)
 
     @app.post("/v1/pairings")

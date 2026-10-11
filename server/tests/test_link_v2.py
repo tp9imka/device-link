@@ -453,3 +453,61 @@ def test_backup_is_consistent_and_prunes(tmp_path, monkeypatch):
     with sqlite3.connect(copies[-1]) as db:
         assert db.execute("SELECT id FROM devices").fetchone()[0] == device.id
     assert oct(copies[-1].stat().st_mode & 0o777) == "0o600"
+
+
+
+PUSH = {"provider": "apns", "token": "ab" * 32, "environment": "sandbox", "topic": "dev.devicelink.app"}
+
+
+def test_device_unregister_erases_it_like_an_admin_removal(relay):
+    _, now, client = relay
+    phone, laptop, tablet, stranger = Device(), Device(), Device(), Device()
+    for device in (phone, laptop, tablet):
+        register(client, device, now[0])
+    for recipient, sender in ((phone, laptop), (laptop, phone), (laptop, tablet), (tablet, laptop)):
+        assert request(client, recipient, now[0], "PUT", f"/v1/peers/{sender.id}", {}).status_code == 204
+    assert request(client, phone, now[0], "PUT", "/v1/push", PUSH).status_code == 204
+    assert request(client, laptop, now[0], "POST", "/v1/messages", envelope(laptop, phone, now[0], version=2)).status_code == 201
+    assert request(client, phone, now[0], "POST", "/v1/messages", envelope(phone, laptop, now[0], version=2)).status_code == 201
+    create(client, phone, now[0], pid=pairing_id(1))
+    create(client, laptop, now[0], pid=pairing_id(2))
+    assert request(client, phone, now[0], "POST", f"/v1/pairings/{pairing_id(2)}/join", {"sealed": SEALED}).status_code == 204
+
+    assert request(client, phone, now[0], "DELETE", "/v1/devices/self").status_code == 204
+
+    # The identity is now unknown to the relay, exactly like one that never registered.
+    unknown = request(client, stranger, now[0], "GET", "/v1/messages")
+    gone = request(client, phone, now[0], "GET", "/v1/messages")
+    assert (gone.status_code, gone.json()) == (unknown.status_code, unknown.json()) == (403, {"error": "registration_required"})
+    # A former peer gets the same answer as when sending to a device the admin removed.
+    login(client)
+    assert client.delete(f"/admin/api/devices/{tablet.id}", headers={"X-CSRF-Token": csrf(client)}).status_code == 200
+    to_removed = request(client, laptop, now[0], "POST", "/v1/messages", envelope(laptop, tablet, now[0], version=2))
+    to_unregistered = request(client, laptop, now[0], "POST", "/v1/messages", envelope(laptop, phone, now[0], version=2))
+    assert (to_unregistered.status_code, to_unregistered.json()) == (to_removed.status_code, to_removed.json()) == \
+        (403, {"error": "recipient_not_authorized"})
+    # Its items, allowances, pairings and push token went with it.
+    assert request(client, laptop, now[0], "GET", "/v1/messages").json() == []
+    assert client.app.state.store.push_target(phone.id) is None
+    assert request(client, laptop, now[0], "GET", f"/v1/pairings/{pairing_id(2)}").status_code == 404
+    assert client.get("/admin/api/pairings").json() == []
+    devices = {item["id"]: item for item in client.get("/admin/api/devices").json()}
+    assert set(devices) == {laptop.id} and devices[laptop.id]["allows"] == []
+    kinds = {(event["kind"], event["device"]) for event in client.get("/admin/api/events").json()}
+    assert ("device_unregistered", phone.id) in kinds and ("device_removed", tablet.id) in kinds
+    assert ("device_removed", phone.id) not in kinds
+
+    # A retry after a lost response is still a success; registering again starts from nothing.
+    assert request(client, phone, now[0], "DELETE", "/v1/devices/self").status_code == 204
+    register(client, phone, now[0])
+    assert request(client, laptop, now[0], "POST", "/v1/messages", envelope(laptop, phone, now[0], version=2)).status_code == 403
+
+
+def test_blocked_device_cannot_unregister_itself(relay):
+    _, now, client = relay
+    device = Device()
+    register(client, device, now[0])
+    login(client)
+    client.post(f"/admin/api/devices/{device.id}/block", json={"blocked": True}, headers={"X-CSRF-Token": csrf(client)})
+    assert request(client, device, now[0], "DELETE", "/v1/devices/self").status_code == 403
+    assert {item["id"] for item in client.get("/admin/api/devices").json()} == {device.id}

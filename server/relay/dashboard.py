@@ -158,7 +158,7 @@ const views = {
     const [e, d, p] = await Promise.all([api('events?limit=300'), api('devices'), api('pairings')]); devices = Object.fromEntries(d.map(x => [x.id, x]));
     const labels = { sent: 'uploaded item', delivered: 'delivered', expired: 'expired unread', registered: 'registered', linked: 'linked by QR',
       unlinked: 'unlinked', pairing_created: 'showed pairing QR', pairing_expired: 'pairing QR expired', device_blocked: 'blocked by admin',
-      device_unblocked: 'unblocked by admin', device_removed: 'removed by admin', link_removed: 'link removed by admin', purged: 'item purged by admin', admin_login: 'admin signed in' };
+      device_unblocked: 'unblocked by admin', device_removed: 'removed by admin', device_unregistered: 'unregistered itself (reset)', link_removed: 'link removed by admin', purged: 'item purged by admin', admin_login: 'admin signed in' };
     root.replaceChildren(
       el('h2', {}, 'Open pairing codes'),
       p.length ? el('div', { class: 'card table' }, el('table', {}, el('tbody', {}, p.map(x => el('tr', {}, el('td', {}, who(x.creator)), el('td', {}, x.state),

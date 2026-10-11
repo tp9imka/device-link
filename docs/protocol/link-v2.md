@@ -209,11 +209,22 @@ Request signing is unchanged from v1 (`X-Device-Key`, `X-Device-Time`,
 | `POST /v1/pairings/{id}/confirm` | Creator submits sealed bundle, link recorded |
 | `DELETE /v1/pairings/{id}` | Cancel |
 | `PUT/DELETE /v1/peers/{id}` | Directional allowlist (recipient-owned) |
+| `DELETE /v1/devices/self` | Unregister the caller (see below); `204` |
 | `POST /v1/messages` | Upload envelope (version 1 or 2) |
 | `GET /v1/messages?wait=0..50&limit=1..20&exclude=…` | Long-poll mailbox |
 | `GET /v1/messages/{id}` | Recipient fetches one waiting envelope (notification previews); does not acknowledge |
 | `DELETE /v1/messages/{id}` | Acknowledge |
 | `PUT /v1/push` / `DELETE /v1/push` | Register / remove an APNs device token (`{"provider":"apns","token":"<hex>","environment":"sandbox"\|"production","topic":"<bundle id>"}`) |
+
+`DELETE /v1/devices/self` is a signed request with an empty body, like `DELETE /v1/peers/{id}`. In one
+transaction the relay deletes the caller's device record (with its push token), every allowlist entry
+where it is recipient or sender, every waiting envelope to or from it, and every pairing it created or
+joined; it records a `device_unregistered` event (the admin "remove device" action has the same effect and
+records `device_removed`). Response `204`, also when the identity is not registered (already unregistered,
+or a retry after a lost response). A blocked device gets `403 device_blocked`. Afterwards the identity's
+other signed calls get `403 registration_required` like any unknown device, and a former peer's upload to
+it gets `403 recipient_not_authorized`. Registering the same key again starts with no links. Apps call it
+when the user resets the device, then delete their keys whatever the result.
 
 When APNs is configured, the relay sends an alert push without content
 (`"New item from a linked device"`, `mutable-content: 1`, category `DEVICELINK_ITEM`,

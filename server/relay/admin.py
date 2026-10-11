@@ -432,13 +432,8 @@ def _update_device(store, device, column, value):
 
 
 def _remove_device(store, device, now):
-    with store.transaction() as db:
-        if not db.execute("DELETE FROM devices WHERE id=?", (device,)).rowcount:
-            raise RelayError(404, "device_not_found")
-        db.execute("DELETE FROM peers WHERE recipient=? OR sender=?", (device, device))
-        db.execute("DELETE FROM messages WHERE recipient=? OR sender=?", (device, device))
-        db.execute("DELETE FROM pairings WHERE creator=? OR joiner=?", (device, device))
-        store.event(db, now, "device_removed", device)
+    if not store.remove_device(device, now, "device_removed"):
+        raise RelayError(404, "device_not_found")
 
 
 def _remove_message(store, message, now):

@@ -142,6 +142,22 @@ class Store:
             db.execute("UPDATE devices SET platform=?, model=?, app_version=?, last_seen=? WHERE id=?",
                        (metadata.get("platform", ""), metadata.get("model", ""), metadata.get("appVersion", ""), now, identity.id))
 
+    def remove_device(self, device, now, kind):
+        """Deletes a device and everything that names it, in one transaction.
+
+        Used by the admin "remove device" action (kind "device_removed") and by the device itself
+        (DELETE /v1/devices/self, kind "device_unregistered"). Returns False when it was not registered.
+        The device row carries its push token; dedupe tombstones name no device and expire on their own.
+        """
+        with self.transaction() as db:
+            if not db.execute("DELETE FROM devices WHERE id=?", (device,)).rowcount:
+                return False
+            db.execute("DELETE FROM peers WHERE recipient=? OR sender=?", (device, device))
+            db.execute("DELETE FROM messages WHERE recipient=? OR sender=?", (device, device))
+            db.execute("DELETE FROM pairings WHERE creator=? OR joiner=?", (device, device))
+            self.event(db, now, kind, device)
+            return True
+
     # ----- allowlists and links ----------------------------------------------------------------
 
     def peer(self, recipient, sender, now=0, remove=False):
