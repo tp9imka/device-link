@@ -217,7 +217,7 @@ targets:
     # Unit tests for app logic in Shared/ that does not need UIKit (see the DeviceLinkMac scheme).
     type: bundle.unit-test
     platform: macOS
-    sources: [Tools/AppTests, Shared/CopyFilter.swift, Shared/SendMessages.swift]
+    sources: [Tools/AppTests, Shared/CopyFilter.swift, Shared/SendMessages.swift, Shared/ReceivedFiles.swift]
     dependencies:
       - package: DeviceLinkKit
         product: DeviceLinkKit

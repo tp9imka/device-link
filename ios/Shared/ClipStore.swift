@@ -49,7 +49,10 @@ final class ClipStore: ObservableObject {
     private nonisolated let url = LinkEnvironment.container.appendingPathComponent("DeviceLink/history.json")
     @Published private(set) var records: [ClipRecord] = []
 
-    init() { reload() }
+    init() {
+        reload()
+        ReceivedFiles.prune(in: Self.filesDirectory)
+    }
 
     func reload() {
         let cutoff = Date().addingTimeInterval(-24 * 3600)
@@ -80,6 +83,7 @@ final class ClipStore: ObservableObject {
             try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             try? data.write(to: directory.appendingPathComponent(name), options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
             record.fileName = name
+            ReceivedFiles.prune(in: Self.filesDirectory)
         }
         let copied = autoCopy && !item.stale && Pasteboard.write(record)
         record.state = copied ? .copied : .shareNeeded
