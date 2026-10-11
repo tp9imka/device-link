@@ -14,6 +14,8 @@ token="interop-$(date +%s)"
 if [ -z "${PYTHON:-}" ]; then
   if [ -x "$root/server/.venv/bin/python" ]; then PYTHON="$root/server/.venv/bin/python"; else PYTHON=python3; fi
 fi
+# A relative interpreter path must survive the cd into server/ below.
+case "$PYTHON" in /*|"${PYTHON##*/}") ;; *) PYTHON="$PWD/$PYTHON" ;; esac
 SWIFT_CLI="${SWIFT_CLI:-swift run --package-path $root/ios/DeviceLinkKit devicelink}"
 KOTLIN_TEST="${KOTLIN_TEST:-$root/gradlew -p $root :sdk:core:test --tests dev.devicelink.sdk.core.InteropPeerTest --no-daemon -q}"
 fail() { echo "FAILED: $*"; for f in received.jsonl kotlin.log relay.log; do [ -f "$work/$f" ] && { echo "--- $f"; tail -40 "$work/$f"; }; done; exit 1; }
