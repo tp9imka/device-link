@@ -101,7 +101,8 @@ class Runtime:
         self.started = time.time()
         # Identity -> token of its one live long poll.
         self.polling = {}
-        self.counters = {"auth_failures": 0, "rate_limited": 0, "requests": 0, "push_sent": 0, "push_failed": 0}
+        self.counters = {"auth_failures": 0, "rate_limited": 0, "body_timeouts": 0, "body_too_large": 0,
+                         "requests": 0, "push_sent": 0, "push_failed": 0}
         # Monotonic times of recent rejections, for dashboard alerts (bounded).
         self.rejections = collections.deque(maxlen=1000)
 
@@ -159,6 +160,11 @@ def create_app(settings=None, clock=None, push_transport=None):
         if exc.status == 429:
             runtime.counters["rate_limited"] += 1
             runtime.rejections.append(time.monotonic())
+        # Failed uploads: counts only, no device or size, so the operator sees cut-off transfers.
+        if exc.code == "body_timeout":
+            runtime.counters["body_timeouts"] += 1
+        if exc.code == "body_too_large":
+            runtime.counters["body_too_large"] += 1
         return JSONResponse({"error": exc.code}, status_code=exc.status,
                             headers={"Retry-After": "60"} if exc.status == 429 else None)
 

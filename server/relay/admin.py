@@ -371,6 +371,9 @@ def alerts(overview, settings, rejections):
     if counters.get("push_failed", 0) >= 5 and counters.get("push_failed", 0) > counters.get("push_sent", 0):
         result.append({"level": "warn", "code": "push_failing",
                        "message": "Most APNs wake-ups since start failed; check the APNs key, team and topic."})
+    if counters.get("body_timeouts", 0) >= 3:
+        result.append({"level": "warn", "code": "uploads_timing_out",
+                       "message": f"{counters['body_timeouts']} uploads timed out since start; on slow links lower body_min_rate."})
     if overview["config"]["enrollment"] == "open":
         result.append({"level": "warn", "code": "open_enrollment",
                        "message": "No enrollment token is set: any device can register on this relay."})

@@ -129,3 +129,29 @@ def test_declared_body_over_the_limit_is_refused_before_reading(tmp_path):
     status, elapsed = post(app, sender, upload_body(sender, recipient), lambda body: chunks(body, 1_000, 0.2))
     assert status == 413
     assert elapsed < 0.2
+
+
+
+def test_cut_off_and_oversized_uploads_are_counted_for_the_operator(tmp_path):
+    from fastapi.testclient import TestClient
+
+    from relay.admin import hash_password
+    from test_link_v2 import login
+
+    settings = Settings(database=tmp_path / "relay.sqlite3", admin_password_hash=hash_password("correct horse", iterations=1000),
+                        **LIMITS)
+    app, sender, recipient = linked_relay(settings)
+    for _ in range(3):
+        assert post(app, sender, upload_body(sender, recipient), lambda body: chunks(body, 1_000, 0.02, stop_after=2, stall=5.0))[0] == 408
+    oversized = encoded(envelope(sender, recipient, NOW, ciphertext=base64.b64encode(b"x" * 30 * 1024 * 1024).decode()))
+    assert post(app, sender, oversized, lambda body: [(0, body), (0, b"")])[0] == 413
+    with TestClient(app) as client:
+        login(client)
+        overview = client.get("/admin/api/overview").json()
+        assert overview["runtime"]["counters"]["body_timeouts"] == 3
+        assert overview["runtime"]["counters"]["body_too_large"] == 1
+        assert "uploads_timing_out" in {alert["code"] for alert in overview["alerts"]}
+        metrics = client.get("/admin/api/metrics").text
+        assert "devicelink_body_timeouts_total 3" in metrics
+        # Counts only: no device identifier reaches the counters or the metrics.
+        assert sender.id not in metrics and sender.id[:12] not in metrics

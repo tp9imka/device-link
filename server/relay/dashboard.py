@@ -104,7 +104,7 @@ const views = {
         el('div', { class: 'card' }, el('div', { class: 'muted' }, 'Sandbox storage'), el('div', { class: 'bar', style: 'margin:10px 0' }, el('i', { style: `width:${Math.min(100, used * 100).toFixed(1)}%` })),
           `${bytes(o.sandbox.bytes)} of ${bytes(o.sandbox.capacityBytes)} · items expire after ${dur(o.sandbox.maxLifetimeSeconds)}`),
         el('div', { class: 'card' }, el('div', { class: 'muted' }, 'Since start'),
-          `${o.runtime.counters.requests} requests · ${o.runtime.counters.auth_failures} auth failures · ${o.runtime.counters.rate_limited} rate limited · push ${o.runtime.counters.push_sent} sent / ${o.runtime.counters.push_failed} failed`),
+          `${o.runtime.counters.requests} requests · ${o.runtime.counters.auth_failures} auth failures · ${o.runtime.counters.rate_limited} rate limited · ${o.runtime.counters.body_timeouts} upload timeouts · ${o.runtime.counters.body_too_large} uploads too large · push ${o.runtime.counters.push_sent} sent / ${o.runtime.counters.push_failed} failed`),
         el('div', { class: 'card' }, el('div', { class: 'muted' }, 'Policy'),
           `Enrollment: ${o.config.enrollment} · Push: ${o.config.push ? 'APNs on' : 'off'} · ${o.config.mailboxCount} items / ${bytes(o.config.mailboxBytes)} per mailbox`),
         el('div', { class: 'card' }, el('div', { class: 'muted' }, 'Export (metadata only)'),
