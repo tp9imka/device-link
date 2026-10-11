@@ -37,8 +37,9 @@ class InteropPeerTest {
         withTimeout(60_000) { while (texts.isEmpty()) android.receiveOnce(5) { texts += it.text!!; ReceiptStatus.COPIED } }
         assertEquals("hello from swift", texts.single())
 
+        // `devicelink receive` without --copy only prints items, so it answers "delivered", never "copied".
         val receipts = async(start = CoroutineStart.UNDISPATCHED) {
-            android.events.filterIsInstance<LinkEvent.Receipt>().first { it.status == ReceiptStatus.COPIED }
+            android.events.filterIsInstance<LinkEvent.Receipt>().first { it.status == ReceiptStatus.DELIVERED }
         }
         android.send(OutgoingContent.Text("hello from kotlin ✓"))
         val image = ByteArray(150_000) { (it * 7).toByte() }

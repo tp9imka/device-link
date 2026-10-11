@@ -11,6 +11,7 @@ struct Options {
     var timeout: Double = 60
     var count = 1
     var copy = false
+    var printURI = false
     var arguments: [String] = []
 }
 
@@ -25,6 +26,7 @@ func parseOptions() -> Options {
         case "--timeout": options.timeout = Double(iterator.next() ?? "") ?? options.timeout
         case "--count": options.count = Int(iterator.next() ?? "") ?? options.count
         case "--copy": options.copy = true
+        case "--print-uri": options.printURI = true
         default: options.arguments.append(argument)
         }
     }
@@ -58,7 +60,9 @@ func makeClient(_ options: Options) throws -> DeviceLinkClient {
                                                    allowInsecureRelay: options.insecure, pollWaitSeconds: 10))
 }
 
-func writeClipboard(_ text: String) {
+/// Writes text to the desktop clipboard; true when the clipboard tool accepted it.
+@discardableResult
+func writeClipboard(_ text: String) -> Bool {
     #if os(macOS)
     let candidates = [["/usr/bin/pbcopy"]]
     #else
@@ -74,8 +78,9 @@ func writeClipboard(_ text: String) {
         pipe.fileHandleForWriting.write(Data(text.utf8))
         try? pipe.fileHandleForWriting.close()
         process.waitUntilExit()
-        return
+        return process.terminationStatus == 0
     }
+    return false
 }
 
 /// Reads the desktop clipboard as text (pbpaste / wl-paste / xclip). Desktops allow this at any time.
@@ -124,13 +129,22 @@ func withTimeout<T: Sendable>(_ seconds: Double, _ body: @escaping @Sendable () 
     }
 }
 
+/// `code` is the 6-digit confirmation code both screens show after linking; the user compares them.
+func linkedEvent(_ peer: LinkedPeer) -> [String: Any] {
+    ["event": "linked", "peer": peer.id, "name": peer.name, "platform": peer.platform, "code": peer.pairingCode ?? NSNull()]
+}
+
 let usage = """
 usage: devicelink [--state DIR] [--insecure] [--name NAME] <command>
   setup <setup-link | relay-url [token]>   configure the relay
-  invite                                   print a pairing link (show it as a QR) and wait for the other device
+  invite [--print-uri]                     create a pairing link and wait for the other device. The link holds a
+                                           one-time secret: it is written to DIR/pairing-link.txt (0600, deleted
+                                           when invite ends); --print-uri prints it to stdout instead
+                                           Linked devices print the 6-digit code; check it matches the other screen
   join <pairing-link>                      link with the device that shows the code
   send <text> | send-file <path>           send to all linked devices
-  receive [--count N] [--timeout S]        print received items as JSON lines
+  receive [--count N] [--timeout S] [--copy]  print received items as JSON lines; --copy writes text to the
+                                           clipboard (receipt "copied"; otherwise "delivered")
   watch [--copy]                           receive until interrupted; --copy writes text to the clipboard
   sync                                     two-way clipboard: received text is copied, local copies are sent
   peers | unlink <device-id> | id
@@ -154,14 +168,28 @@ do {
         print("Relay configured: \(await client.relayURL)")
     case "invite":
         let session = try await client.invite()
-        print(session.uri)
-        fflush(stdout)
-        let peer = try await client.awaitPeer(session)
-        emit(["event": "linked", "peer": peer.id, "name": peer.name, "platform": peer.platform])
+        if options.printURI {
+            print(session.uri)
+            fflush(stdout)
+            let peer = try await client.awaitPeer(session)
+            emit(linkedEvent(peer))
+        } else {
+            // The link carries the pairing secret: keep it out of stdout, logs and scrollback unless asked.
+            let file = options.stateDirectory.appendingPathComponent("pairing-link.txt")
+            try? FileManager.default.removeItem(at: file)
+            guard FileManager.default.createFile(atPath: file.path, contents: Data((session.uri + "\n").utf8),
+                                                 attributes: [.posixPermissions: 0o600]) else {
+                throw DeviceLinkError.invalid("cannot write the pairing link file")
+            }
+            defer { try? FileManager.default.removeItem(at: file) }
+            FileHandle.standardError.write(Data("Pairing link written to \(file.path) (valid 5 minutes, single use). Show it as a QR code or open it on the other device; --print-uri prints it here instead.\n".utf8))
+            let peer = try await client.awaitPeer(session)
+            emit(linkedEvent(peer))
+        }
     case "join":
         guard let link = rest.first else { print(usage); exit(2) }
         let peer = try await withTimeout(options.timeout) { try await client.join(link) }
-        emit(["event": "linked", "peer": peer.id, "name": peer.name, "platform": peer.platform])
+        emit(linkedEvent(peer))
     case "send", "send-file":
         guard let value = rest.first else { print(usage); exit(2) }
         let content: OutgoingContent
@@ -186,9 +214,9 @@ do {
             await client.runReceiver { item in
                 if let text = item.text, !item.stale {
                     memory.set(text)
-                    writeClipboard(text)
+                    let copied = writeClipboard(text)
                     emit(["event": "received", "from": item.peer.name, "kind": item.kind.rawValue])
-                    return .copied
+                    return copied ? .copied : .delivered
                 }
                 emit(["event": "received", "from": item.peer.name, "kind": item.kind.rawValue, "name": item.fileName ?? ""])
                 return .delivered
@@ -211,11 +239,16 @@ do {
         while received < limit && Date() < deadline {
             received += try await client.receiveOnce(wait: 10) { item in
                 var line: [String: Any] = ["event": "received", "kind": item.kind.rawValue, "from": item.peer.id, "stale": item.stale]
-                if let text = item.text { line["text"] = text; if copy && !item.stale { writeClipboard(text) } }
+                // "copied" only when the text really went to the clipboard; printed or stored is "delivered".
+                var status = ReceiptStatus.delivered
+                if let text = item.text {
+                    line["text"] = text
+                    if copy && !item.stale && writeClipboard(text) { status = .copied }
+                }
                 if let bytes = item.bytes() { line["name"] = item.fileName ?? ""; line["mime"] = item.mime; line["size"] = bytes.count
                     line["sha256"] = Encoding.hex(Encoding.sha256(bytes)) }
                 emit(line)
-                return item.kind == .text && copy ? .copied : (item.kind == .file ? .delivered : .copied)
+                return status
             }
         }
         if received < limit && command == "receive" { emit(["event": "timeout", "received": received]); exit(1) }

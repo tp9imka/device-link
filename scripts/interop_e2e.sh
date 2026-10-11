@@ -33,7 +33,8 @@ for _ in $(seq 600); do [ -s "$work/invite.txt" ] && break; sleep 0.5; done
 
 cli() { $SWIFT_CLI --state "$work/swift" --insecure --name "Swift CLI" "$@"; }
 echo "Swift joins the Kotlin code (no setup, no token)"
-cli join "$(cat "$work/invite.txt")" --timeout 90
+cli join "$(cat "$work/invite.txt")" --timeout 90 > "$work/join.jsonl" || fail "Swift could not join"
+grep -Eq '"code":"[0-9]{6}"' "$work/join.jsonl" || fail "join printed no confirmation code"
 cli send "hello from swift"
 cli receive --count 2 --timeout 90 > "$work/received.jsonl" || fail "Swift did not receive two items"
 grep -q '"text":"hello from kotlin ✓"' "$work/received.jsonl" || fail "text mismatch"
@@ -41,7 +42,7 @@ grep -q "\"sha256\":\"$(cat "$work/image.sha256")\"" "$work/received.jsonl" || f
 for _ in $(seq 120); do [ -f "$work/phase1.done" ] && break; sleep 0.5; done
 
 echo "Kotlin joins the Swift code"
-cli invite > "$work/swift-invite.txt" &
+cli invite --print-uri > "$work/swift-invite.txt" &
 invite_pid=$!
 wait "$invite_pid"
 cli receive --count 1 --timeout 60 > "$work/received.jsonl" || fail "Swift did not receive from the second device"
