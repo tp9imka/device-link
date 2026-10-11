@@ -176,13 +176,15 @@ Flow:
    A pairing accepts exactly one joiner.
 3. Inviter long-polls `GET /v1/pairings/{id}?wait=25`, opens the joiner bundle,
    verifies its signature and that its ID equals the authenticated `joinerId`,
-   allows it (`PUT /v1/peers/{joiner}`) and confirms:
+   allows it (`PUT /v1/peers/{joiner}`, idempotent; a transient failure is retried on the same schedule as
+   the confirm below, anything else fails at once) and confirms:
    `POST /v1/pairings/{id}/confirm {"sealed": Base64(seal(confirmKey, "confirm", inviterBundle))}`.
    It pins and shows the link only after the confirm succeeded. The inviter seals the confirm once and
    resends that same body: the relay answers a repeated confirm by the same creator with the same
    `sealed` with `204` (a different one gets `409 pairing_not_joined`). If the confirm fails, it re-reads
    the pairing (`wait=0`): `confirmed` means the response was lost and the link stands; `joined`, or a
-   re-read that fails too, after a transient failure (408, 429, 5xx, network error) means it resends
+   re-read that fails too, after a transient failure (408, 429 other than `mailbox_full` and
+   `peer_limit`, 5xx, network error) means it resends
    the confirm, up to 3 times (1 s, 2 s, 4 s) and not past the pairing's expiry; otherwise it withdraws
    the allowance (`DELETE /v1/peers/{joiner}`, unless that device was already linked) and reports the
    failure.
