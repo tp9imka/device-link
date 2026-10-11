@@ -728,13 +728,14 @@ public actor DeviceLinkClient {
                 if !(error is CancellationError) { noteFailure(error) }
                 throw error
             }
-            if envelopes.isEmpty { return DrainResult(applied: applied, complete: true) }
+            if envelopes.isEmpty { await failStalledGroups(); return DrainResult(applied: applied, complete: true) }
             for envelope in envelopes {
                 if try await process(envelope, handler: handler) { applied += 1 }
                 handled.append(envelope.id)
                 if handled.count > 20 { handled.removeFirst() }
             }
         }
+        await failStalledGroups()
         return DrainResult(applied: applied, complete: false)
     }
 
@@ -754,6 +755,7 @@ public actor DeviceLinkClient {
         }
         var delivered = resumed
         for envelope in envelopes where try await process(envelope, handler: handler) { delivered += 1 }
+        await failStalledGroups()
         if delivered > 0 { note { $0.lastReceiveAt = clock(); $0.received += delivered } }
         return delivered
     }
@@ -796,8 +798,9 @@ public actor DeviceLinkClient {
             if payload.isChunk, let group = payload.group, let part = payload.part, let parts = payload.parts {
                 // Stored (still encrypted) before the acknowledgement, so a restart resumes the file.
                 let key = ChunkSpoolKey.key(peerId: peer.id, group: group)
-                spool.purge(now: clock())
-                try spool.put(key, part: part, envelope: envelope)
+                let now = clock()
+                await failStalledGroups(now: now)
+                try spool.put(key, part: part, envelope: envelope, receivedAt: now)
                 await acknowledgeApplied(relay, envelope.id)
                 guard spool.count(key) >= parts else { return false }
                 return try await assemble(key, peer: peer, handler: handler)
@@ -831,16 +834,16 @@ public actor DeviceLinkClient {
     /// Applies a spooled chunked file once every part is present. Returns whether the handler ran.
     private func assemble(_ key: String, peer: LinkedPeer, handler: @Sendable (IncomingItem) async -> ReceiptStatus) async throws -> Bool {
         let state = store.load()
-        let now = clock()
-        // One part in memory at a time: authenticate it, keep only its metadata and data length.
-        struct Part { let number: Int; let envelope: Envelope; let payload: Payload?; let length: Int }
+        // One part in memory at a time: authenticate it, keep only its metadata and data length. Each part is
+        // checked as of its arrival: a part of a slowly uploaded file may have expired since.
+        struct Part { let number: Int; let receivedAt: Int64; let envelope: Envelope; let payload: Payload?; let length: Int }
         var stored: [Part] = []
         for number in spool.partNumbers(key) {
-            guard var envelope = spool.part(key, number) else { continue }
-            var payload = try? crypto.open(envelope, from: peer.bundle, now: now)
+            guard var envelope = spool.part(key, number), let receivedAt = spool.receivedAt(key, number) else { continue }
+            var payload = try? crypto.open(envelope, from: peer.bundle, now: receivedAt)
             let length = (try? payload?.dataBytes())??.count ?? 0
             envelope.ciphertext = ""; envelope.signature = ""; payload?.data = nil
-            stored.append(Part(number: number, envelope: envelope, payload: payload, length: length))
+            stored.append(Part(number: number, receivedAt: receivedAt, envelope: envelope, payload: payload, length: length))
         }
         // Applied and recorded before a crash, only the cleanup was missed.
         if !stored.isEmpty, stored.allSatisfy({ state.seen[$0.envelope.id] != nil }) { spool.remove(key); return false }
@@ -856,32 +859,33 @@ public actor DeviceLinkClient {
             return opened.count >= parts ? await rejectFile(key, peer: peer) : false
         }
         guard opened.reduce(Int64(0), { $0 + Int64($1.length) }) == size, let group = first.group else { return await rejectFile(key, peer: peer) }
-        let envelopes = opened.map(\.envelope)
+        // The file is as fresh as its last part: older parts are recorded as seen until that part expires.
+        let expiresAt = opened.map(\.envelope.expiresAt).max() ?? 0
+        let envelopes = opened.map { part -> Envelope in var envelope = part.envelope; envelope.expiresAt = expiresAt; return envelope }
         let newest = envelopes.map(\.sequence).max() ?? 0
         let stale = first.kind != .file && newest <= (state.lastClip[peer.id] ?? 0)
         var meta = first
         meta.part = nil; meta.parts = nil
         // Second pass while the handler writes: each part is read and opened again, then released.
-        let numbers = opened.map(\.number)
+        let numbers = opened.map { ($0.number, $0.receivedAt) }
         let (spool, crypto, bundle) = (spool, crypto, peer.bundle)
         let chunked: ChunkWriter = { sink in
-            for (index, number) in numbers.enumerated() {
+            for (index, (number, receivedAt)) in numbers.enumerated() {
                 guard let envelope = spool.part(key, number) else { throw DeviceLinkError.invalid("chunk") }
-                let payload = try crypto.open(envelope, from: bundle, now: now)
+                let payload = try crypto.open(envelope, from: bundle, now: receivedAt)
                 guard payload.part == index, payload.group == group, let data = try payload.dataBytes() else { throw DeviceLinkError.invalid("chunk") }
                 try sink(data)
             }
         }
-        let item = IncomingItem(id: group, peer: peer, payload: meta, expiresAt: envelopes.map(\.expiresAt).min() ?? 0,
-                                stale: stale, chunked: chunked)
+        let item = IncomingItem(id: group, peer: peer, payload: meta, expiresAt: expiresAt, stale: stale, chunked: chunked)
         let status = try await apply(item, envelopes: envelopes, handler: handler)
         spool.remove(key)
         _ = try? await deliver(.receipt(group, status), to: peer)
         return true
     }
 
-    /// Drops a chunked file that can never be assembled (a part does not open, parts disagree, or the total
-    /// does not match `size`) and tells the sender with a `failed` receipt for the group, so it does not wait
+    /// Drops a chunked file that can never be assembled (a part does not open, parts disagree, the total does
+    /// not match `size`, or no new part arrived for `ChunkSpoolKey.groupIdleMillis`) and tells the sender with a `failed` receipt for the group, so it does not wait
     /// for a receipt that never comes. Returns false: the handler did not run.
     private func rejectFile(_ key: String, peer: LinkedPeer) async -> Bool {
         spool.remove(key)
@@ -892,11 +896,20 @@ public actor DeviceLinkClient {
         return false
     }
 
+    /// Group idle expiry: a chunked file with no new part for `ChunkSpoolKey.groupIdleMillis` never completes, so
+    /// it is dropped and its sender gets a `failed` receipt instead of waiting forever. Runs on every receive.
+    private func failStalledGroups(now: Int64? = nil) async {
+        let peers = store.load().peers
+        for key in spool.purge(now: now ?? clock()) {
+            if let peer = peers.first(where: { $0.id == ChunkSpoolKey.peer(of: key) }) { _ = await rejectFile(key, peer: peer) }
+        }
+    }
+
     /// Completes files whose chunks were all stored by a previous process that stopped before applying.
     private func resumeSpooled(handler: @Sendable (IncomingItem) async -> ReceiptStatus) async throws -> Int {
         guard !spoolResumed else { return 0 }
         spoolResumed = true
-        spool.purge(now: clock())
+        await failStalledGroups()
         let peers = store.load().peers
         var applied = 0
         for key in spool.keys() {

@@ -664,13 +664,14 @@ class DeviceLinkClient(
                     if (error !is CancellationException) failure(error)
                     throw error
                 }
-                if (envelopes.isEmpty()) return DrainResult(applied, complete = true)
+                if (envelopes.isEmpty()) { failStalledGroups(); return DrainResult(applied, complete = true) }
                 for (envelope in envelopes) {
                     if (process(envelope, handler)) applied++
                     handled.addLast(envelope.id)
                     if (handled.size > 20) handled.removeFirst()
                 }
             }
+            failStalledGroups()
             return DrainResult(applied, complete = false)
         } finally {
             if (applied > 0) note { it.copy(lastReceiveAt = clock(), received = it.received + applied) }
@@ -691,7 +692,7 @@ class DeviceLinkClient(
             if (resumed > 0) note { it.copy(lastReceiveAt = clock(), received = it.received + resumed) }
             throw error
         }
-        return (resumed + envelopes.count { process(it, handler) }).also { count ->
+        return (resumed + envelopes.count { process(it, handler) }.also { failStalledGroups() }).also { count ->
             if (count > 0) note { it.copy(lastReceiveAt = clock(), received = it.received + count) }
         }
     }
@@ -733,8 +734,9 @@ class DeviceLinkClient(
                 if (payload.isChunk) {
                     // Stored (still encrypted) before the acknowledgement, so a restart resumes the file.
                     val key = ChunkSpool.key(peer.id, payload.group!!)
-                    spool.purge(clock())
-                    spool.put(key, payload.part!!, envelope)
+                    val now = clock()
+                    failStalledGroups(now)
+                    spool.put(key, payload.part!!, envelope, now)
                     acknowledgeApplied(relay, envelope.id)
                     if (spool.count(key) < payload.parts!!) return false
                     return assemble(key, peer, handler)
@@ -783,13 +785,14 @@ class DeviceLinkClient(
     /** Applies a spooled chunked file once every part is present. Returns whether the handler ran. */
     private suspend fun assemble(key: String, peer: LinkedPeer, handler: suspend (IncomingItem) -> ReceiptStatus): Boolean {
         val state = store.load()
-        val now = clock()
-        // One part in memory at a time: authenticate it, keep only its metadata and data length.
-        class Part(val number: Int, val envelope: Envelope, val payload: Payload?, val length: Int)
+        // One part in memory at a time: authenticate it, keep only its metadata and data length. Each part is
+        // checked as of its arrival: a part of a slowly uploaded file may have expired since.
+        class Part(val number: Int, val receivedAt: Long, val envelope: Envelope, val payload: Payload?, val length: Int)
         val stored = spool.partNumbers(key).mapNotNull { number ->
             val envelope = spool.part(key, number) ?: return@mapNotNull null
-            val payload = runCatching { crypto.open(envelope, peer.bundle, now) }.getOrNull()
-            Part(number, envelope.copy(ciphertext = "", signature = ""), payload?.copy(data = null), payload?.dataBytes()?.size ?: 0)
+            val receivedAt = spool.receivedAt(key, number) ?: return@mapNotNull null
+            val payload = runCatching { crypto.open(envelope, peer.bundle, receivedAt) }.getOrNull()
+            Part(number, receivedAt, envelope.copy(ciphertext = "", signature = ""), payload?.copy(data = null), payload?.dataBytes()?.size ?: 0)
         }
         // Applied and recorded before a crash, only the cleanup was missed.
         if (stored.isNotEmpty() && stored.all { it.envelope.id in state.seen }) { spool.remove(key); return false }
@@ -803,21 +806,22 @@ class DeviceLinkClient(
             return if (opened.size >= first.parts!!) rejectFile(key, peer) else false
         }
         if (opened.sumOf { it.length.toLong() } != first.size) return rejectFile(key, peer)
-        val envelopes = opened.map { it.envelope }
+        // The file is as fresh as its last part: older parts are recorded as seen until that part expires.
+        val expiresAt = opened.maxOf { it.envelope.expiresAt }
+        val envelopes = opened.map { it.envelope.copy(expiresAt = expiresAt) }
         val newest = envelopes.maxBy { it.sequence }
         val stale = first.kind != PayloadKind.FILE && newest.sequence <= (state.lastClip[peer.id] ?: 0)
-        val numbers = opened.map { it.number }
+        val numbers = opened.map { it.number to it.receivedAt }
         // Second pass while the handler writes: each part is read and opened again, then released.
         val content: (OutputStream) -> Unit = { output ->
-            numbers.forEachIndexed { index, number ->
+            numbers.forEachIndexed { index, (number, receivedAt) ->
                 val envelope = spool.part(key, number) ?: throw IOException("Chunk is gone")
-                val payload = crypto.open(envelope, peer.bundle, now)
+                val payload = crypto.open(envelope, peer.bundle, receivedAt)
                 check(payload.part == index && payload.group == first.group) { "Chunk changed" }
                 output.write(payload.dataBytes()!!)
             }
         }
-        val item = IncomingItem(first.group!!, peer, first.copy(part = null, parts = null),
-            envelopes.minOf { it.expiresAt }, stale, content)
+        val item = IncomingItem(first.group!!, peer, first.copy(part = null, parts = null), expiresAt, stale, content)
         val status = apply(item, envelopes, handler)
         spool.remove(key)
         runCatching { deliver(Payload.receipt(item.id, status), peer) }
@@ -825,8 +829,8 @@ class DeviceLinkClient(
     }
 
     /**
-     * Drops a chunked file that can never be assembled (a part does not open, parts disagree, or the total
-     * does not match `size`) and tells the sender with a `failed` receipt for the group, so it does not wait
+     * Drops a chunked file that can never be assembled (a part does not open, parts disagree, the total
+     * does not match `size`, or no new part arrived for [ChunkSpool.GROUP_IDLE_MILLIS]) and tells the sender with a `failed` receipt for the group, so it does not wait
      * for a receipt that never comes. Returns false: the handler did not run.
      */
     private suspend fun rejectFile(key: String, peer: LinkedPeer): Boolean {
@@ -838,11 +842,20 @@ class DeviceLinkClient(
         return false
     }
 
+    /**
+     * Group idle expiry: a chunked file with no new part for [ChunkSpool.GROUP_IDLE_MILLIS] never completes,
+     * so it is dropped and its sender gets a `failed` receipt instead of waiting forever. Runs on every receive.
+     */
+    private suspend fun failStalledGroups(now: Long = clock()) {
+        val peers = store.load().peers
+        for (key in spool.purge(now)) peers.firstOrNull { it.id == ChunkSpool.peerOf(key) }?.let { rejectFile(key, it) }
+    }
+
     /** Completes files whose chunks were all stored by a previous process that stopped before applying. */
     private suspend fun resumeSpooled(handler: suspend (IncomingItem) -> ReceiptStatus): Int {
         if (spoolResumed) return 0
         spoolResumed = true
-        spool.purge(clock())
+        failStalledGroups()
         val peers = store.load().peers
         return spool.keys().count { key ->
             val peer = peers.firstOrNull { it.id == ChunkSpool.peerOf(key) }

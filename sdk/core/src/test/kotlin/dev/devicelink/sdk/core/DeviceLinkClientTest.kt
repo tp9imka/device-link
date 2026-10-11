@@ -56,6 +56,8 @@ private class FakeRelay(private val clock: () -> Long) : HttpTransport {
 
     /** Empty mailbox polls wait out `wait` (virtual time under runTest), like the real long poll. */
     var longPoll = false
+    /** Expired envelopes are still served, so the receiver's own expiry check is what refuses them. */
+    var servesExpired = false
 
     override suspend fun execute(method: String, url: String, headers: Map<String, String>, body: ByteArray, timeoutMillis: Int): HttpResponse {
         if (down) throw java.net.ConnectException("connection refused")
@@ -147,7 +149,7 @@ private class FakeRelay(private val clock: () -> Long) : HttpTransport {
             path == listOf("v1", "messages") && method == "GET" -> {
                 polls += target
                 pollErrors.removeFirstOrNull()?.let { (status, code) -> return error(status, code) }
-                mailbox.removeAll { it.expiresAt <= clock() }
+                if (!servesExpired) mailbox.removeAll { it.expiresAt <= clock() }
                 val query = uri.rawQuery.split('&').associate { it.substringBefore('=') to it.substringAfter('=') }
                 val excluded = query["exclude"]?.split(',').orEmpty()
                 check(excluded.size <= 20) { "relay caps exclude at 20" }
@@ -769,6 +771,87 @@ class DeviceLinkClientTest {
         val receipt = async(start = CoroutineStart.UNDISPATCHED) { sender.events.first { it is LinkEvent.Receipt } }
         sender.receiveOnce { error("no content") }
         assertEquals(LinkEvent.Receipt(parts.first().group!!, iphone.deviceId, ReceiptStatus.FAILED), withTimeout(1_000) { receipt.await() })
+    }
+
+    /** A sender linked to [receiver] whose chunks are sealed by hand, each at the current virtual time. */
+    private inner class HandSender(receiver: DeviceLinkClient) {
+        private val identity = SoftwareIdentity()
+        private val keys = EncryptionKeyPair.generate()
+        private val recipient = receiver.localBundle
+        val client = DeviceLinkClient(identity, keys, MemoryLinkStore(), LinkConfig("Pixel", "android"), relay) { now }
+        init { link(client, receiver) }
+        fun upload(part: Payload) { relay.mailbox += EnvelopeCrypto(identity, keys).seal(part, recipient, now, 100L + part.part!!) }
+    }
+
+    /** An 8-part image of small chunks (the receiver only checks that the parts add up to `size`). */
+    private fun eightParts(): Pair<ByteArray, List<Payload>> {
+        val bytes = ByteArray(8 * 16) { (it * 13).toByte() }
+        val group = java.util.UUID.randomUUID().toString()
+        return bytes to List(8) { part ->
+            Payload.chunk(PayloadKind.IMAGE, "slow.png", "image/png", bytes.copyOfRange(part * 16, part * 16 + 16), part, 8, bytes.size.toLong(), now, group)
+        }
+    }
+
+    @Test fun `a file whose upload outlasts one lifetime assembles while each part follows within a lifetime`() = runBlocking {
+        val desk = Restartable()
+        for (receiver in listOf(iphone, desk.start())) {
+            val sender = HandSender(receiver)
+            // An earlier clip was copied: the file must still not be stale.
+            sender.client.send(OutgoingContent.Text("earlier"))
+            receiver.receiveOnce { ReceiptStatus.COPIED }
+            val (bytes, parts) = eightParts()
+            val start = now
+            val items = mutableListOf<IncomingItem>()
+            val contents = mutableListOf<ByteArray?>()
+            parts.forEachIndexed { index, part ->
+                if (index > 0) now += 60_000
+                sender.upload(part)
+                receiver.receiveOnce { items += it; contents += it.bytes(); ReceiptStatus.COPIED }
+            }
+            assertTrue("the first part's envelope expired before the last arrived", now - start > Limits.DEFAULT_LIFETIME_MILLIS)
+            val item = items.single()
+            assertEquals(parts.first().group, item.id)
+            assertTrue(bytes.contentEquals(contents.single()!!))
+            assertFalse(item.stale)
+            assertTrue(item.expiresAt > now)
+            val receipt = async(start = CoroutineStart.UNDISPATCHED) { sender.client.events.first { it is LinkEvent.Receipt && it.itemId == item.id } }
+            sender.client.drain { error("no content") }
+            assertEquals(LinkEvent.Receipt(item.id, receiver.deviceId, ReceiptStatus.COPIED), withTimeout(1_000) { receipt.await() })
+        }
+        assertTrue("spool is cleaned after apply", desk.spooled().isEmpty())
+    }
+
+    @Test fun `a file that stops making progress is dropped after one lifetime and its sender gets a failed receipt`() = runBlocking {
+        val desk = Restartable()
+        for (receiver in listOf(iphone, desk.start())) {
+            val sender = HandSender(receiver)
+            val (_, parts) = eightParts()
+            parts.take(3).forEachIndexed { index, part ->
+                if (index > 0) now += 60_000
+                sender.upload(part)
+                assertEquals(0, receiver.receiveOnce { error("an incomplete file must not be applied") })
+            }
+            val lastPart = now
+            now = lastPart + ChunkSpool.GROUP_IDLE_MILLIS - 1
+            receiver.receiveOnce { error("no content") }
+            assertTrue("kept while within a lifetime of its last part", relay.mailbox.none { it.recipientId == sender.client.deviceId })
+            now = lastPart + ChunkSpool.GROUP_IDLE_MILLIS
+            receiver.receiveOnce { error("no content") }
+            val receipt = async(start = CoroutineStart.UNDISPATCHED) { sender.client.events.first { it is LinkEvent.Receipt } }
+            sender.client.receiveOnce { error("no content") }
+            assertEquals(LinkEvent.Receipt(parts.first().group!!, receiver.deviceId, ReceiptStatus.FAILED), withTimeout(1_000) { receipt.await() })
+        }
+        assertTrue("the stalled file is gone from the spool", desk.spooled().isEmpty())
+    }
+
+    @Test fun `a single envelope past its expiry is refused by the receiver itself`() = runBlocking {
+        linked()
+        relay.servesExpired = true
+        android.send(OutgoingContent.Text("late"))
+        now += Limits.DEFAULT_LIFETIME_MILLIS
+        assertEquals(0, iphone.receiveOnce { error("must not deliver") })
+        assertEquals(1, iphone.diagnostics.value.undecryptable)
+        assertTrue(relay.mailbox.isEmpty())
     }
 
     @Test fun `unregister tells peers, deletes the device on the relay and forgets every link`() = runBlocking {
