@@ -121,7 +121,7 @@ targets:
     # Decrypts push previews on the device ("From Pixel: …") and adds the Copy action.
     type: app-extension
     platform: iOS
-    sources: [NotificationService, Shared/LinkEnvironment.swift]
+    sources: [NotificationService, Shared/LinkEnvironment.swift, Shared/KeyPolicy.swift]
     dependencies:
       - package: DeviceLinkKit
         product: DeviceLinkKit
@@ -225,7 +225,7 @@ targets:
     # Unit tests for app logic in Shared/ that does not need UIKit (see the DeviceLinkMac scheme).
     type: bundle.unit-test
     platform: macOS
-    sources: [Tools/AppTests, Shared/CopyFilter.swift, Shared/SendMessages.swift, Shared/ReceivedFiles.swift]
+    sources: [Tools/AppTests, Shared/CopyFilter.swift, Shared/SendMessages.swift, Shared/ReceivedFiles.swift, Shared/KeyPolicy.swift]
     dependencies:
       - package: DeviceLinkKit
         product: DeviceLinkKit
