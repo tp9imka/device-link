@@ -5,7 +5,10 @@
   - Required-reason API: UserDefaults (LinkModel.sendTargets, app-only), CA92.1.
   - Sent to the relay for the app to work, not linked to a person (no accounts), no tracking:
     a device ID derived from the device's public key, and platform/model/app version
-    (DeviceLinkClient registration). Clipboard content is end-to-end encrypted and expires
+    (DeviceLinkClient registration). When the relay has APNs set up and a device is linked,
+    the app's APNs device token is also stored on the relay (LinkModel.registerPush), whether
+    or not the user allowed alerts. It is another device-level ID, covered by the DeviceID
+    entry below, not a separate data type. Clipboard content is end-to-end encrypted and expires
     on the relay within minutes; it is not readable by the relay operator.
 -->
 <plist version="1.0">

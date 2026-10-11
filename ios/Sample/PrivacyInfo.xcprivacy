@@ -5,8 +5,9 @@
   - Required-reason API: UserDefaults (LinkModel.sendTargets, app-only), CA92.1.
   - Sent to the relay for the app to work, not linked to a person (no accounts), no tracking:
     a device ID derived from the device's public key, and platform/model/app version
-    (DeviceLinkClient registration). Clipboard content is end-to-end encrypted and expires
-    on the relay within minutes; it is not readable by the relay operator.
+    (DeviceLinkClient registration). The sample does not register for push notifications.
+    Clipboard content is end-to-end encrypted and expires on the relay within minutes; it is
+    not readable by the relay operator.
 -->
 <plist version="1.0">
 <dict>
