@@ -109,7 +109,10 @@ Optional fields (all encrypted, all ignorable by older decoders):
   on the device before acknowledging it, so a restart mid-transfer resumes the file; they reassemble when
   all parts are present and the total equals `size`, delete the stored chunks, and send one receipt for
   `group`. A receiver that has every part but cannot assemble the file (part fails to open, parts
-  disagree, total != `size`) drops it and sends a `failed` receipt for `group`. Chunks are not held
+  disagree, total != `size`) drops it and sends a `failed` receipt for `group`. An incomplete group is
+  kept while new parts keep arriving and dropped, with a `failed` receipt for `group`, once no new part
+  has arrived for one envelope lifetime (300 s), so a slow upload longer than one lifetime still
+  assembles. Chunks are not held
   unacknowledged on the relay: ten chunk envelopes (~71 MiB) exceed the default 64 MiB mailbox quota, so
   the sender could never finish. Senders resend the same sealed envelope up to 3 times (1 s, 2 s, 4 s) on
   408, 429 other than `mailbox_full`, 5xx and network errors (not TLS certificate failures), and wait (up
