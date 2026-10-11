@@ -204,7 +204,7 @@ class DeviceLinkInstance internal constructor(private val context: Context, val 
      */
     fun sendResultMessage(result: Result<List<SendOutcome>>): String {
         val peers = client.peers.value
-        return when (val problem = SendProblem.of(result, peers.isNotEmpty(), client.diagnostics.value.lastError)) {
+        return when (val problem = SendProblem.of(result, peers.isNotEmpty())) {
             // Only the devices this went to: sendTargets may limit it to some of them.
             null -> context.getString(R.string.dl_send_ok, result.getOrThrow()
                 .mapNotNull { outcome -> peers.firstOrNull { it.id == outcome.peerId }?.name }.joinToString())

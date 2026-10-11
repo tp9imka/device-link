@@ -10,12 +10,12 @@ import org.junit.Test
 class UserErrorsTest {
     private fun ok(peer: String = "a") = SendOutcome(peer, "id-$peer")
     private fun failed(error: String, peer: String = "a") = SendOutcome(peer, null, error)
-    private fun problem(result: Result<List<SendOutcome>>, lastError: String? = null) = SendProblem.of(result, hasPeers = true, lastError)
+    private fun problem(result: Result<List<SendOutcome>>) = SendProblem.of(result, hasPeers = true)
 
     @Test fun everyPeerAcceptedIsNoProblem() = assertNull(problem(Result.success(listOf(ok("a"), ok("b")))))
 
     @Test fun noLinkedDeviceWinsOverEverythingElse() =
-        assertEquals(SendProblem.NO_DEVICES, SendProblem.of(Result.failure(ContentTooLargeException(1)), hasPeers = false, null))
+        assertEquals(SendProblem.NO_DEVICES, SendProblem.of(Result.failure(ContentTooLargeException(1)), hasPeers = false))
 
     @Test fun oversizedFileIsTooLargeNotNothingToSend() =
         assertEquals(SendProblem.TOO_LARGE, problem(Result.failure(ContentTooLargeException(1))))
@@ -36,8 +36,17 @@ class UserErrorsTest {
         assertEquals(SendProblem.TOO_LARGE, problem(Result.success(listOf(failed("body_too_large")))))
     }
 
-    @Test fun networkFailureIsUnreachable() =
-        assertEquals(SendProblem.UNREACHABLE, problem(Result.success(listOf(failed("Unable to resolve host"))), lastError = "network: UnknownHostException"))
+    @Test fun noAnswerFromTheRelayIsUnreachable() {
+        assertEquals(SendProblem.UNREACHABLE, problem(Result.success(listOf(failed(SendOutcome.NETWORK)))))
+        assertEquals(SendProblem.UNREACHABLE, problem(Result.success(listOf(failed(SendOutcome.TIMEOUT)))))
+        assertEquals(SendProblem.UNREACHABLE, problem(Result.success(listOf(failed("body_timeout")))))
+    }
+
+    @Test fun localFailureIsNotBlamedOnTheNetwork() =
+        assertEquals(SendProblem.FAILED, problem(Result.success(listOf(failed(SendOutcome.SEND_FAILED)))))
+
+    @Test fun unregisteredSenderIsRejected() =
+        assertEquals(SendProblem.REJECTED, problem(Result.success(listOf(failed("registration_required")))))
 
     @Test fun partialFailureReportsTheFailingPeer() =
         assertEquals(SendProblem.MAILBOX_FULL, problem(Result.success(listOf(ok("a"), failed("mailbox_full", "b")))))

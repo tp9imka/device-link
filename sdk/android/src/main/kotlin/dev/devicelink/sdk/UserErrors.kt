@@ -31,15 +31,14 @@ internal enum class SendProblem(val message: Int) {
             "rate_limit" to RATE_LIMITED, "rate_limited" to RATE_LIMITED,
             "recipient_not_authorized" to NOT_AUTHORIZED,
             "device_blocked" to REJECTED, "enrollment_required" to REJECTED, "invalid_authentication" to REJECTED,
+            "registration_required" to REJECTED,
             "body_too_large" to TOO_LARGE,
+            // No answer, or the upload was too slow for the relay: already retried by the engine.
+            SendOutcome.NETWORK to UNREACHABLE, SendOutcome.TIMEOUT to UNREACHABLE, "body_timeout" to UNREACHABLE,
         )
-        private val CODE = Regex("[a-z_]+")
 
-        /**
-         * [lastError] is `Diagnostics.lastError`; the engine records `network: …` there for the
-         * transport failure whose message ends up in [SendOutcome.error].
-         */
-        fun of(result: Result<List<SendOutcome>>, hasPeers: Boolean, lastError: String?): SendProblem? {
+        /** [SendOutcome.error] is a stable code (relay error, `network`, `timeout`, `send_failed`). */
+        fun of(result: Result<List<SendOutcome>>, hasPeers: Boolean): SendProblem? {
             if (!hasPeers) return NO_DEVICES
             val outcomes = result.getOrElse { failure ->
                 return when (failure) {
@@ -50,9 +49,7 @@ internal enum class SendProblem(val message: Int) {
             }
             if (outcomes.isEmpty()) return NOTHING
             val error = outcomes.firstOrNull { !it.accepted }?.let { it.error ?: "" } ?: return null
-            CODES[error]?.let { return it }
-            val network = lastError?.startsWith("network:") == true
-            return if (network && (!error.matches(CODE) || error == "send_failed")) UNREACHABLE else FAILED
+            return CODES[error] ?: FAILED
         }
     }
 }
