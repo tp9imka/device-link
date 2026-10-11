@@ -128,13 +128,21 @@ class Store:
             return db.execute("UPDATE pairings SET admitted=? WHERE id=? AND state='open' AND expires>? "
                               "AND (admitted IS NULL OR admitted=?)", (device, pairing, now, device)).rowcount == 1
 
-    def register(self, identity, now, metadata):
+    def is_registered(self, identity):
         with self.transaction() as db:
-            existing = db.execute("SELECT key FROM devices WHERE id=?", (identity.id,)).fetchone()
+            return db.execute("SELECT 1 FROM devices WHERE id=? AND key=?", (identity.id, identity.key)).fetchone() is not None
+
+    def register(self, identity, now, metadata, *, enrolled):
+        with self.transaction() as db:
+            existing = db.execute("SELECT key, blocked FROM devices WHERE id=?", (identity.id,)).fetchone()
             if existing:
                 if existing[0] != identity.key:
                     raise RelayError(409, "identity_conflict")
+                if existing[1]:
+                    raise RelayError(403, "device_blocked")
             else:
+                if not enrolled:
+                    raise RelayError(403, "enrollment_required")
                 if db.execute("SELECT count(*) FROM devices").fetchone()[0] >= self.settings.max_devices:
                     raise RelayError(507, "registration_capacity")
                 db.execute("INSERT INTO devices(id,key,created,last_seen) VALUES(?,?,?,?)", (identity.id, identity.key, now, now))

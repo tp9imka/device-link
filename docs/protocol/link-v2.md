@@ -171,7 +171,8 @@ Flow:
 
 1. Inviter `POST /v1/pairings {"id": pairingId, "expiresAt": now+5min}`.
 2. Joiner scans, `POST /v1/register` with `X-Pairing-Id: pairingId` (open
-   pairings admit the joiner without an enrollment token), then
+   pairings admit a new joiner without an enrollment token; an already registered identity
+   with the same key needs no enrollment to refresh its metadata), then
    `POST /v1/pairings/{id}/join {"sealed": Base64(seal(joinKey, "join", joinerBundle))}`.
    A pairing accepts exactly one joiner.
 3. Inviter long-polls `GET /v1/pairings/{id}?wait=25`, opens the joiner bundle,
@@ -216,7 +217,7 @@ Request signing is unchanged from v1 (`X-Device-Key`, `X-Device-Time`,
 | Endpoint | Purpose |
 | --- | --- |
 | `GET /v1/info` | Unauthenticated: relay version, maximum lifetime, enrollment mode, push providers |
-| `POST /v1/register` | Body `{}` or `{"platform","model","appVersion"}` (optional, for the admin dashboard) |
+| `POST /v1/register` | Body `{}` or `{"platform","model","appVersion"}` (optional, for the admin dashboard); re-registering an already registered identity with the same key refreshes metadata without enrollment |
 | `POST /v1/pairings` | Create pairing (registered caller) |
 | `POST /v1/pairings/{id}/join` | Joiner submits sealed bundle |
 | `GET /v1/pairings/{id}?wait=0..25` | Creator/joiner poll: `{"state","joinerId","sealed"}` |

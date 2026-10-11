@@ -137,6 +137,40 @@ def test_scanning_a_qr_enrolls_without_the_token(tmp_path):
         assert request(client, stranger, NOW, "POST", "/v1/register", {}, headers={"X-Pairing-Id": pairing_id()}).status_code == 403
 
 
+
+@pytest.mark.parametrize("removal", ["admin", "self"])
+def test_qr_enrolled_device_refreshes_metadata_without_token(tmp_path, removal):
+    settings = Settings(database=tmp_path / "relay.sqlite3", enrollment_token="private-token",
+                        admin_password_hash=hash_password("correct horse", iterations=1000))
+    inviter, joiner = Device(), Device()
+    with TestClient(create_app(settings, lambda: NOW)) as client:
+        assert request(client, inviter, NOW, "POST", "/v1/register", {},
+                       headers={"X-Enrollment-Token": "private-token"}).status_code == 200
+        create(client, inviter, NOW)
+        assert request(client, joiner, NOW, "POST", "/v1/register", {"appVersion": "1.0"},
+                       headers={"X-Pairing-Id": pairing_id()}).status_code == 200
+        assert request(client, joiner, NOW, "POST", f"/v1/pairings/{pairing_id()}/join", {"sealed": SEALED}).status_code == 204
+        assert request(client, inviter, NOW, "DELETE", f"/v1/pairings/{pairing_id()}").status_code == 204
+        metadata = {"platform": "ios", "model": "iPhone", "appVersion": "2.0.0"}
+        assert request(client, joiner, NOW, "POST", "/v1/register", metadata).status_code == 200
+        login(client)
+        row = next(row for row in client.get("/admin/api/devices").json() if row["id"] == joiner.id)
+        assert {field: row[field] for field in metadata} == metadata
+        headers = {"X-CSRF-Token": csrf(client)}
+        assert client.post(f"/admin/api/devices/{joiner.id}/block", json={"blocked": True}, headers=headers).status_code == 200
+        blocked = request(client, joiner, NOW, "POST", "/v1/register", metadata)
+        assert blocked.status_code == 403
+        assert blocked.json() == {"error": "device_blocked"}
+        assert client.post(f"/admin/api/devices/{joiner.id}/block", json={"blocked": False}, headers=headers).status_code == 200
+        if removal == "admin":
+            assert client.delete(f"/admin/api/devices/{joiner.id}", headers=headers).status_code == 200
+        else:
+            assert request(client, joiner, NOW, "DELETE", "/v1/devices/self").status_code == 204
+        removed = request(client, joiner, NOW, "POST", "/v1/register", metadata)
+        assert removed.status_code == 403
+        assert removed.json() == {"error": "enrollment_required"}
+
+
 def test_one_qr_admits_exactly_one_new_device(tmp_path):
     settings = Settings(database=tmp_path / "relay.sqlite3", enrollment_token="private-token")
     inviter, joiner, second, third = Device(), Device(), Device(), Device()

@@ -109,6 +109,53 @@ def test_registration_enrollment_and_unknown_key(tmp_path):
         assert request(client, device, now, "POST", "/v1/register", {}, headers={"X-Enrollment-Token": "test-enrollment-only"}).status_code == 200
 
 
+
+def test_unenrolled_registration_does_not_spend_request_budget(tmp_path, monkeypatch):
+    now = 1_800_000_000_000
+    settings = Settings(database=tmp_path / "relay.sqlite3", enrollment_token="test-enrollment-only",
+                        global_requests_per_minute=1)
+    with TestClient(create_app(settings, lambda: now)) as client:
+        store = client.app.state.store
+        authorize = store.authorize
+        def unexpected_authorize(*args, **kwargs):
+            pytest.fail("unenrolled identity reached authorize")
+        monkeypatch.setattr(store, "authorize", unexpected_authorize)
+        for _ in range(3):
+            response = request(client, Device(), now, "POST", "/v1/register", {})
+            assert response.status_code == 403
+            assert response.json() == {"error": "enrollment_required"}
+        with store.transaction() as db:
+            assert db.execute("SELECT count(*) FROM nonces").fetchone()[0] == 0
+        monkeypatch.setattr(store, "authorize", authorize)
+        assert request(client, Device(), now, "POST", "/v1/register", {},
+                       headers={"X-Enrollment-Token": "test-enrollment-only"}).status_code == 200
+
+
+@pytest.mark.parametrize("change,code", [("remove", "enrollment_required"), ("block", "device_blocked")])
+def test_registration_rechecks_device_in_write_transaction(tmp_path, monkeypatch, change, code):
+    device, now = Device(), 1_800_000_000_000
+    settings = Settings(database=tmp_path / "relay.sqlite3", enrollment_token="test-enrollment-only")
+    with TestClient(create_app(settings, lambda: now)) as client:
+        assert request(client, device, now, "POST", "/v1/register", {},
+                       headers={"X-Enrollment-Token": "test-enrollment-only"}).status_code == 200
+        store = client.app.state.store
+        register_device = store.register
+        def changed_before_write(identity, at, metadata, *, enrolled):
+            if change == "remove":
+                store.remove_device(device.id, now, "device_removed")
+            else:
+                with store.transaction() as db:
+                    db.execute("UPDATE devices SET blocked=1 WHERE id=?", (device.id,))
+            return register_device(identity, at, metadata, enrolled=enrolled)
+        monkeypatch.setattr(store, "register", changed_before_write)
+        response = request(client, device, now, "POST", "/v1/register", {"appVersion": "2.0.0"})
+        assert response.status_code == 403
+        assert response.json() == {"error": code}
+        with store.transaction() as db:
+            row = db.execute("SELECT app_version FROM devices WHERE id=?", (device.id,)).fetchone()
+            assert row == (None if change == "remove" else ("",))
+
+
 def test_recipient_allowlist_and_sender_binding(setup):
     _, now, client = setup
     sender, recipient, stranger = Device(), Device(), Device()

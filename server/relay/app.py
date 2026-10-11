@@ -211,6 +211,7 @@ def create_app(settings=None, clock=None, push_transport=None):
                 raise RelayError(400, "invalid_target") from None
             now = clock()
             identity = await run_in_threadpool(authenticate, request.headers, request.method, target, body, now, settings.skew_ms)
+            enrolled = not settings.enrollment_token
             if registration and settings.enrollment_token:
                 supplied = request.headers.getlist("x-enrollment-token")
                 pairing = request.headers.getlist("x-pairing-id")
@@ -219,10 +220,11 @@ def create_app(settings=None, clock=None, push_transport=None):
                 # The token is checked first so a token holder never spends a pairing's single admission.
                 pairing_ok = (not token_ok and len(pairing) == 1 and PAIRING_ID.fullmatch(pairing[0])
                               and await run_in_threadpool(store.admit_pairing, pairing[0], identity.id, now))
-                if not (token_ok or pairing_ok):
+                enrolled = bool(token_ok or pairing_ok)
+                if not enrolled and not await run_in_threadpool(store.is_registered, identity):
                     raise RelayError(403, "enrollment_required")
             await run_in_threadpool(store.authorize, identity, now, registration or unknown_ok)
-            return identity, body
+            return (identity, body, enrolled) if registration else (identity, body)
 
     def empty_body(body):
         if strict_json(body) != {}:
@@ -258,9 +260,9 @@ def create_app(settings=None, clock=None, push_transport=None):
 
     @app.post("/v1/register")
     async def register(request: Request):
-        identity, body = await signed(request, registration=True)
+        identity, body, enrolled = await signed(request, registration=True)
         metadata = validate_metadata(body)
-        await run_in_threadpool(store.register, identity, clock(), metadata)
+        await run_in_threadpool(store.register, identity, clock(), metadata, enrolled=enrolled)
         return {"deviceId": identity.id}
 
     @app.put("/v1/peers/{sender}")
