@@ -22,6 +22,11 @@
  <string name="scenarios_body">1. Copy the short text: it should paste on the other device.\n2. Copy the emoji and the long text: content arrives intact.\n3. Copy the image: paste it in a chat or notes app there.\n4. Send the sample file: tap Share… in the notification there.\n5. Turn the other device offline, copy, reconnect within 5 minutes: it still arrives.\n6. Wait more than 5 minutes offline: the item expires and is never delivered.\n7. Copy three samples quickly: only the newest one replaces the clipboard there.\n8. On the other device, select text → Send to device: it arrives here.</string>
  <string name="copied_sent">Copied · sending to %1$s</string>
  <string name="copied_local">Copied (no linked device)</string>
+ <string name="host_mode">Host-app mode</string>
+ <string name="host_mode_on">On: received clips stay in a notification with Copy; the clipboard is not changed.</string>
+ <string name="host_mode_off">Off: received text and images go straight to the clipboard.</string>
+ <string name="host_mode_restart">The SDK reads this when the app starts. Restart to apply it.</string>
+ <string name="host_mode_restart_now">Restart now</string>
  <string name="state_pending">sending…</string>
  <string name="state_copied">✓ copied on %1$s</string>
  <string name="state_delivered">✓ delivered to %1$s</string>
