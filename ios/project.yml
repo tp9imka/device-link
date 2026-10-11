@@ -54,8 +54,12 @@ targets:
         DLAppGroup: $(DL_APP_GROUP)
         DLKeychainGroup: $(AppIdentifierPrefix)$(DL_BUNDLE_PREFIX).ios.shared
         DLAPSEnvironment: $(DL_APS_ENVIRONMENT)
+        # Plain HTTP only to a relay on the LAN (DEVICELINK_RELAY_SCHEME = http). Apple accepts this
+        # exception without review justification; iOS shows the prompt text below only if the app
+        # actually reaches a local address.
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
+        NSLocalNetworkUsageDescription: Connect to a DeviceLink relay on your local network.
     entitlements:
       path: DeviceLink/DeviceLink.entitlements
       properties:
@@ -171,8 +175,12 @@ targets:
         DLEnrollmentToken: $(DEVICELINK_ENROLLMENT_TOKEN)
         DLAppGroup: $(DL_APP_GROUP).sample
         DLKeychainGroup: $(AppIdentifierPrefix)$(DL_BUNDLE_PREFIX).ios.sample
+        # Plain HTTP only to a relay on the LAN (DEVICELINK_RELAY_SCHEME = http). Apple accepts this
+        # exception without review justification; iOS shows the prompt text below only if the app
+        # actually reaches a local address.
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
+        NSLocalNetworkUsageDescription: Connect to a DeviceLink relay on your local network.
     entitlements:
       path: Sample/DeviceLinkSample.entitlements
       properties:
