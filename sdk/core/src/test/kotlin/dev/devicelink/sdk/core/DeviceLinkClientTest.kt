@@ -37,11 +37,16 @@ private class FakeRelay(private val clock: () -> Long) : HttpTransport {
     /** `POST /v1/messages` attempts so far; [uploadFaults] answers (or throws for) the attempt with that 1-based number. */
     var uploads = 0
     val uploadFaults = mutableMapOf<Int, () -> HttpResponse>()
+    /** Recipient of every envelope the relay stored, in order (survives later deletes). */
+    val storedFor = mutableListOf<String>()
+    /** The relay cannot be reached: every request fails with a connection error. */
+    var down = false
 
     /** Empty mailbox polls wait out `wait` (virtual time under runTest), like the real long poll. */
     var longPoll = false
 
     override suspend fun execute(method: String, url: String, headers: Map<String, String>, body: ByteArray, timeoutMillis: Int): HttpResponse {
+        if (down) throw java.net.ConnectException("connection refused")
         val response = synchronized(this) { handle(method, url, headers, body) }
         val wait = Regex("[?&]wait=([0-9]+)").find(url)?.groupValues?.get(1)?.toLong() ?: 0
         if (longPoll && method == "GET" && "/v1/messages?" in url && String(response.body) == "[]") kotlinx.coroutines.delay(wait * 1000)
@@ -60,6 +65,14 @@ private class FakeRelay(private val clock: () -> Long) : HttpTransport {
         fun ok(text: String = "{}") = HttpResponse(200, text.toByteArray())
         fun error(status: Int, code: String) = HttpResponse(status, """{"error":"$code"}""".toByteArray())
         if (path == listOf("v1", "register")) { devices += caller; return ok() }
+        if (path == listOf("v1", "devices", "self") && method == "DELETE") {
+            // Same effect as server/relay store.remove_device; idempotent for an unknown device.
+            devices -= caller
+            allow.removeAll { it.first == caller || it.second == caller }
+            mailbox.removeAll { it.senderId == caller || it.recipientId == caller }
+            pairings.values.removeAll { it["creator"] == caller || it["joiner"] == caller }
+            return HttpResponse(204, ByteArray(0))
+        }
         if (caller !in devices) return error(403, "registration_required")
         val json = if (body.isEmpty()) JsonObject(emptyMap()) else wireJson.decodeFromString<JsonObject>(body.toString(Charsets.UTF_8))
         return when {
@@ -97,7 +110,7 @@ private class FakeRelay(private val clock: () -> Long) : HttpTransport {
                 val envelope = Envelope.decode(body.toString(Charsets.UTF_8))
                 if (envelope.senderId != caller) return error(403, "sender_mismatch")
                 if ((envelope.recipientId to caller) !in allow) return error(403, "recipient_not_authorized")
-                mailbox += envelope; HttpResponse(201, "{}".toByteArray())
+                mailbox += envelope; storedFor += envelope.recipientId; HttpResponse(201, "{}".toByteArray())
             }
             path == listOf("v1", "messages") && method == "GET" -> {
                 polls += target
@@ -544,6 +557,39 @@ class DeviceLinkClientTest {
         val receipt = async(start = CoroutineStart.UNDISPATCHED) { sender.events.first { it is LinkEvent.Receipt } }
         sender.receiveOnce { error("no content") }
         assertEquals(LinkEvent.Receipt(parts.first().group!!, iphone.deviceId, ReceiptStatus.FAILED), withTimeout(1_000) { receipt.await() })
+    }
+
+    @Test fun `unregister tells peers, deletes the device on the relay and forgets every link`() = runBlocking {
+        linked()
+        val unlinked = async(start = CoroutineStart.UNDISPATCHED) { android.events.first { it is LinkEvent.PeerUnlinked } }
+        assertTrue(android.unregister())
+        assertEquals(listOf(iphone.deviceId), relay.storedFor)
+        assertFalse(android.deviceId in relay.devices)
+        assertTrue(relay.allow.none { android.deviceId in it.toList() })
+        assertTrue(android.peers.value.isEmpty())
+        assertEquals(LinkEvent.PeerUnlinked(iphone.deviceId, byRemote = false), withTimeout(1_000) { unlinked.await() })
+        assertFalse(android.diagnostics.value.registered)
+        assertEquals("https://relay.example", android.relayUrl)
+    }
+
+    @Test fun `unregister with the relay unreachable still clears local links and does not throw`() = runBlocking {
+        linked()
+        relay.down = true
+        assertFalse(android.unregister())
+        assertTrue(android.peers.value.isEmpty())
+        assertTrue(android.deviceId in relay.devices)
+    }
+
+    @Test fun `unregister cancelled by a short timeout still clears local links`() = runBlocking {
+        linked()
+        val slow = DeviceLinkClient(SoftwareIdentity(), EncryptionKeyPair.generate(), MemoryLinkStore(), LinkConfig("Slow", "android"),
+            HttpTransport { method, url, headers, body, timeout ->
+                if ("/v1/devices/self" in url) kotlinx.coroutines.awaitCancellation()
+                relay.execute(method, url, headers, body, timeout)
+            }) { now }
+        link(slow, client("Other", "ios"))
+        assertEquals(null, withTimeoutOrNull(500) { slow.unregister() })
+        assertTrue(slow.peers.value.isEmpty())
     }
 
     @Test fun `unlink all forgets every peer`() = runBlocking {

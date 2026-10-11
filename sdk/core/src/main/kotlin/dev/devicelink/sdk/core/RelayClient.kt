@@ -144,6 +144,9 @@ class RelayClient(
 
     suspend fun acknowledge(id: String) { call("DELETE", "/v1/messages/$id") }
 
+    /** Deletes this device and everything the relay holds for it (links, messages, pairings, push token). */
+    suspend fun unregister() { call("DELETE", "/v1/devices/self") }
+
     suspend fun registerPush(token: String, environment: String, topic: String) {
         call("PUT", "/v1/push", """{"provider":"apns","token":"$token","environment":"$environment","topic":"$topic"}""".toByteArray())
     }

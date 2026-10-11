@@ -29,6 +29,10 @@ final class FakeRelay: HTTPTransport, @unchecked Sendable {
         /// `POST /v1/messages` attempts so far; `uploadFaults` answers (or throws for) the attempt with that 1-based number.
         var uploads = 0
         var uploadFaults: [Int: () throws -> HTTPResponse] = [:]
+        /// Recipient of every envelope the relay stored, in order (survives later deletes).
+        var storedFor: [String] = []
+        /// The relay cannot be reached: every request fails with a connection error.
+        var down = false
     }
     let state = Locked(State())
     let clock: @Sendable () -> Int64
@@ -40,6 +44,7 @@ final class FakeRelay: HTTPTransport, @unchecked Sendable {
     let longPoll = Locked(false)
 
     func send(method: String, url: URL, headers: [String: String], body: Data, timeout: TimeInterval) async throws -> HTTPResponse {
+        if state.get.down { throw URLError(.cannotConnectToHost) }
         if method == "PUT", url.path.hasPrefix("/v1/peers/"), let key = try? Encoding.unb64(headers["X-Device-Key"] ?? "", maxBytes: 128),
            state.with({ state in
                guard state.failNextAllowBy == Identity.deviceId(key) else { return false }
@@ -77,6 +82,14 @@ final class FakeRelay: HTTPTransport, @unchecked Sendable {
         let query = Dictionary(uniqueKeysWithValues: (components.queryItems ?? []).map { ($0.name, $0.value ?? "") })
         let json = (try? JSONSerialization.jsonObject(with: body) as? [String: Any]) ?? [:]
         if path == ["v1", "register"] { state.devices.insert(caller); return ok() }
+        if method == "DELETE", path == ["v1", "devices", "self"] {
+            // Same effect as server/relay store.remove_device; idempotent for an unknown device.
+            state.devices.remove(caller)
+            state.allow = state.allow.filter { !$0.split(separator: ">").map(String.init).contains(caller) }
+            state.mailbox.removeAll { $0.senderId == caller || $0.recipientId == caller }
+            state.pairings = state.pairings.filter { $0.value["creator"] != caller && $0.value["joiner"] != caller }
+            return ok("", 204)
+        }
         guard state.devices.contains(caller) else { return error(403, "registration_required") }
         switch (method, path.count, path.count > 1 ? path[1] : "") {
         case ("POST", 2, "pairings"):
@@ -113,6 +126,7 @@ final class FakeRelay: HTTPTransport, @unchecked Sendable {
             guard envelope.senderId == caller else { return error(403, "sender_mismatch") }
             guard state.allow.contains("\(envelope.recipientId)>\(caller)") else { return error(403, "recipient_not_authorized") }
             state.mailbox.append(envelope)
+            state.storedFor.append(envelope.recipientId)
             return ok("{}", 201)
         case ("GET", 2, "messages"):
             state.polls += 1
@@ -463,6 +477,38 @@ final class EngineTests: XCTestCase {
         let diagnostics = await iphone.currentDiagnostics()
         XCTAssertNil(diagnostics.lastError)
         XCTAssertNil(diagnostics.lastErrorAt)
+    }
+
+    func testUnregisterTellsPeersDeletesTheDeviceOnTheRelayAndForgetsEveryLink() async throws {
+        let android = try client("Pixel"), iphone = try client("iPhone")
+        try await link(android, iphone)
+        let stream = await android.events()
+        let unlinked = Locked<[String]>([])
+        let task = Task { for await event in stream { if case .peerUnlinked(let id, false) = event { unlinked.with { $0.append(id) } } } }
+        let confirmed = await android.unregister()
+        try await Task.sleep(nanoseconds: 50_000_000)
+        task.cancel()
+        XCTAssertTrue(confirmed)
+        XCTAssertEqual(relay.state.get.storedFor, [iphone.deviceId])
+        XCTAssertFalse(relay.state.get.devices.contains(android.deviceId))
+        XCTAssertTrue(relay.state.get.allow.allSatisfy { !$0.contains(android.deviceId) })
+        let peers = await android.peers, relayURL = await android.relayURL
+        XCTAssertTrue(peers.isEmpty)
+        XCTAssertEqual(unlinked.get, [iphone.deviceId])
+        let registered = await android.currentDiagnostics().registered
+        XCTAssertFalse(registered)
+        XCTAssertEqual(relayURL, "https://relay.example")
+    }
+
+    func testUnregisterWithTheRelayUnreachableStillClearsLocalLinks() async throws {
+        let android = try client("Pixel"), iphone = try client("iPhone")
+        try await link(android, iphone)
+        relay.state.with { $0.down = true }
+        let confirmed = await android.unregister()
+        XCTAssertFalse(confirmed)
+        let peers = await android.peers
+        XCTAssertTrue(peers.isEmpty)
+        XCTAssertTrue(relay.state.get.devices.contains(android.deviceId))
     }
 
     func testUndecryptableEnvelopesAreDroppedAndCounted() async throws {

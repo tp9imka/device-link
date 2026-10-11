@@ -417,6 +417,39 @@ public actor DeviceLinkClient {
     /// "Remove this device everywhere": tells every peer, revokes them on the relay, forgets them locally.
     public func unlinkAll() async throws { for peer in peers { try await unlink(peer.id) } }
 
+    /// First step of "Reset device". Sends every linked peer an unlink notice (one attempt each, so peers that
+    /// are online drop the link instead of sending into a void), then asks the relay to delete this device
+    /// (`DELETE /v1/devices/self`: its links, waiting messages to and from it, pairings and push token).
+    ///
+    /// Best effort: never throws. Returns true only when the relay confirmed the delete. Whatever the result,
+    /// and even when the task is cancelled (wrap it in a short timeout), the local link state is cleared:
+    /// peers, pending revocations, replay ledger, clip sequences, chunks in transfer and the registration
+    /// mark. The relay URL and enrollment token are kept, so the device can link again. Callers then wipe
+    /// keys and app state as usual, which keeps reset working offline.
+    public func unregister() async -> Bool {
+        let state = store.load()
+        defer {
+            _ = try? update { current in
+                var cleared = LinkState()
+                cleared.relayUrl = current.relayUrl
+                cleared.enrollmentToken = current.enrollmentToken
+                current = cleared
+            }
+            for key in spool.keys() { spool.remove(key) }
+            note { _ in }
+            for peer in state.peers { emit(.peerUnlinked(peerId: peer.id, byRemote: false)) }
+        }
+        guard !state.relayUrl.isEmpty else { return false }
+        for peer in state.peers where !Task.isCancelled { _ = try? await deliver(.unlink(), to: peer, retry: false) }
+        do {
+            try await relay().unregister()
+            return true
+        } catch {
+            noteFailure(error)
+            return false
+        }
+    }
+
     private func flushRevocations() async throws {
         for id in store.load().pendingRevocations {
             try await registered { try await $0.revoke(id) }

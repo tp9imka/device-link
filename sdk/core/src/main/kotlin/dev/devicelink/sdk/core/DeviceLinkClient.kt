@@ -6,6 +6,8 @@ import java.security.cert.CertificateException
 import javax.net.ssl.SSLPeerUnverifiedException
 import kotlin.random.Random
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
@@ -362,6 +364,43 @@ class DeviceLinkClient(
 
     /** "Remove this device everywhere": tells every peer, revokes them on the relay, forgets them locally. */
     suspend fun unlinkAll() { store.load().peers.forEach { unlink(it.id) } }
+
+    /**
+     * First step of "Reset device". Sends every linked peer an unlink notice (one attempt each, so peers that
+     * are online drop the link instead of sending into a void), then asks the relay to delete this device
+     * (`DELETE /v1/devices/self`: its links, waiting messages to and from it, pairings and push token).
+     *
+     * Best effort: never throws for a network or relay failure. Returns true only when the relay confirmed
+     * the delete. Whatever the result, and even when cancelled (wrap it in a short timeout), the local link
+     * state is cleared: peers, pending revocations, replay ledger, clip sequences, chunks in transfer and the
+     * registration mark. The relay URL and enrollment token are kept, so the device can link again. Callers
+     * then wipe keys and app state as usual, which keeps reset working offline.
+     */
+    suspend fun unregister(): Boolean {
+        val state = store.load()
+        try {
+            if (state.relayUrl.isEmpty()) return false
+            for (peer in state.peers) {
+                try { deliver(Payload.unlink(), peer, retry = false) } catch (cancelled: CancellationException) { throw cancelled } catch (_: Exception) {}
+            }
+            return try {
+                relay().unregister()
+                true
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                failure(failure)
+                false
+            }
+        } finally {
+            withContext(NonCancellable) {
+                update { LinkState(relayUrl = it.relayUrl, enrollmentToken = it.enrollmentToken) }
+                spool.keys().forEach(spool::remove)
+                note { it }
+                state.peers.forEach { mutableEvents.tryEmit(LinkEvent.PeerUnlinked(it.id, byRemote = false)) }
+            }
+        }
+    }
 
     private suspend fun flushRevocations() {
         for (id in store.load().pendingRevocations) {

@@ -145,6 +145,9 @@ public struct RelayClient: Sendable {
 
     public func acknowledge(_ id: String) async throws { _ = try await call("DELETE", "/v1/messages/\(id)") }
 
+    /// Deletes this device and everything the relay holds for it (links, messages, pairings, push token).
+    public func unregister() async throws { _ = try await call("DELETE", "/v1/devices/self") }
+
     public func registerPush(token: String, environment: String, topic: String) async throws {
         _ = try await call("PUT", "/v1/push", body: Data("{\"provider\":\"apns\",\"token\":\"\(token)\",\"environment\":\"\(environment)\",\"topic\":\"\(topic)\"}".utf8))
     }
