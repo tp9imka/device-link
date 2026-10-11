@@ -64,7 +64,9 @@
  <string name="reset_title">Reset this phone?</string>
  <string name="reset_body">Every linked device is unlinked, and this phone\'s keys and clip history are deleted. To use DeviceLink again, link each device again with a new code. This can\'t be undone.</string>
  <string name="reset_confirm">Reset and unlink all</string>
+ <string name="reset_progress">Resetting this phone and telling your linked devices…</string>
  <string name="reset_done">Device reset. Show or scan a code to link again.</string>
+ <string name="reset_done_offline">Device reset on this phone. The relay could not be reached, so linked devices may still list this phone until you unlink it there. Show or scan a code to link again.</string>
  <string name="send_only_to">Send only to %1$s</string>
  <string name="send_to_all">Send to all devices</string>
  <string name="sending_to">Sending to: %1$s</string>

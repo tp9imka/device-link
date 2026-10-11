@@ -5,6 +5,7 @@ import android.app.Activity
 import android.app.AlertDialog
 import android.app.NotificationManager
 import android.content.ClipboardManager
+import android.content.pm.ActivityInfo
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
@@ -234,9 +235,16 @@ class MainActivity : Activity() {
     private fun confirmReset() {
         AlertDialog.Builder(this).setTitle(R.string.reset_title).setMessage(R.string.reset_body)
             .setPositiveButton(R.string.reset_confirm) { _, _ ->
+                // Reset suspends for up to a few seconds while it tells the relay. A non-cancelable dialog
+                // blocks repeat taps and Back; the locked orientation keeps a rotation from destroying the
+                // activity (and cancelling this scope) mid-reset. The SDK finishes the local wipe regardless.
+                val progress = AlertDialog.Builder(this).setMessage(R.string.reset_progress).setCancelable(false).show()
+                requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LOCKED
                 scope.launch {
-                    link.resetDevice()
-                    Toast.makeText(this@MainActivity, R.string.reset_done, Toast.LENGTH_LONG).show()
+                    val removed = link.resetDevice()
+                    progress.dismiss()
+                    requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+                    Toast.makeText(this@MainActivity, if (removed) R.string.reset_done else R.string.reset_done_offline, Toast.LENGTH_LONG).show()
                     recreate()
                 }
             }

@@ -25,12 +25,14 @@ import java.io.ByteArrayOutputStream
 import java.io.File
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * SDK options. By default the relay comes from the host app's manifest meta-data
@@ -353,20 +355,42 @@ class DeviceLinkInstance internal constructor(private val context: Context, val 
     }
 
     /**
-     * Unlinks every device (telling each one), deletes this device's keys and history, and starts
-     * over with a fresh identity. Use when a phone is handed on or keys may be compromised.
+     * Tells every linked device, removes this device from the relay, deletes this device's keys and
+     * history, and starts over with a fresh identity. Use when a phone is handed on or keys may be
+     * compromised. Takes up to [RESET_UNREGISTER_TIMEOUT_MILLIS] plus local cleanup; call it off the
+     * main thread's blocking path (from a coroutine) and show progress.
+     *
+     * The relay step is best effort and bounded, so reset also works offline; the local wipe always
+     * runs, even when the caller is cancelled. Also works with [KeyState.LOST]: only the identity key
+     * (Keystore) signs the relay request, and notices are sealed to the peers' keys.
+     *
+     * @return true when the relay confirmed this device is gone; false when it was reset locally only
+     *   (offline, relay unreachable, timed out, or no relay configured).
      */
-    suspend fun resetDevice() {
-        runCatching { client.unlinkAll() }
+    suspend fun resetDevice(): Boolean {
+        // Stop polling first: a poll after the delete would register this device again.
         stopReceiver()
-        clearHistory()
-        withContext(Dispatchers.IO) {
-            KeystoreIdentity.delete()
-            WrappedEncryptionKey.delete(context)
-            java.io.File(context.noBackupFilesDir, "devicelink/links.json").delete()
-            prefs.edit().clear().apply()
+        var removed = false
+        try {
+            removed = withTimeoutOrNull(RESET_UNREGISTER_TIMEOUT_MILLIS) { client.unregister() } == true
+        } finally {
+            withContext(NonCancellable) {
+                clearHistory()
+                withContext(Dispatchers.IO) {
+                    KeystoreIdentity.delete()
+                    WrappedEncryptionKey.delete(context)
+                    java.io.File(context.noBackupFilesDir, "devicelink/links.json").delete()
+                    prefs.edit().clear().apply()
+                }
+                scope.cancel()
+                DeviceLink.forget(this@DeviceLinkInstance)
+            }
         }
-        scope.cancel()
-        DeviceLink.forget(this)
+        return removed
+    }
+
+    companion object {
+        /** Upper bound for telling peers and the relay during [resetDevice]; the local wipe follows regardless. */
+        const val RESET_UNREGISTER_TIMEOUT_MILLIS = 5_000L
     }
 }
