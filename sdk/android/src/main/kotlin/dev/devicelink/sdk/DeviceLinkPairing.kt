@@ -184,8 +184,8 @@ object DeviceLinkPairing {
     }
 
     /**
-     * One-time confirmation after linking: both screens show the same six digits. Nothing is asked
-     * again afterwards; the devices trust each other's keys until unlinked.
+     * Confirmation after each linking: both screens show the same six digits (linking again shows a
+     * new code). Nothing is asked between links; the devices trust each other's keys until unlinked.
      */
     private fun showLinked(activity: Activity, peer: LinkedPeer) {
         if (activity.isFinishing) {
