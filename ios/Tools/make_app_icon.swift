@@ -183,6 +183,10 @@ let glyph = parser.parse()
 /// A launcher shows the middle 72 of the adaptive icon's 108 units; the iOS icon shows the same region.
 let visible: CGFloat = 72
 
+/// Launchers mask the 72-unit region with a circle or squircle, so the glyph reads larger there than
+/// on the iOS full-bleed square. A modest enlargement keeps the two looking alike.
+let glyphScale: CGFloat = 1.15
+
 /// Draws the icon into `rect` of a top-left-origin context (y flipped by the caller).
 func drawIcon(_ context: CGContext, in rect: CGRect) {
     context.saveGState()
@@ -200,6 +204,10 @@ func drawIcon(_ context: CGContext, in rect: CGRect) {
     let unit = rect.width / visible
     context.translateBy(x: rect.minX - (viewport - visible) / 2 * unit, y: rect.minY - (viewport - visible) / 2 * unit)
     context.scaleBy(x: unit, y: unit)
+    // Enlarge about the viewport centre: see glyphScale.
+    context.translateBy(x: viewport / 2, y: viewport / 2)
+    context.scaleBy(x: glyphScale, y: glyphScale)
+    context.translateBy(x: -viewport / 2, y: -viewport / 2)
     context.translateBy(x: translate.x, y: translate.y)
     context.scaleBy(x: scale.x, y: scale.y)
     context.addPath(glyph)
