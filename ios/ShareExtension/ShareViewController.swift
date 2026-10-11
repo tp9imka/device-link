@@ -47,6 +47,9 @@ final class ShareViewController: UIViewController {
             finish("Sent to \(names.joined(separator: ", ")) ✓")
         } catch is TooLarge {
             finish(SendMessages.tooLarge)
+        } catch is KeysLostError {
+            // Linked devices pinned the old keys; the app's Reset is the way out (see KeyPolicy).
+            finish(KeysLostError.message)
         } catch {
             finish(SendMessages.describe(error))
         }
