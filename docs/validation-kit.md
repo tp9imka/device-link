@@ -94,7 +94,7 @@ Record the SHA-256 of every file fixture before sending (`shasum -a 256` on desk
 | R4 | **Reset device** on B (Info → Reset). | New identity; all peers unlinked; a new scan is needed for B only. |
 | R5 | Inspect an item in admin Sandboxes. | Only sizes, timings, fingerprints; no content. |
 | R6 | `adb logcat -d | grep -i devicelink` after a session. | No clipboard text, file names, URIs, keys or peer names. |
-| R7 | Copy the **diagnostics report** (Info). | Contains versions, states and timestamps only. |
+| R7 | Copy the **diagnostics report**: Android **Info** → **Copy report**; iPhone ⓘ (Diagnostics) → **Copy report**. Paste it into a notes app on the device. | Lines, both platforms: app and OS version, hardware model (Android manufacturer + model, iOS model identifier such as `iPhone15,2`); device ID as its **first 16 hex characters + …**; relay URL (by design: your own relay) and `registered`; number of linked devices and receiver status (Android also `Keys` and `receiver on`); last poll/receive/send times; received/sent counts; last error as `relay <status> <code>`, `network: <error type or code>` or an error type name. **Never** in it: clip text, file names, URIs, keys or enrollment token, peer or device names, a full device ID. |
 | R8 | Font size largest, RTL language, dark mode on both platforms. | Screens usable; no clipped controls. |
 
 ## Battery
