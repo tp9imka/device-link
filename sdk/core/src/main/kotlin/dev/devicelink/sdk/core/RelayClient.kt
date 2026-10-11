@@ -35,6 +35,8 @@ class UrlConnectionTransport(private val maxResponseBytes: Int = 25 * 1024 * 102
                         connection.requestMethod = method
                         connection.instanceFollowRedirects = false
                         connection.useCaches = false
+                        // No total request timeout: an 18 MB upload on a slow link may take minutes. The
+                        // read timeout is an idle timeout on the response; writes are not time-capped here.
                         connection.connectTimeout = 15_000
                         connection.readTimeout = timeoutMillis
                         headers.forEach(connection::setRequestProperty)

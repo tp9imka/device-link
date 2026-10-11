@@ -20,7 +20,10 @@ public final class URLSessionTransport: HTTPTransport, @unchecked Sendable {
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
         configuration.urlCache = nil
         configuration.httpCookieStorage = nil
-        configuration.timeoutIntervalForResource = 120
+        // Total time per request. A 10 MiB file is one ~18 MB envelope: ~75 s at 250 KB/s, longer on a slow
+        // uplink, so the cap must be far above that. Stalls are caught by each request's idle timeout
+        // (`timeoutInterval`: 30 s for uploads, wait + 20 s for long polls), not by this.
+        configuration.timeoutIntervalForResource = 15 * 60
         session = URLSession(configuration: configuration)
     }
 
