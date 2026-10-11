@@ -1,13 +1,31 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Diagnostics: the report, then the one destructive action, set apart below a divider. -->
-<ScrollView xmlns:android="http://schemas.android.com/apk/res/android" android:layout_width="match_parent"
- android:layout_height="wrap_content">
- <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical"
-  android:paddingStart="24dp" android:paddingEnd="24dp" android:paddingTop="8dp">
-  <TextView android:id="@+id/diagnostics_report" android:layout_width="match_parent" android:layout_height="wrap_content"
-   android:textColor="@color/on_surface" android:textSize="14sp" android:textIsSelectable="true" />
-  <View android:layout_width="match_parent" android:layout_height="1dp" android:layout_marginTop="24dp" android:background="@color/line" />
-  <Button android:id="@+id/diagnostics_reset" style="@style/DangerButton" android:layout_width="wrap_content"
-   android:layout_height="wrap_content" android:layout_marginTop="8dp" android:text="@string/diagnostics_reset" />
+<!-- Diagnostics: the report, then the one destructive action, set apart below a divider. Only the report scrolls
+     (it shrinks through its weight when the dialog would outgrow the screen), so the actions below it stay
+     visible at any font scale. -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android" android:layout_width="match_parent"
+ android:layout_height="wrap_content" android:orientation="vertical" android:paddingTop="20dp" android:paddingBottom="8dp">
+ <TextView android:id="@+id/diagnostics_title" android:layout_width="match_parent" android:layout_height="wrap_content"
+  android:paddingStart="24dp" android:paddingEnd="24dp" android:text="@string/diagnostics_title"
+  android:textAppearance="@android:style/TextAppearance.Material.DialogWindowTitle" />
+ <ScrollView android:id="@+id/diagnostics_scroll" android:layout_width="match_parent" android:layout_height="0dp"
+  android:layout_weight="1" android:layout_marginTop="8dp" android:scrollIndicators="top|bottom">
+  <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical"
+   android:paddingStart="24dp" android:paddingEnd="24dp">
+   <TextView android:id="@+id/diagnostics_report" android:layout_width="match_parent" android:layout_height="wrap_content"
+    android:textColor="@color/on_surface" android:textSize="14sp" android:textIsSelectable="true" />
+   <View android:layout_width="match_parent" android:layout_height="1dp" android:layout_marginTop="24dp" android:background="@color/line" />
+   <Button android:id="@+id/diagnostics_reset" style="@style/DangerButton" android:layout_width="wrap_content"
+    android:layout_height="wrap_content" android:layout_marginTop="8dp" android:text="@string/diagnostics_reset" />
+  </LinearLayout>
+ </ScrollView>
+ <!-- One row when the labels fit, otherwise stacked (MainActivity switches the orientation). -->
+ <LinearLayout android:id="@+id/diagnostics_actions" android:layout_width="match_parent" android:layout_height="wrap_content"
+  android:orientation="horizontal" android:gravity="end" android:paddingStart="12dp" android:paddingEnd="12dp">
+  <Button android:id="@+id/diagnostics_test" style="@style/SecondaryButton" android:layout_width="wrap_content"
+   android:layout_height="wrap_content" android:text="@string/diagnostics_test" />
+  <Button android:id="@+id/diagnostics_close" style="@style/SecondaryButton" android:layout_width="wrap_content"
+   android:layout_height="wrap_content" android:text="@string/diagnostics_close" />
+  <Button android:id="@+id/diagnostics_copy" style="@style/SecondaryButton" android:layout_width="wrap_content"
+   android:layout_height="wrap_content" android:text="@string/diagnostics_copy" />
  </LinearLayout>
-</ScrollView>
+</LinearLayout>

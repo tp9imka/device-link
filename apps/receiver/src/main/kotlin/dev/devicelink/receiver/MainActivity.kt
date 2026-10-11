@@ -3,6 +3,7 @@ package dev.devicelink.receiver
 import android.Manifest
 import android.app.Activity
 import android.app.AlertDialog
+import android.app.Dialog
 import android.app.NotificationManager
 import android.content.ClipboardManager
 import android.content.pm.ActivityInfo
@@ -14,8 +15,10 @@ import android.provider.Settings
 import android.view.Gravity
 import android.view.LayoutInflater
 import android.view.View
+import android.view.Window
 import android.widget.Button
 import android.widget.EditText
+import android.widget.LinearLayout
 import android.widget.ListView
 import android.widget.PopupMenu
 import android.widget.Switch
@@ -212,23 +215,42 @@ class MainActivity : Activity() {
      * from those harmless actions (below the report, in the danger colour) and always confirms.
      */
     private fun showDiagnostics() {
-        val content = LayoutInflater.from(this).inflate(R.layout.diagnostics, null)
-        content.findViewById<TextView>(R.id.diagnostics_report).text = link.diagnosticsReport()
-        val dialog = AlertDialog.Builder(this).setTitle(R.string.diagnostics_title).setView(content)
-            .setPositiveButton(R.string.diagnostics_copy) { _, _ ->
-                getSystemService(ClipboardManager::class.java).setPrimaryClip(android.content.ClipData.newPlainText("DeviceLink diagnostics", link.diagnosticsReport()))
-                Toast.makeText(this, R.string.diagnostics_copied, Toast.LENGTH_SHORT).show()
+        // A plain dialog with its own action row: AlertDialog's stacked buttons do not scroll with the content,
+        // so at large font scales they ran off the screen. Here only the report scrolls.
+        val dialog = Dialog(this, R.style.Theme_Receiver_Dialog)
+        dialog.requestWindowFeature(Window.FEATURE_NO_TITLE)
+        dialog.setContentView(R.layout.diagnostics)
+        dialog.setTitle(R.string.diagnostics_title)
+        dialog.findViewById<TextView>(R.id.diagnostics_report).text = link.diagnosticsReport()
+        dialog.findViewById<Button>(R.id.diagnostics_copy).setOnClickListener {
+            dialog.dismiss()
+            getSystemService(ClipboardManager::class.java).setPrimaryClip(android.content.ClipData.newPlainText("DeviceLink diagnostics", link.diagnosticsReport()))
+            Toast.makeText(this, R.string.diagnostics_copied, Toast.LENGTH_SHORT).show()
+        }
+        dialog.findViewById<Button>(R.id.diagnostics_test).setOnClickListener {
+            dialog.dismiss()
+            scope.launch {
+                val stamp = java.text.DateFormat.getTimeInstance().format(java.util.Date())
+                val result = runCatching { link.sendText(getString(R.string.test_clip, stamp)) }
+                Toast.makeText(this@MainActivity, link.sendResultMessage(result), Toast.LENGTH_LONG).show()
             }
-            .setNeutralButton(R.string.diagnostics_test) { _, _ ->
-                scope.launch {
-                    val stamp = java.text.DateFormat.getTimeInstance().format(java.util.Date())
-                    val result = runCatching { link.sendText(getString(R.string.test_clip, stamp)) }
-                    Toast.makeText(this@MainActivity, link.sendResultMessage(result), Toast.LENGTH_LONG).show()
+        }
+        dialog.findViewById<Button>(R.id.diagnostics_close).setOnClickListener { dialog.dismiss() }
+        dialog.findViewById<Button>(R.id.diagnostics_reset).setOnClickListener { dialog.dismiss(); confirmReset() }
+        val actions = dialog.findViewById<LinearLayout>(R.id.diagnostics_actions)
+        actions.addOnLayoutChangeListener(object : View.OnLayoutChangeListener {
+            override fun onLayoutChange(view: View, left: Int, top: Int, right: Int, bottom: Int, l: Int, t: Int, r: Int, b: Int) {
+                actions.removeOnLayoutChangeListener(this)
+                // Stack the actions (end-aligned, like AlertDialog) when their labels do not fit in one row.
+                val unspecified = View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
+                val needed = (0 until actions.childCount).sumOf { actions.getChildAt(it).apply { measure(unspecified, unspecified) }.measuredWidth }
+                if (needed > actions.width - actions.paddingStart - actions.paddingEnd) {
+                    actions.orientation = LinearLayout.VERTICAL
+                    actions.gravity = Gravity.END
                 }
             }
-            .setNegativeButton(R.string.diagnostics_close, null)
-            .show()
-        content.findViewById<Button>(R.id.diagnostics_reset).setOnClickListener { dialog.dismiss(); confirmReset() }
+        })
+        dialog.show()
     }
 
     /** Deletes the identity and unlinks every device: the user confirms in plain words first. */
@@ -258,6 +280,7 @@ class MainActivity : Activity() {
         AlertDialog.Builder(this).setTitle(getString(R.string.unlink_title, peer.name)).setMessage(R.string.unlink_body)
             .setPositiveButton(R.string.unlink) { _, _ -> scope.launch { runCatching { link.unlink(peer.id) } } }
             .setNegativeButton(android.R.string.cancel, null).show()
+            .getButton(AlertDialog.BUTTON_POSITIVE).setTextColor(getColor(R.color.danger))
     }
 
     private fun recopy(record: ClipRecord) {

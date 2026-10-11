@@ -40,6 +40,8 @@ class ClipAdapter(private val context: Context) : BaseAdapter() {
         val state = view.findViewById<TextView>(R.id.state)
         state.text = when {
             received && record.state == ClipState.COPIED -> context.getString(R.string.state_copied_in)
+            // Received images and files can also be saved from the hold menu.
+            received && record.uri != null -> context.getString(R.string.state_share_or_save)
             received -> context.getString(R.string.state_share)
             record.state == ClipState.PENDING -> context.getString(R.string.state_pending_out)
             record.state == ClipState.COPIED -> context.getString(R.string.state_copied_out, record.peerName)
