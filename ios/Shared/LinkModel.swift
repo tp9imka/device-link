@@ -37,7 +37,8 @@ final class LinkModel: ObservableObject {
             }
             Task { await refresh() }
         } catch {
-            message = "DeviceLink could not create its device keys. Restart the app; if this repeats, reinstall it."
+            // Keychain items survive a reinstall, so reset (it works without a client) is the way out.
+            message = "DeviceLink could not read its device keys. Restart the app; if this repeats, open Diagnostics (ⓘ) and reset this device."
         }
     }
 
@@ -218,15 +219,18 @@ final class LinkModel: ObservableObject {
     static let resetUnregisterTimeout: Duration = .seconds(5)
 
     /// Tells every linked device, removes this device from the relay (bounded, best effort, so reset also
-    /// works offline), deletes keys and history, and starts with a new identity.
+    /// works offline), deletes keys and history, and starts with a new identity. Also runs when the keys
+    /// could not be read at launch (no client): the relay step is skipped then, nothing can sign it.
     func resetDevice() {
-        guard let client, !resetting else { return }
+        guard !resetting else { return }
         resetting = true
         // Stop polling first: a poll after the relay delete would register this device again.
         setActive(false)
+        let client = self.client
         Task {
             defer { resetting = false }
-            let removed = await Self.unregister(client, within: Self.resetUnregisterTimeout)
+            var removed = false
+            if let client { removed = await Self.unregister(client, within: Self.resetUnregisterTimeout) }
             clips.clear()
             Keychain.delete("identity.se"); Keychain.delete("identity.sw"); Keychain.delete("encryption.x25519")
             try? FileManager.default.removeItem(at: LinkEnvironment.container.appendingPathComponent("DeviceLink/links.json"))
@@ -237,8 +241,8 @@ final class LinkModel: ObservableObject {
                 events?.cancel()
                 events = Task { [weak self] in for await event in await fresh.events() { await self?.handle(event) } }
                 await refresh()
-                message = removed
-                    ? "Device reset. Show or scan a code to link again."
+                message = removed ? "Device reset. Show or scan a code to link again."
+                    : client == nil ? "Device reset on this device. Its old keys could not be read, so linked devices may still list it until you unlink it there. Show or scan a code to link again."
                     : "Device reset on this device. The relay could not be reached, so linked devices may still list it until you unlink it there. Show or scan a code to link again."
             } catch {
                 message = "Reset failed. Restart the app and try again."
