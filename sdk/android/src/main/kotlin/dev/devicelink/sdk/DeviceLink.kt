@@ -21,7 +21,6 @@ import dev.devicelink.sdk.core.PayloadKind
 import dev.devicelink.sdk.core.ReceiptStatus
 import dev.devicelink.sdk.core.ReceiverStatus
 import dev.devicelink.sdk.core.SendOutcome
-import java.io.ByteArrayOutputStream
 import java.io.File
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -178,12 +177,12 @@ class DeviceLinkInstance internal constructor(private val context: Context, val 
 
     /** Sends a content/file URI: images go to the other clipboard, other files arrive as a share prompt. */
     suspend fun sendUri(uri: Uri, mimeHint: String? = null): List<SendOutcome> {
-        val (name, mime, bytes) = withContext(Dispatchers.IO) { readUri(uri, mimeHint) }
-        val content = if (mime in Limits.IMAGE_MIMES) OutgoingContent.Image(name, mime, bytes) else OutgoingContent.File(name, mime, bytes)
+        val content = withContext(Dispatchers.IO) { describeUri(uri, mimeHint) }
         // Base64, validation, HPKE sealing of up to 10 MiB and the Keystore signature are CPU work:
-        // keep them off the caller's (often the main) thread. The engine hops to IO for HTTP itself.
+        // keep them off the caller's (often the main) thread. The engine hops to IO for reads and HTTP itself.
         return withContext(Dispatchers.Default) {
-            record(client.send(content, targets()), if (content is OutgoingContent.Image) "image" else "file", name = name, mime = mime, uri = uri.toString())
+            record(client.send(content, targets()), if (content.kind == PayloadKind.IMAGE) "image" else "file",
+                name = content.name, mime = content.mime, uri = uri.toString())
         }
     }
 
@@ -226,28 +225,38 @@ class DeviceLinkInstance internal constructor(private val context: Context, val 
         return outcomes
     }
 
-    private fun readUri(uri: Uri, mimeHint: String?): Triple<String, String, ByteArray> {
+    /**
+     * Name, type and exact size of [uri], checked against the limit before anything is sent. The engine then
+     * reads the stream one chunk at a time, so a 40 MB file never sits in memory whole.
+     */
+    private fun describeUri(uri: Uri, mimeHint: String?): OutgoingContent.Source {
         val resolver = context.contentResolver
         var name = uri.lastPathSegment?.substringAfterLast('/') ?: "file"
-        if (uri.scheme == "content") resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use {
-            if (it.moveToFirst() && !it.isNull(0)) name = it.getString(0)
+        var size: Long? = null
+        if (uri.scheme == "content") resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE), null, null, null)?.use {
+            if (it.moveToFirst()) {
+                if (!it.isNull(0)) name = it.getString(0)
+                if (!it.isNull(1)) size = it.getLong(1).takeIf { length -> length >= 0 }
+            }
         }
         name = name.replace('/', '_').replace('\\', '_').filterNot { it.isISOControl() }.take(Limits.MAX_FILE_NAME_CHARS)
             .ifBlank { "file" }.let { if (it == "." || it == "..") "file" else it }
         val mime = resolver.getType(uri) ?: mimeHint ?: Mime.forName(name)
         if ('.' !in name && mime != "application/octet-stream") name = "$name.${Mime.extension(mime)}"
-        val bytes = (resolver.openInputStream(uri) ?: throw java.io.FileNotFoundException("No content")).use { input ->
-            val output = ByteArrayOutputStream()
+        val open = { resolver.openInputStream(uri) ?: throw java.io.FileNotFoundException("No content") }
+        // No reported size: count it once without keeping the bytes, stopping at the limit.
+        val length = size ?: open().use { input ->
             val buffer = ByteArray(64 * 1024)
-            while (true) {
+            var total = 0L
+            while (total <= Limits.MAX_FILE_BYTES) {
                 val count = input.read(buffer)
                 if (count < 0) break
-                if (output.size() + count > Limits.MAX_FILE_BYTES) throw ContentTooLargeException(Limits.MAX_FILE_BYTES)
-                output.write(buffer, 0, count)
+                total += count
             }
-            output.toByteArray()
+            total
         }
-        return Triple(name, mime, bytes)
+        if (length > Limits.MAX_FILE_BYTES) throw ContentTooLargeException(Limits.MAX_FILE_BYTES)
+        return OutgoingContent.Source(if (mime in Limits.IMAGE_MIMES) PayloadKind.IMAGE else PayloadKind.FILE, name, mime, length, open)
     }
 
     // ----- receiving -----------------------------------------------------------------------------
@@ -281,7 +290,7 @@ class DeviceLinkInstance internal constructor(private val context: Context, val 
             }
             PayloadKind.IMAGE, PayloadKind.FILE -> {
                 val name = item.fileName ?: "file.${Mime.extension(item.mime)}"
-                val uri = ReceivedFiles.store(context, item.id, name, item.mime, requireNotNull(item.bytes()))
+                val uri = ReceivedFiles.store(context, item.id, name, item.mime, item::writeTo)
                 val record = base.copy(uri = uri.toString(), mime = item.mime, name = name)
                 val copied = item.kind == PayloadKind.IMAGE && options.autoCopy && !item.stale && clipboard.writeUri(uri, item.mime)
                 finish(record, copied)

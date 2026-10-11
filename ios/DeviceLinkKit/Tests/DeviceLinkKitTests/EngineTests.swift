@@ -380,9 +380,11 @@ final class EngineTests: XCTestCase {
 
         let after = try start(desk)
         let items = Locked<[IncomingItem]>([])
-        for _ in 0..<2 { try await after.receiveOnce(wait: 0) { item in items.with { $0.append(item) }; return .delivered } }
+        // A chunked file is read from the spool, so only inside the handler.
+        let contents = Locked<[Data?]>([])
+        for _ in 0..<2 { try await after.receiveOnce(wait: 0) { item in items.with { $0.append(item) }; contents.with { $0.append(item.bytes()) }; return .delivered } }
         XCTAssertEqual(items.get.map(\.id), [sent.itemId!])
-        XCTAssertEqual(items.get.first?.bytes(), file)
+        XCTAssertEqual(contents.get.first ?? nil, file)
         let ids = try await receipts(android)
         XCTAssertEqual(ids, [sent.itemId!])
         XCTAssertTrue(desk.spooled.isEmpty, "spool is cleaned after apply")
@@ -400,8 +402,10 @@ final class EngineTests: XCTestCase {
         XCTAssertTrue(relay.mailbox.filter { $0.recipientId == before.deviceId }.isEmpty)
 
         let items = Locked<[IncomingItem]>([])
-        try await start(desk).receiveOnce(wait: 0) { item in items.with { $0.append(item) }; return .delivered }
-        XCTAssertEqual(items.get.first?.bytes(), file)
+        // A chunked file is read from the spool, so only inside the handler.
+        let contents = Locked<[Data?]>([])
+        try await start(desk).receiveOnce(wait: 0) { item in items.with { $0.append(item) }; contents.with { $0.append(item.bytes()) }; return .delivered }
+        XCTAssertEqual(contents.get.first ?? nil, file)
         let again = try await start(desk).receiveOnce(wait: 0) { _ in XCTFail("applied twice"); return .failed }
         XCTAssertEqual(again, 0)
     }
@@ -740,5 +744,121 @@ final class EngineTests: XCTestCase {
         let undecryptable = await iphone.currentDiagnostics().undecryptable
         XCTAssertEqual(undecryptable, 1)
         XCTAssertTrue(relay.mailbox.isEmpty)
+    }
+
+    /// Stores uploads, then answers as if after `answer` seconds: a request whose timeout is shorter fails.
+    final class LateAnswers: HTTPTransport, @unchecked Sendable {
+        let inner: HTTPTransport, answer: TimeInterval
+        let timeouts = Locked<[TimeInterval]>([])
+        init(_ inner: HTTPTransport, answer: TimeInterval) { self.inner = inner; self.answer = answer }
+        func send(method: String, url: URL, headers: [String: String], body: Data, timeout: TimeInterval) async throws -> HTTPResponse {
+            let response = try await inner.send(method: method, url: url, headers: headers, body: body, timeout: timeout)
+            guard method == "POST", url.path == "/v1/messages" else { return response }
+            timeouts.with { $0.append(timeout) }
+            if timeout < answer { throw URLError(.timedOut) }
+            return response
+        }
+    }
+
+    func testUploadAnsweredAfter30sButWithinTheRelayAllowanceSucceeds() async throws {
+        // The idle timer runs with no progress once the body is handed off; a 30 s timer reported such uploads
+        // as failed although the relay stored them.
+        let late = LateAnswers(relay, answer: 90)
+        let sender = try DeviceLinkClient(identity: SoftwareIdentity(), encryption: EncryptionKeyPair(), store: MemoryLinkStore(),
+                                          config: LinkConfig(deviceName: "Pixel"), transport: late, clock: { [now] in now.get })
+        try await link(sender, try client("iPhone"))
+        await sender.setRetryDelays([1, 1, 1])
+        let outcome = try await sender.send(.file(name: "big.bin", mime: "application/octet-stream", data: bigFile()))[0]
+        XCTAssertTrue(outcome.accepted)
+        XCTAssertEqual(relay.state.get.uploads, 4, "one attempt per chunk")
+        XCTAssertTrue(late.timeouts.get.allSatisfy { $0 > 90 })
+    }
+
+    /// Generated content read on demand; `position` is how far it was read.
+    final class CountingStream: InputStream, @unchecked Sendable {
+        let size: Int64
+        let position: Locked<Int64>
+        init(size: Int64, position: Locked<Int64>) { self.size = size; self.position = position; super.init(data: Data()) }
+        static func byte(_ index: Int64) -> UInt8 { UInt8(index * 31 % 251) }
+        override func open() {}
+        override func close() {}
+        override var streamStatus: Stream.Status { .open }
+        override var hasBytesAvailable: Bool { position.get < size }
+        override func read(_ buffer: UnsafeMutablePointer<UInt8>, maxLength length: Int) -> Int {
+            position.with { position in
+                let count = Int(min(Int64(length), size - position))
+                for index in 0..<count { buffer[index] = Self.byte(position + Int64(index)) }
+                position += Int64(count)
+                return count
+            }
+        }
+    }
+
+    final class ReadAtUpload: HTTPTransport, @unchecked Sendable {
+        let inner: HTTPTransport, position: Locked<Int64>
+        let reads = Locked<[Int64]>([])
+        init(_ inner: HTTPTransport, position: Locked<Int64>) { self.inner = inner; self.position = position }
+        func send(method: String, url: URL, headers: [String: String], body: Data, timeout: TimeInterval) async throws -> HTTPResponse {
+            if method == "POST", url.path == "/v1/messages" { reads.with { $0.append(position.get) } }
+            return try await inner.send(method: method, url: url, headers: headers, body: body, timeout: timeout)
+        }
+    }
+
+    func testA30MBStreamIsReadOneChunkAtATimeAndArrivesIntact() async throws {
+        let size: Int64 = 30 * 1024 * 1024
+        let position = Locked<Int64>(0), opened = Locked(0)
+        let counting = ReadAtUpload(relay, position: position)
+        let sendingIdentity = SoftwareIdentity(), sendingKeys = EncryptionKeyPair()
+        let receivingIdentity = SoftwareIdentity(), receivingKeys = EncryptionKeyPair()
+        let sender = try DeviceLinkClient(identity: sendingIdentity, encryption: sendingKeys, store: MemoryLinkStore(),
+                                          config: LinkConfig(deviceName: "Pixel"), transport: counting, clock: { [now] in now.get })
+        let receiver = try client("Desk", identity: receivingIdentity, keys: receivingKeys)
+        try await link(sender, receiver)
+        await sender.setRetryDelays([1, 1, 1])
+        relay.state.with { $0.uploadFaults[$0.uploads + 3] = Self.relayError(503, "unavailable") }
+        let source = OutgoingSource(kind: .file, name: "big.zip", mime: "application/zip", size: size) {
+            opened.with { $0 += 1 }
+            return CountingStream(size: size, position: position)
+        }
+        let outcome = try await sender.send(.stream(source))[0]
+        XCTAssertTrue(outcome.accepted)
+        XCTAssertEqual(opened.get, 1)
+        let parts = Payload.partsFor(size: size)
+        // Upload k (and the resend of chunk 2) happens with exactly chunks 0..k read: nothing is read ahead.
+        let chunkEnd = { (k: Int) in min(size, Int64(k + 1) * Int64(Limits.chunkBytes)) }
+        XCTAssertEqual(counting.reads.get, ([0, 1, 2, 2] + Array(3..<parts)).map(chunkEnd))
+        let crypto = EnvelopeCrypto(identity: receivingIdentity, encryption: receivingKeys)
+        let payloads = try relay.mailbox.map { try crypto.open($0, from: sender.localBundle, now: now.get) }
+        XCTAssertEqual(payloads.map(\.part), (0..<parts).map { $0 })
+        XCTAssertEqual(Set(payloads.map(\.group)), [outcome.itemId])
+        XCTAssertTrue(payloads.allSatisfy { $0.parts == parts && $0.size == size && $0.kind == .file && $0.name == "big.zip" })
+
+        let written = Locked<Int64>(0), intact = Locked(true)
+        var applied = 0
+        for _ in 0..<parts {
+            applied += try await receiver.receiveOnce(wait: 0) { item in
+                try? item.write { data in
+                    let offset = written.get
+                    let expected = Data((0..<Int64(data.count)).map { CountingStream.byte(offset + $0) })
+                    if data != expected { intact.with { $0 = false } }
+                    written.with { $0 += Int64(data.count) }
+                }
+                return .delivered
+            }
+        }
+        XCTAssertEqual(applied, 1)
+        XCTAssertEqual(written.get, size)
+        XCTAssertTrue(intact.get)
+    }
+
+    func testStreamShorterThanItsSizeFailsTheSendWithoutANetworkError() async throws {
+        let android = try client("Pixel"), iphone = try client("iPhone")
+        try await link(android, iphone)
+        let short = OutgoingSource(kind: .file, name: "cut.bin", mime: "application/octet-stream", size: Int64(Limits.maxContentBytes) + 1) {
+            InputStream(data: Data(count: Limits.chunkBytes + 5))
+        }
+        let outcome = try await android.send(.stream(short))[0]
+        XCTAssertEqual(outcome.error, SendOutcome.sendFailed)
+        XCTAssertEqual(relay.mailbox.count, 1, "only the complete first chunk went out")
     }
 }

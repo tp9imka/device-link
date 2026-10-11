@@ -1,11 +1,17 @@
 package dev.devicelink.sdk.core
 
+import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
 import java.io.IOException
+import java.io.InputStream
+import java.io.OutputStream
 import java.net.SocketTimeoutException
+import java.util.UUID
 import java.security.cert.CertificateException
 import javax.net.ssl.SSLPeerUnverifiedException
 import kotlin.random.Random
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.currentCoroutineContext
@@ -42,7 +48,19 @@ sealed interface OutgoingContent {
     data class Text(val text: String, val html: String? = null, val sensitive: Boolean = false) : OutgoingContent
     class Image(val name: String, val mime: String, val bytes: ByteArray) : OutgoingContent
     class File(val name: String, val mime: String, val bytes: ByteArray) : OutgoingContent
+
+    /**
+     * An image or file read from [open] while it is sent, one chunk at a time, so a large file is never held
+     * whole in memory. [size] must be exact: it is checked against the limits before anything is sent, and
+     * a source that yields a different length fails the send. [open] is called once per send.
+     */
+    class Source(val kind: PayloadKind, val name: String, val mime: String, val size: Long, val open: () -> InputStream) : OutgoingContent {
+        init { require(kind == PayloadKind.IMAGE || kind == PayloadKind.FILE) }
+    }
 }
+
+/** The content of an [OutgoingContent.Source] could not be read; reported as [SendOutcome.SEND_FAILED]. */
+private class SourceReadException(cause: Throwable) : Exception("Could not read the content", cause)
 
 /** A decrypted item from a linked peer, handed to the platform layer to apply. */
 data class IncomingItem(
@@ -52,8 +70,8 @@ data class IncomingItem(
     val expiresAt: Long,
     /** A newer clip from the same peer was already applied; show it, do not overwrite the clipboard. */
     val stale: Boolean,
-    /** Reassembled content of a chunked file; null for single-envelope items. */
-    private val assembled: ByteArray? = null,
+    /** Writes a chunked file part by part from the receive spool; null for single-envelope items. */
+    private val chunked: ((OutputStream) -> Unit)? = null,
 ) {
     val kind: PayloadKind get() = payload.kind
     val text: String? get() = payload.text
@@ -61,7 +79,17 @@ data class IncomingItem(
     val sensitive: Boolean get() = payload.sensitive == true
     val fileName: String? get() = payload.name
     val mime: String get() = payload.mime ?: "text/plain"
-    fun bytes(): ByteArray? = assembled ?: payload.dataBytes()
+
+    /** Whole content in memory. Prefer [writeTo] for files: a chunked file can be 40 MB. */
+    fun bytes(): ByteArray? = if (chunked != null) ByteArrayOutputStream().also(chunked).toByteArray() else payload.dataBytes()
+
+    /**
+     * Streams an image or file to [output], holding at most one chunk at a time. A chunked file is read from
+     * the receive spool, so call this (or [bytes]) inside the receive handler; the spool is cleared after it.
+     */
+    fun writeTo(output: OutputStream) {
+        if (chunked != null) chunked.invoke(output) else output.write(requireNotNull(payload.dataBytes()) { "No content" })
+    }
 }
 
 /** Snapshot for debug screens: where the device talks to and what happened last. Never contains content. */
@@ -129,6 +157,9 @@ private const val POLL_PAUSE_MILLIS = 200L
 internal const val POLL_ALREADY_ACTIVE = "poll_already_active"
 private const val POLL_COLLISION_MILLIS = 2_000L
 private const val MAILBOX_FULL = "mailbox_full"
+/** How long one envelope waits for a full mailbox to drain, counted from the first `mailbox_full` answer. */
+internal const val MAILBOX_FULL_WAIT_MILLIS = 90_000L
+private const val MAILBOX_FULL_PAUSE_MILLIS = 2_000L
 private const val PEER_LIMIT = "peer_limit"
 
 /** Pauses before the 2nd, 3rd and 4th upload attempt of one envelope (4 attempts, about 7 s in total). */
@@ -470,30 +501,102 @@ class DeviceLinkClient(
     /** Encrypts [content] separately for each target peer (all linked peers by default). */
     suspend fun send(content: OutgoingContent, peerIds: Collection<String>? = null): List<SendOutcome> {
         val now = clock()
-        val payloads = when (content) {
-            is OutgoingContent.Text -> listOf(Payload.text(content.text, now, content.html, content.sensitive))
-            is OutgoingContent.Image -> if (content.bytes.size <= Limits.MAX_CONTENT_BYTES) listOf(Payload.image(content.name, content.mime, content.bytes, now))
-                else Payload.chunks(PayloadKind.IMAGE, content.name, content.mime, content.bytes, now)
-            is OutgoingContent.File -> if (content.bytes.size <= Limits.MAX_CONTENT_BYTES) listOf(Payload.file(content.name, content.mime, content.bytes, now))
-                else Payload.chunks(PayloadKind.FILE, content.name, content.mime, content.bytes, now)
+        val source = when (content) {
+            is OutgoingContent.Text -> null
+            is OutgoingContent.Image -> OutgoingContent.Source(PayloadKind.IMAGE, content.name, content.mime, content.bytes.size.toLong()) { ByteArrayInputStream(content.bytes) }
+            is OutgoingContent.File -> OutgoingContent.Source(PayloadKind.FILE, content.name, content.mime, content.bytes.size.toLong()) { ByteArrayInputStream(content.bytes) }
+            is OutgoingContent.Source -> content
         }
-        payloads.forEach { it.validate() }
+        require(source == null || source.size <= Limits.MAX_FILE_BYTES) { "File is larger than ${Limits.MAX_FILE_BYTES / (1024 * 1024)} MB" }
         val targets = store.load().peers.filter { peerIds == null || it.id in peerIds }
-        return targets.map { peer ->
-            try {
-                // A chunked file is one item for receipts and UI: its group ID.
-                var id = ""
-                payloads.forEach { id = deliver(it, peer) }
+        if (source != null && source.size > Limits.MAX_CONTENT_BYTES) return sendChunked(source, targets, now)
+        val payload = when (content) {
+            is OutgoingContent.Text -> Payload.text(content.text, now, content.html, content.sensitive)
+            is OutgoingContent.Image -> Payload.image(content.name, content.mime, content.bytes, now)
+            is OutgoingContent.File -> Payload.file(content.name, content.mime, content.bytes, now)
+            is OutgoingContent.Source -> {
+                val bytes = try {
+                    readSource { content.open().use { input -> readPart(input, content.size.toInt()).also { expectEnd(input) } } }
+                } catch (failure: SourceReadException) {
+                    return outcomes(targets, targets.associate { it.id to failure }) { null }
+                }
+                Payload(content.kind, name = content.name, mime = content.mime, data = Encoding.b64(bytes), sentAt = now)
+            }
+        }
+        payload.validate()
+        val failures = HashMap<String, Exception>()
+        val ids = targets.associate { peer -> peer.id to deliverTracked(payload, peer, failures) }
+        return outcomes(targets, failures) { ids.getValue(it) }
+    }
+
+    /**
+     * Sends a chunked file holding at most one chunk (its bytes, payload and envelope) at a time: each chunk is
+     * read from the source once, then sealed and uploaded to every target in turn. A peer whose chunk failed
+     * gets no further chunks; the others continue. A chunked file is one item for receipts and UI: its group ID.
+     */
+    private suspend fun sendChunked(source: OutgoingContent.Source, targets: List<LinkedPeer>, now: Long): List<SendOutcome> {
+        val parts = Payload.partsFor(source.size)
+        val group = UUID.randomUUID().toString()
+        val failures = HashMap<String, Exception>()
+        var input: InputStream? = null
+        try {
+            val stream = readSource { source.open() }.also { input = it }
+            for (part in 0 until parts) {
+                val active = targets.filter { it.id !in failures }
+                if (active.isEmpty()) break
+                val length = minOf(Limits.CHUNK_BYTES.toLong(), source.size - part.toLong() * Limits.CHUNK_BYTES).toInt()
+                val slice = readSource { readPart(stream, length) }
+                if (part == parts - 1) readSource { expectEnd(stream) }
+                val payload = Payload.chunk(source.kind, source.name, source.mime, slice, part, parts, source.size, now, group)
+                payload.validate()
+                active.forEach { deliverTracked(payload, it, failures) }
+            }
+        } catch (failure: SourceReadException) {
+            targets.forEach { failures.putIfAbsent(it.id, failure) }
+        } finally {
+            withContext(NonCancellable + Dispatchers.IO) { runCatching { input?.close() } }
+        }
+        return outcomes(targets, failures) { group }
+    }
+
+    /** Delivers [payload], recording a failure for [peer] in [failures] instead of throwing. */
+    private suspend fun deliverTracked(payload: Payload, peer: LinkedPeer, failures: MutableMap<String, Exception>): String? = try {
+        deliver(payload, peer)
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (failure: Exception) {
+        failures[peer.id] = failure
+        null
+    }
+
+    private fun outcomes(targets: List<LinkedPeer>, failures: Map<String, Exception>, itemId: (String) -> String?): List<SendOutcome> =
+        targets.map { peer ->
+            val failure = failures[peer.id]
+            if (failure == null) {
                 note { it.copy(lastSendAt = clock(), sent = it.sent + 1) }
-                SendOutcome(peer.id, payloads.first().group ?: id)
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (failure: Exception) {
+                SendOutcome(peer.id, itemId(peer.id))
+            } else {
                 failure(failure)
                 SendOutcome(peer.id, null, sendError(failure))
             }
         }
+
+    private suspend fun <T> readSource(block: () -> T): T = withContext(Dispatchers.IO) {
+        try { block() } catch (failure: IOException) { throw SourceReadException(failure) }
     }
+
+    private fun readPart(input: InputStream, length: Int): ByteArray {
+        val bytes = ByteArray(length)
+        var offset = 0
+        while (offset < length) {
+            val count = input.read(bytes, offset, length - offset)
+            if (count < 0) throw IOException("Content is shorter than its size")
+            offset += count
+        }
+        return bytes
+    }
+
+    private fun expectEnd(input: InputStream) { if (input.read() >= 0) throw IOException("Content is longer than its size") }
 
     private fun sendError(failure: Exception): String = when (failure) {
         is RelayException -> failure.code
@@ -505,14 +608,16 @@ class DeviceLinkClient(
     /**
      * Seals [payload] once and uploads it. Each envelope is retried on its own, so a failure on chunk 7 of 8
      * resends only chunk 7: transient failures ([isTransientUploadFailure]) up to [UPLOAD_RETRY_DELAYS_MILLIS]
-     * more times, `429 mailbox_full` every 2 s for up to 90 s while the receiver drains. [retry] false makes
+     * more times, `429 mailbox_full` every 2 s for up to [MAILBOX_FULL_WAIT_MILLIS] after the first such answer
+     * while the receiver drains. Each attempt waits [uploadTimeoutMillis] for the answer. [retry] false makes
      * one attempt (best-effort notices that must not hold up the caller).
      */
     private suspend fun deliver(payload: Payload, peer: LinkedPeer, retry: Boolean = true): String {
         val sequence = update { it.copy(sequence = Math.addExact(it.sequence, 1)) }.sequence
         val envelope = crypto.seal(payload, peer.bundle, clock(), sequence, config.lifetimeMillis)
         var attempt = 0
-        val deadline = clock() + 90_000L
+        // Counted from the first full answer: a slow upload before it must not use up the wait.
+        var fullSince: Long? = null
         while (true) {
             try {
                 // Retries resend the exact same envelope: the relay treats it as idempotent.
@@ -521,7 +626,10 @@ class DeviceLinkClient(
             } catch (failure: Exception) {
                 if (failure is CancellationException || !retry) throw failure
                 // A full mailbox drains as the receiver acknowledges; large chunked files rely on this.
-                if (failure is RelayException && failure.code == MAILBOX_FULL && clock() < deadline) { delay(2_000L); continue }
+                if (failure is RelayException && failure.code == MAILBOX_FULL) {
+                    val since = fullSince ?: clock().also { fullSince = it }
+                    if (clock() - since < MAILBOX_FULL_WAIT_MILLIS) { delay(MAILBOX_FULL_PAUSE_MILLIS); continue }
+                }
                 if (!isTransientUploadFailure(failure) || attempt >= UPLOAD_RETRY_DELAYS_MILLIS.size) throw failure
                 delay(UPLOAD_RETRY_DELAYS_MILLIS[attempt++])
             }
@@ -674,31 +782,42 @@ class DeviceLinkClient(
 
     /** Applies a spooled chunked file once every part is present. Returns whether the handler ran. */
     private suspend fun assemble(key: String, peer: LinkedPeer, handler: suspend (IncomingItem) -> ReceiptStatus): Boolean {
-        val stored = spool.parts(key)
         val state = store.load()
-        // Applied and recorded before a crash, only the cleanup was missed.
-        if (stored.isNotEmpty() && stored.all { it.id in state.seen }) { spool.remove(key); return false }
         val now = clock()
-        val opened = stored.map { envelope ->
+        // One part in memory at a time: authenticate it, keep only its metadata and data length.
+        class Part(val number: Int, val envelope: Envelope, val payload: Payload?, val length: Int)
+        val stored = spool.partNumbers(key).mapNotNull { number ->
+            val envelope = spool.part(key, number) ?: return@mapNotNull null
             val payload = runCatching { crypto.open(envelope, peer.bundle, now) }.getOrNull()
-            if (payload == null || !payload.isChunk) { return rejectFile(key, peer) }
-            envelope to payload
-        }.sortedBy { it.second.part }
-        val first = opened.firstOrNull()?.second ?: return false
-        val consistent = opened.map { it.second.part } == (0 until first.parts!!).toList() &&
-            opened.all { (_, p) -> p.parts == first.parts && p.size == first.size && p.group == first.group && p.kind == first.kind }
+            Part(number, envelope.copy(ciphertext = "", signature = ""), payload?.copy(data = null), payload?.dataBytes()?.size ?: 0)
+        }
+        // Applied and recorded before a crash, only the cleanup was missed.
+        if (stored.isNotEmpty() && stored.all { it.envelope.id in state.seen }) { spool.remove(key); return false }
+        if (stored.any { it.payload == null || !it.payload.isChunk }) return rejectFile(key, peer)
+        val opened = stored.sortedBy { it.payload!!.part }
+        val first = opened.firstOrNull()?.payload ?: return false
+        val consistent = opened.map { it.payload!!.part } == (0 until first.parts!!).toList() &&
+            opened.all { val p = it.payload!!; p.parts == first.parts && p.size == first.size && p.group == first.group && p.kind == first.kind }
         if (!consistent) {
             // Fewer parts than announced: still arriving. As many or more and still inconsistent: never completes.
             return if (opened.size >= first.parts!!) rejectFile(key, peer) else false
         }
-        val output = java.io.ByteArrayOutputStream(first.size!!.toInt())
-        opened.forEach { output.write(it.second.dataBytes()!!) }
-        if (output.size().toLong() != first.size) return rejectFile(key, peer)
-        val envelopes = opened.map { it.first }
+        if (opened.sumOf { it.length.toLong() } != first.size) return rejectFile(key, peer)
+        val envelopes = opened.map { it.envelope }
         val newest = envelopes.maxBy { it.sequence }
         val stale = first.kind != PayloadKind.FILE && newest.sequence <= (state.lastClip[peer.id] ?: 0)
-        val item = IncomingItem(first.group!!, peer, first.copy(data = null, part = null, parts = null),
-            envelopes.minOf { it.expiresAt }, stale, output.toByteArray())
+        val numbers = opened.map { it.number }
+        // Second pass while the handler writes: each part is read and opened again, then released.
+        val content: (OutputStream) -> Unit = { output ->
+            numbers.forEachIndexed { index, number ->
+                val envelope = spool.part(key, number) ?: throw IOException("Chunk is gone")
+                val payload = crypto.open(envelope, peer.bundle, now)
+                check(payload.part == index && payload.group == first.group) { "Chunk changed" }
+                output.write(payload.dataBytes()!!)
+            }
+        }
+        val item = IncomingItem(first.group!!, peer, first.copy(part = null, parts = null),
+            envelopes.minOf { it.expiresAt }, stale, content)
         val status = apply(item, envelopes, handler)
         spool.remove(key)
         runCatching { deliver(Payload.receipt(item.id, status), peer) }

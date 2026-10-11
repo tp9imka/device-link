@@ -9,13 +9,19 @@ import Foundation
 /// Keys are `<sender id>_<group uuid>` (both validated before use, safe as file names).
 protocol ChunkSpool: Sendable {
     func put(_ key: String, part: Int, envelope: Envelope) throws
-    func parts(_ key: String) -> [Envelope]
-    /// Stored parts of `key`, without reading them.
-    func count(_ key: String) -> Int
+    /// Part numbers stored for `key`, without reading them.
+    func partNumbers(_ key: String) -> [Int]
+    /// One stored part, read on demand so a whole file is never in memory; nil when missing or unreadable.
+    func part(_ key: String, _ part: Int) -> Envelope?
     func keys() -> [String]
     func remove(_ key: String)
     /// Drops every entry whose envelope has expired.
     func purge(now: Int64)
+}
+
+extension ChunkSpool {
+    /// Stored parts of `key`, without reading them.
+    func count(_ key: String) -> Int { partNumbers(key).count }
 }
 
 enum ChunkSpoolKey {
@@ -37,8 +43,8 @@ final class MemoryChunkSpool: ChunkSpool, @unchecked Sendable {
         }
         entries[key, default: [:]][part] = envelope
     }
-    func parts(_ key: String) -> [Envelope] { lock.lock(); defer { lock.unlock() }; return entries[key].map { Array($0.values) } ?? [] }
-    func count(_ key: String) -> Int { lock.lock(); defer { lock.unlock() }; return entries[key]?.count ?? 0 }
+    func partNumbers(_ key: String) -> [Int] { lock.lock(); defer { lock.unlock() }; return (entries[key]?.keys).map { $0.sorted() } ?? [] }
+    func part(_ key: String, _ part: Int) -> Envelope? { lock.lock(); defer { lock.unlock() }; return entries[key]?[part] }
     func keys() -> [String] { lock.lock(); defer { lock.unlock() }; return order }
     func remove(_ key: String) { lock.lock(); defer { lock.unlock() }; entries[key] = nil; order.removeAll { $0 == key } }
     func purge(now: Int64) {
@@ -101,12 +107,13 @@ final class FileChunkSpool: ChunkSpool, @unchecked Sendable {
         #endif
     }
 
-    func parts(_ key: String) -> [Envelope] {
-        lock.lock(); defer { lock.unlock() }
-        return entries(key).compactMap { url, _, _ in (try? Data(contentsOf: url)).flatMap { try? Envelope.decode($0) } }
-    }
+    func partNumbers(_ key: String) -> [Int] { lock.lock(); defer { lock.unlock() }; return entries(key).map(\.1).sorted() }
 
-    func count(_ key: String) -> Int { lock.lock(); defer { lock.unlock() }; return entries(key).count }
+    func part(_ key: String, _ part: Int) -> Envelope? {
+        lock.lock(); defer { lock.unlock() }
+        guard let url = entries(key).first(where: { $0.1 == part })?.0 else { return nil }
+        return (try? Data(contentsOf: url)).flatMap { try? Envelope.decode($0) }
+    }
 
     func keys() -> [String] { lock.lock(); defer { lock.unlock() }; return unlockedKeys() }
 

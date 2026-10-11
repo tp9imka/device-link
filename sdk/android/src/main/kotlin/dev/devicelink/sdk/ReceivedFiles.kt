@@ -9,8 +9,11 @@ import android.net.Uri
 import android.os.ParcelFileDescriptor
 import android.provider.OpenableColumns
 import dev.devicelink.sdk.core.Payload
+import java.io.BufferedOutputStream
 import java.io.File
 import java.io.FileNotFoundException
+import java.io.FileOutputStream
+import java.io.OutputStream
 
 /** Private storage for received images/files, exposed read-only through [DeviceLinkFileProvider]. */
 internal object ReceivedFiles {
@@ -20,12 +23,18 @@ internal object ReceivedFiles {
     fun root(context: Context) = File(PrivateStorage.root(context), "received")
     fun authority(context: Context) = "${context.packageName}.devicelink.files"
 
-    fun store(context: Context, id: String, name: String, mime: String, bytes: ByteArray): Uri {
+    /** [write] streams the content (a chunked file part by part), so a large file is never whole in memory. */
+    fun store(context: Context, id: String, name: String, mime: String, write: (OutputStream) -> Unit): Uri {
         require(id.matches(ID) && Payload.validFileName(name))
         val directory = File(root(context), id).apply { mkdirs() }
         val file = File(directory, name)
         val temporary = File(directory, ".part")
-        temporary.outputStream().use { it.write(bytes); it.fd.sync() }
+        try {
+            FileOutputStream(temporary).use { output -> BufferedOutputStream(output).also(write).flush(); output.fd.sync() }
+        } catch (failure: Exception) {
+            temporary.delete()
+            throw failure
+        }
         check(temporary.renameTo(file))
         File(directory, ".mime").writeText(mime)
         return uri(context, id, name)

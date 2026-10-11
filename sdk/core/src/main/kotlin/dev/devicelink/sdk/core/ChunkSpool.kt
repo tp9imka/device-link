@@ -14,9 +14,12 @@ import java.io.FileOutputStream
  */
 internal interface ChunkSpool {
     fun put(key: String, part: Int, envelope: Envelope)
-    fun parts(key: String): List<Envelope>
+    /** Part numbers stored for [key], without reading them. */
+    fun partNumbers(key: String): List<Int>
+    /** One stored part, read on demand so a whole file is never in memory; null when missing or unreadable. */
+    fun part(key: String, part: Int): Envelope?
     /** Stored parts of [key], without reading them. */
-    fun count(key: String): Int
+    fun count(key: String): Int = partNumbers(key).size
     fun keys(): List<String>
     fun remove(key: String)
     /** Drops every entry whose envelope has expired. */
@@ -36,8 +39,8 @@ internal class MemoryChunkSpool : ChunkSpool {
         if (key !in entries) while (entries.size >= ChunkSpool.MAX_GROUPS) entries.remove(entries.keys.first())
         entries.getOrPut(key) { HashMap() }[part] = envelope
     }
-    @Synchronized override fun parts(key: String): List<Envelope> = entries[key]?.values?.toList().orEmpty()
-    @Synchronized override fun count(key: String): Int = entries[key]?.size ?: 0
+    @Synchronized override fun partNumbers(key: String): List<Int> = entries[key]?.keys?.sorted().orEmpty()
+    @Synchronized override fun part(key: String, part: Int): Envelope? = entries[key]?.get(part)
     @Synchronized override fun keys(): List<String> = entries.keys.toList()
     @Synchronized override fun remove(key: String) { entries.remove(key) }
     @Synchronized override fun purge(now: Long) {
@@ -48,14 +51,15 @@ internal class MemoryChunkSpool : ChunkSpool {
 
 /** One directory per file, one `<part>-<expiresAt>.json` per chunk envelope (ciphertext only). */
 internal class FileChunkSpool(private val directory: File) : ChunkSpool {
-    private fun entries(key: String): List<Pair<File, Long>> = File(directory, key).listFiles().orEmpty().mapNotNull { file ->
-        NAME.matchEntire(file.name)?.let { file to it.groupValues[2].toLong() }
+    /** (file, part, expiresAt) for each stored chunk of [key]. */
+    private fun entries(key: String): List<Triple<File, Int, Long>> = File(directory, key).listFiles().orEmpty().mapNotNull { file ->
+        NAME.matchEntire(file.name)?.let { Triple(file, it.groupValues[1].toInt(), it.groupValues[2].toLong()) }
     }
 
     @Synchronized override fun put(key: String, part: Int, envelope: Envelope) {
         val group = File(directory, key)
         if (!group.isDirectory) {
-            keys().sortedBy { existing -> entries(existing).minOfOrNull { it.second } ?: 0L }
+            keys().sortedBy { existing -> entries(existing).minOfOrNull { it.third } ?: 0L }
                 .take(maxOf(0, keys().size - ChunkSpool.MAX_GROUPS + 1)).forEach(::remove)
             check(group.mkdirs() || group.isDirectory) { "Cannot create chunk spool" }
         }
@@ -66,10 +70,10 @@ internal class FileChunkSpool(private val directory: File) : ChunkSpool {
         check(temporary.renameTo(target)) { "Cannot persist chunk" }
     }
 
-    @Synchronized override fun parts(key: String): List<Envelope> =
-        entries(key).mapNotNull { (file, _) -> runCatching { Envelope.decode(file.readText()) }.getOrNull() }
+    @Synchronized override fun partNumbers(key: String): List<Int> = entries(key).map { it.second }.sorted()
 
-    @Synchronized override fun count(key: String): Int = entries(key).size
+    @Synchronized override fun part(key: String, part: Int): Envelope? = entries(key).firstOrNull { it.second == part }
+        ?.let { (file, _, _) -> runCatching { Envelope.decode(file.readText()) }.getOrNull() }
 
     @Synchronized override fun keys(): List<String> =
         directory.listFiles().orEmpty().filter { it.isDirectory && KEY.matches(it.name) }.map { it.name }
@@ -78,7 +82,7 @@ internal class FileChunkSpool(private val directory: File) : ChunkSpool {
 
     @Synchronized override fun purge(now: Long) {
         for (key in keys()) {
-            entries(key).filter { it.second <= now }.forEach { it.first.delete() }
+            entries(key).filter { it.third <= now }.forEach { it.first.delete() }
             File(directory, key).listFiles().orEmpty().filter { it.name.endsWith(".tmp") }.forEach { it.delete() }
             if (entries(key).isEmpty()) remove(key)
         }

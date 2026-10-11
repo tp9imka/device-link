@@ -22,7 +22,7 @@ public final class URLSessionTransport: HTTPTransport, @unchecked Sendable {
         configuration.httpCookieStorage = nil
         // Total time per request. A 10 MiB file is one ~18 MB envelope: ~75 s at 250 KB/s, longer on a slow
         // uplink, so the cap must be far above that. Stalls are caught by each request's idle timeout
-        // (`timeoutInterval`: 30 s for uploads, wait + 20 s for long polls), not by this.
+        // (`timeoutInterval`: `uploadTimeout` for uploads, wait + 20 s for long polls), not by this.
         configuration.timeoutIntervalForResource = 15 * 60
         session = URLSession(configuration: configuration)
     }
@@ -94,6 +94,20 @@ public struct PairingStatus: Codable, Sendable {
     public var sealed: String?
 }
 
+/// Wait for a relay answer once the request is sent (non-upload calls, and the margin after an upload body).
+let responseTimeout: TimeInterval = 30
+/// Mirror the relay's body deadline: server/relay/config.py `body_grace_ms` and `body_min_rate` (bytes per second).
+let relayBodyGrace: TimeInterval = 10
+let relayBodyMinBytesPerSecond = 32 * 1024
+
+/// How long to wait for the answer to an upload of `bodyBytes`. Once the body is handed to the socket it can
+/// still be in flight (send buffers, proxies), and the idle timer then runs with no progress, so it must
+/// cover the whole time the relay itself allows for reading that body (server/relay/app.py `read_body`)
+/// plus `responseTimeout` for storing and answering. Twin of Kotlin `uploadTimeoutMillis`.
+func uploadTimeout(bodyBytes: Int) -> TimeInterval {
+    relayBodyGrace + TimeInterval(bodyBytes / relayBodyMinBytesPerSecond) + responseTimeout
+}
+
 /// Signed relay API (see server/README.md for the canonical request signature).
 public struct RelayClient: Sendable {
     public let baseURL: String
@@ -131,7 +145,10 @@ public struct RelayClient: Sendable {
     }
     public func cancelPairing(_ id: String) async throws { _ = try await call("DELETE", "/v1/pairings/\(id)") }
 
-    public func upload(_ envelope: Envelope) async throws { _ = try await call("POST", "/v1/messages", body: try envelope.encode()) }
+    public func upload(_ envelope: Envelope) async throws {
+        let body = try envelope.encode()
+        _ = try await call("POST", "/v1/messages", body: body, timeout: uploadTimeout(bodyBytes: body.count))
+    }
     /// `exclude`: up to 20 envelope IDs the relay must skip (for example ones already processed this round).
     public func poll(wait: Int, limit: Int = 1, exclude: [String] = []) async throws -> [Envelope] {
         guard exclude.count <= 20, exclude.allSatisfy({ UUID(uuidString: $0)?.uuidString.lowercased() == $0 }) else {
@@ -158,7 +175,7 @@ public struct RelayClient: Sendable {
     }
 
     func call(_ method: String, _ path: String, body: Data = Data(), headers extra: [String: String] = [:],
-              signed: Bool = true, timeout: TimeInterval = 30) async throws -> Data {
+              signed: Bool = true, timeout: TimeInterval = responseTimeout) async throws -> Data {
         guard let url = URL(string: baseURL + path) else { throw DeviceLinkError.invalid("relay URL") }
         var headers = extra
         if !body.isEmpty { headers["Content-Type"] = "application/json" }
