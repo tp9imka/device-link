@@ -107,9 +107,13 @@ Optional fields (all encrypted, all ignorable by older decoders):
   `parts` (2–10) and `size` (total bytes). Receivers store each chunk envelope (still encrypted) durably
   on the device before acknowledging it, so a restart mid-transfer resumes the file; they reassemble when
   all parts are present and the total equals `size`, delete the stored chunks, and send one receipt for
-  `group`. Chunks are not held unacknowledged on the relay: ten chunk envelopes (~71 MiB) exceed the
-  default 64 MiB mailbox quota, so the sender could never finish. Senders retry the same
-  sealed envelope on network errors and wait (up to 90 s) on `429 mailbox_full` while the receiver drains.
+  `group`. A receiver that has every part but cannot assemble the file (part fails to open, parts
+  disagree, total != `size`) drops it and sends a `failed` receipt for `group`. Chunks are not held
+  unacknowledged on the relay: ten chunk envelopes (~71 MiB) exceed the default 64 MiB mailbox quota, so
+  the sender could never finish. Senders resend the same sealed envelope up to 3 times (1 s, 2 s, 4 s) on
+  408, 429 other than `mailbox_full`, 5xx and network errors (not TLS certificate failures), and wait (up
+  to 90 s) on `429 mailbox_full` while the receiver drains. A resend of the same envelope is idempotent
+  on the relay.
 
 Decoders ignore unknown fields so future versions can add optional data.
 `name` follows the bundle name character rules but may be 120 characters and
