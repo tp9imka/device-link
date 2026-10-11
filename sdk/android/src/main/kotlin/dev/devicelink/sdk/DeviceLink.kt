@@ -375,8 +375,10 @@ class DeviceLinkInstance internal constructor(private val context: Context, val 
             removed = withTimeoutOrNull(RESET_UNREGISTER_TIMEOUT_MILLIS) { client.unregister() } == true
         } finally {
             withContext(NonCancellable) {
-                clearHistory()
+                clipHistory.clear()
                 withContext(Dispatchers.IO) {
+                    // Inline, not clearHistory(): that launches on [scope], which is cancelled just below.
+                    ReceivedFiles.clear(context)
                     KeystoreIdentity.delete()
                     WrappedEncryptionKey.delete(context)
                     java.io.File(context.noBackupFilesDir, "devicelink/links.json").delete()
