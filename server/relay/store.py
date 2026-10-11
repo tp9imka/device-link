@@ -175,8 +175,6 @@ class Store:
                 if removed:
                     self.event(db, now, "unlinked", recipient, sender)
                 return
-            # The joiner allowing its inviter is the last step of a QR pairing: the rendezvous is finished.
-            db.execute("DELETE FROM pairings WHERE state='confirmed' AND joiner=? AND creator=?", (recipient, sender))
             if db.execute("SELECT 1 FROM peers WHERE recipient=? AND sender=?", (recipient, sender)).fetchone():
                 return
             if db.execute("SELECT count(*) FROM peers WHERE recipient=?", (recipient,)).fetchone()[0] >= self.settings.max_peers:
@@ -263,9 +261,13 @@ class Store:
 
     def confirm_pairing(self, creator, pairing, sealed, now):
         with self.transaction() as db:
-            row = db.execute("SELECT creator, state, joiner FROM pairings WHERE id=? AND expires>?", (pairing, now)).fetchone()
+            row = db.execute("SELECT creator, state, joiner, confirm_sealed FROM pairings WHERE id=? AND expires>?",
+                             (pairing, now)).fetchone()
             if row is None or row[0] != creator:
                 raise RelayError(404, "pairing_not_found")
+            if row[1] == "confirmed" and row[3] == sealed:
+                # A resend after a lost response: already committed, nothing changes.
+                return
             if row[1] != "joined":
                 raise RelayError(409, "pairing_not_joined")
             db.execute("UPDATE pairings SET state='confirmed', confirm_sealed=? WHERE id=?", (sealed, pairing))
@@ -282,8 +284,9 @@ class Store:
             creator, state, joiner, join_sealed, confirm_sealed = row
             if caller == creator:
                 return {"state": state, "joinerId": joiner, "sealed": join_sealed}
-            # A confirmed pairing stays readable (a lost response is retried) until the joiner
-            # allows the creator (see peer()) or it expires.
+            # A pairing stays readable by both sides until it expires or is cancelled, so either side
+            # can re-read its final state after a lost response (the joiner its confirm, the inviter
+            # whether its own confirm was committed).
             return {"state": state, "joinerId": joiner, "sealed": confirm_sealed}
 
     def cancel_pairing(self, caller, pairing):

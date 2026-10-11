@@ -103,8 +103,8 @@ SHA256_HEX_BODY
 | `GET /v1/info` | Unauthenticated: version, `maxLifetimeSeconds`, enrollment mode, push providers. |
 | `POST /v1/pairings` | Body `{"id":"<32 hex>","expiresAt":ms}`; at most 5 open per device. |
 | `POST /v1/pairings/{id}/join` | Body `{"sealed":"<Base64>"}`; exactly one joiner. `X-Pairing-Id` on `/v1/register` admits exactly one new identity without the enrollment token while the pairing is open; that identity may retry its registration, others get 403. |
-| `GET /v1/pairings/{id}?wait=0..25` | Creator or joiner only: `{"state","joinerId","sealed"}`; long-polls for the next state. A `confirmed` pairing stays readable until the joiner allows the creator (`PUT /v1/peers/{creator}`) or it expires. |
-| `POST /v1/pairings/{id}/confirm` | Creator; records the link and allows the joiner into the creator's mailbox. |
+| `GET /v1/pairings/{id}?wait=0..25` | Creator or joiner only: `{"state","joinerId","sealed"}`; long-polls for the next state. A pairing stays readable by both sides, in its final state, until it expires or is cancelled (its `expiresAt`, at most `max_ttl_ms` ahead, 10 minutes by default). |
+| `POST /v1/pairings/{id}/confirm` | Creator; records the link and allows the joiner into the creator's mailbox. Resending the same sealed confirm after a lost response returns 204 again; a different one gets 409 `pairing_not_joined`. |
 | `DELETE /v1/pairings/{id}` | Cancel. |
 | `PUT /v1/push`, `DELETE /v1/push` | Register/remove an APNs token (`provider`, `token`, `environment`, `topic`). |
 

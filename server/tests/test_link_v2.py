@@ -45,10 +45,6 @@ def test_qr_pairing_rendezvous_links_both_directions(relay):
     assert request(client, joiner, now[0], "GET", f"/v1/pairings/{pairing_id()}").json() == confirmed
     # A lost response is not fatal: the joiner's retry reads the same confirmation.
     assert request(client, joiner, now[0], "GET", f"/v1/pairings/{pairing_id()}?wait=1").json() == confirmed
-    # The rendezvous ends when the joiner allows the inviter.
-    assert request(client, joiner, now[0], "PUT", f"/v1/peers/{inviter.id}", {}).status_code == 204
-    assert request(client, joiner, now[0], "GET", f"/v1/pairings/{pairing_id()}").status_code == 404
-    assert request(client, inviter, now[0], "GET", f"/v1/pairings/{pairing_id()}").status_code == 404
     # Confirmation authorized the joiner to write into the inviter's sandbox.
     assert request(client, joiner, now[0], "POST", "/v1/messages", envelope(joiner, inviter, now[0], version=2)).status_code == 201
 
@@ -59,25 +55,44 @@ def confirmed_pairing(client, now, inviter, joiner, pid):
     assert request(client, inviter, now, "POST", f"/v1/pairings/{pid}/confirm", {"sealed": SEALED}).status_code == 204
 
 
-def test_confirmed_pairing_lasts_until_the_joiner_allows_the_inviter_or_it_expires(relay):
+def test_confirmed_pairing_stays_readable_by_both_sides_until_it_expires(relay):
     _, now, client = relay
-    inviter, joiner, other = Device(), Device(), Device()
-    for device in (inviter, joiner, other):
+    inviter, joiner = Device(), Device()
+    for device in (inviter, joiner):
         register(client, device, now[0])
-    # Re-pairing devices that are already linked: the existing allowance still ends the rendezvous.
-    request(client, joiner, now[0], "PUT", f"/v1/peers/{inviter.id}", {})
     confirmed_pairing(client, now[0], inviter, joiner, pairing_id(1))
-    # Allowing some other device, or the inviter allowing the joiner, does not end it.
-    request(client, joiner, now[0], "PUT", f"/v1/peers/{other.id}", {})
-    request(client, inviter, now[0], "PUT", f"/v1/peers/{joiner.id}", {})
+    # The inviter's confirm response is lost; meanwhile the joiner reads "confirmed" and allows the inviter.
     assert request(client, joiner, now[0], "GET", f"/v1/pairings/{pairing_id(1)}").json()["state"] == "confirmed"
-    request(client, joiner, now[0], "PUT", f"/v1/peers/{inviter.id}", {})
+    assert request(client, joiner, now[0], "PUT", f"/v1/peers/{inviter.id}", {}).status_code == 204
+    # The inviter's re-read still sees the committed confirmation, and so does the joiner's.
+    assert request(client, inviter, now[0], "GET", f"/v1/pairings/{pairing_id(1)}").json() == \
+        {"state": "confirmed", "joinerId": joiner.id, "sealed": SEALED}
+    assert request(client, joiner, now[0], "GET", f"/v1/pairings/{pairing_id(1)}").json() == \
+        {"state": "confirmed", "joinerId": joiner.id, "sealed": SEALED}
+    now[0] += 59_999
+    assert request(client, inviter, now[0], "GET", f"/v1/pairings/{pairing_id(1)}").json()["state"] == "confirmed"
+    now[0] += 1
+    assert request(client, inviter, now[0], "GET", f"/v1/pairings/{pairing_id(1)}").status_code == 404
     assert request(client, joiner, now[0], "GET", f"/v1/pairings/{pairing_id(1)}").status_code == 404
-    # Never allowed: it disappears at expiry.
-    confirmed_pairing(client, now[0], inviter, joiner, pairing_id(2))
-    assert request(client, joiner, now[0], "GET", f"/v1/pairings/{pairing_id(2)}").json()["state"] == "confirmed"
-    now[0] += 60_000
-    assert request(client, joiner, now[0], "GET", f"/v1/pairings/{pairing_id(2)}").status_code == 404
+
+
+def test_a_resent_confirm_is_idempotent(relay):
+    _, now, client = relay
+    inviter, joiner = Device(), Device()
+    for device in (inviter, joiner):
+        register(client, device, now[0])
+    confirmed_pairing(client, now[0], inviter, joiner, pairing_id(1))
+    request(client, joiner, now[0], "PUT", f"/v1/peers/{inviter.id}", {})
+    # The same creator resending the same sealed confirm (its first response was lost) succeeds again.
+    assert request(client, inviter, now[0], "POST", f"/v1/pairings/{pairing_id(1)}/confirm", {"sealed": SEALED}).status_code == 204
+    # A different confirmation cannot replace the one the joiner may already have read.
+    other = base64.b64encode(b"m" * 12 + b"another sealed bundle" + b"u" * 16).decode()
+    assert request(client, inviter, now[0], "POST", f"/v1/pairings/{pairing_id(1)}/confirm", {"sealed": other}).status_code == 409
+    assert request(client, joiner, now[0], "POST", f"/v1/pairings/{pairing_id(1)}/confirm", {"sealed": SEALED}).status_code == 404
+    assert request(client, joiner, now[0], "GET", f"/v1/pairings/{pairing_id(1)}").json()["sealed"] == SEALED
+    login(client)
+    kinds = [event["kind"] for event in client.get("/admin/api/events").json()]
+    assert kinds.count("linked") == 1
 
 
 def test_pairing_is_single_use_private_and_bounded(relay):
