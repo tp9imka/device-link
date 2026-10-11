@@ -55,16 +55,22 @@ final class ShareViewController: UIViewController {
         }
     }
 
-    /// Reads a shared file only after its size is known to fit; a large video would otherwise be
-    /// loaded whole and get the extension killed for memory.
-    private func readFile(_ url: URL) throws -> Data? {
+    /// A shared file streamed while it is sent, one chunk at a time: the extension runs under a tight memory
+    /// limit, so a file is never loaded whole. Nil when it cannot be read; `TooLarge` when over the SDK's limit.
+    private func stream(_ url: URL, kind: PayloadKind, mime: String) throws -> OutgoingContent? {
         if let size = try? url.resourceValues(forKeys: [.fileSizeKey, .totalFileSizeKey]),
            let bytes = size.totalFileSize ?? size.fileSize, !SendMessages.fits(bytes: bytes) {
             throw TooLarge()
         }
-        guard let data = try? Data(contentsOf: url, options: .mappedIfSafe) else { return nil }
-        guard SendMessages.fits(bytes: data.count) else { throw TooLarge() }
-        return data
+        guard (try? url.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true,
+              FileManager.default.isReadableFile(atPath: url.path),
+              let source = try? OutgoingSource(kind: kind, name: url.lastPathComponent, mime: mime, fileURL: url) else { return nil }
+        guard SendMessages.fits(bytes: Int(source.size)) else { throw TooLarge() }
+        return .stream(source)
+    }
+
+    private static func mime(_ url: URL) -> String {
+        UTType(filenameExtension: url.pathExtension)?.preferredMIMEType ?? "application/octet-stream"
     }
 
     private func loadContent() async throws -> OutgoingContent? {
@@ -72,9 +78,9 @@ final class ShareViewController: UIViewController {
         for provider in providers {
             if provider.hasItemConformingToTypeIdentifier(UTType.image.identifier) {
                 let item = try await provider.loadItem(forTypeIdentifier: UTType.image.identifier)
-                if let url = item as? URL, let data = try readFile(url) {
+                if let url = item as? URL {
                     let type = UTType(filenameExtension: url.pathExtension) ?? .jpeg
-                    return .image(name: url.lastPathComponent, mime: type.preferredMIMEType ?? "image/jpeg", data: data)
+                    if let content = try stream(url, kind: .image, mime: type.preferredMIMEType ?? "image/jpeg") { return content }
                 }
                 if let image = item as? UIImage, let data = image.pngData() { return .image(name: "image.png", mime: "image/png", data: data) }
                 if let data = item as? Data {
@@ -83,10 +89,7 @@ final class ShareViewController: UIViewController {
             }
             if provider.hasItemConformingToTypeIdentifier(UTType.url.identifier),
                let url = try await provider.loadItem(forTypeIdentifier: UTType.url.identifier) as? URL {
-                if url.isFileURL, let data = try readFile(url) {
-                    let type = UTType(filenameExtension: url.pathExtension)
-                    return .file(name: url.lastPathComponent, mime: type?.preferredMIMEType ?? "application/octet-stream", data: data)
-                }
+                if url.isFileURL, let content = try stream(url, kind: .file, mime: Self.mime(url)) { return content }
                 return .text(url.absoluteString)
             }
             if provider.hasItemConformingToTypeIdentifier(UTType.plainText.identifier),
@@ -94,9 +97,9 @@ final class ShareViewController: UIViewController {
                 return .text(text)
             }
             if provider.hasItemConformingToTypeIdentifier(UTType.data.identifier),
-               let url = try await provider.loadItem(forTypeIdentifier: UTType.data.identifier) as? URL, let data = try readFile(url) {
-                let type = UTType(filenameExtension: url.pathExtension)
-                return .file(name: url.lastPathComponent, mime: type?.preferredMIMEType ?? "application/octet-stream", data: data)
+               let url = try await provider.loadItem(forTypeIdentifier: UTType.data.identifier) as? URL,
+               let content = try stream(url, kind: .file, mime: Self.mime(url)) {
+                return content
             }
         }
         return nil

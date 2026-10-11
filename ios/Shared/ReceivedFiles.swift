@@ -23,4 +23,26 @@ enum ReceivedFiles {
         }
         return removed
     }
+
+    /// Streams a received file to `url` part by part, so a large file is never whole in memory. It is written in a
+    /// temporary directory on the same volume and moved into place only when complete; a failed transfer leaves
+    /// nothing at `url`. `replacing` overwrites an existing file, otherwise one makes this throw.
+    static func write(to url: URL, replacing: Bool, attributes: [FileAttributeKey: Any]? = nil,
+                      _ content: (_ sink: (Data) throws -> Void) throws -> Void) throws {
+        let manager = FileManager.default
+        let staging = try manager.url(for: .itemReplacementDirectory, in: .userDomainMask, appropriateFor: url, create: true)
+        defer { try? manager.removeItem(at: staging) }
+        let partial = staging.appendingPathComponent(url.lastPathComponent)
+        guard manager.createFile(atPath: partial.path, contents: nil, attributes: attributes) else { throw CocoaError(.fileWriteUnknown) }
+        let handle = try FileHandle(forWritingTo: partial)
+        do {
+            try content { try handle.write(contentsOf: $0) }
+            try handle.close()
+        } catch {
+            try? handle.close()
+            throw error
+        }
+        if replacing, manager.fileExists(atPath: url.path) { try manager.removeItem(at: url) }
+        try manager.moveItem(at: partial, to: url)
+    }
 }

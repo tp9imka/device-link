@@ -30,6 +30,21 @@ final class ReceivedFilesTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: fresh.appendingPathComponent("file.bin").path))
     }
 
+    func testStreamedFileLandsWholeAndAFailedOneLeavesNothing() throws {
+        let url = root.appendingPathComponent("photo.jpg")
+        try ReceivedFiles.write(to: url, replacing: false) { sink in try sink(Data([1, 2])); try sink(Data([3])) }
+        XCTAssertEqual(try Data(contentsOf: url), Data([1, 2, 3]))
+        XCTAssertThrowsError(try ReceivedFiles.write(to: url, replacing: false) { try $0(Data([9])) }, "never overwrites unless asked")
+        try ReceivedFiles.write(to: url, replacing: true) { try $0(Data([4])) }
+        XCTAssertEqual(try Data(contentsOf: url), Data([4]))
+
+        struct Cut: Error {}
+        let other = root.appendingPathComponent("cut.bin")
+        XCTAssertThrowsError(try ReceivedFiles.write(to: other, replacing: true) { sink in try sink(Data([1])); throw Cut() })
+        XCTAssertFalse(FileManager.default.fileExists(atPath: other.path))
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: root.path), ["photo.jpg"])
+    }
+
     func testMissingDirectoryIsNotAnError() {
         XCTAssertEqual(ReceivedFiles.prune(in: root.appendingPathComponent("absent")), 0)
     }
