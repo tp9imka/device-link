@@ -486,8 +486,10 @@ def test_device_unregister_erases_it_like_an_admin_removal(relay):
     to_unregistered = request(client, laptop, now[0], "POST", "/v1/messages", envelope(laptop, phone, now[0], version=2))
     assert (to_unregistered.status_code, to_unregistered.json()) == (to_removed.status_code, to_removed.json()) == \
         (403, {"error": "recipient_not_authorized"})
-    # Its items, allowances, pairings and push token went with it.
-    assert request(client, laptop, now[0], "GET", "/v1/messages").json() == []
+    # Items waiting for it, its allowances, pairings and push token went with it. What it already sent
+    # (its unlink notices) stays until delivered or expired.
+    assert [item["senderId"] for item in request(client, laptop, now[0], "GET", "/v1/messages").json()] == [phone.id]
+    assert client.app.state.store.mailbox(phone.id, now[0]) == []
     assert client.app.state.store.push_target(phone.id) is None
     assert request(client, laptop, now[0], "GET", f"/v1/pairings/{pairing_id(2)}").status_code == 404
     assert client.get("/admin/api/pairings").json() == []
@@ -501,6 +503,43 @@ def test_device_unregister_erases_it_like_an_admin_removal(relay):
     assert request(client, phone, now[0], "DELETE", "/v1/devices/self").status_code == 204
     register(client, phone, now[0])
     assert request(client, laptop, now[0], "POST", "/v1/messages", envelope(laptop, phone, now[0], version=2)).status_code == 403
+
+
+def test_unlink_notice_sent_before_unregister_reaches_an_offline_peer(relay):
+    _, now, client = relay
+    phone, laptop = Device(), Device()
+    for device in (phone, laptop):
+        register(client, device, now[0])
+    for recipient, sender in ((phone, laptop), (laptop, phone)):
+        request(client, recipient, now[0], "PUT", f"/v1/peers/{sender.id}", {})
+    notice = envelope(phone, laptop, now[0], version=2)
+    assert request(client, phone, now[0], "POST", "/v1/messages", notice).status_code == 201
+    assert request(client, phone, now[0], "DELETE", "/v1/devices/self").status_code == 204
+    # The laptop was offline; it polls later and still learns the link is gone, then acknowledges it.
+    now[0] += 30_000
+    assert [item["id"] for item in request(client, laptop, now[0], "GET", "/v1/messages").json()] == [notice["id"]]
+    assert request(client, laptop, now[0], "DELETE", f"/v1/messages/{notice['id']}").status_code == 204
+    assert request(client, laptop, now[0], "GET", "/v1/messages").json() == []
+    # It still expires on its own if never fetched.
+    notice = envelope(phone, laptop, now[0], version=2)
+    register(client, phone, now[0])
+    request(client, laptop, now[0], "PUT", f"/v1/peers/{phone.id}", {})
+    request(client, phone, now[0], "POST", "/v1/messages", notice)
+    request(client, phone, now[0], "DELETE", "/v1/devices/self")
+    now[0] += 60_000
+    assert request(client, laptop, now[0], "GET", "/v1/messages").json() == []
+
+
+def test_admin_removal_still_deletes_what_the_device_sent(relay):
+    _, now, client = relay
+    phone, laptop = Device(), Device()
+    for device in (phone, laptop):
+        register(client, device, now[0])
+    request(client, laptop, now[0], "PUT", f"/v1/peers/{phone.id}", {})
+    request(client, phone, now[0], "POST", "/v1/messages", envelope(phone, laptop, now[0], version=2))
+    login(client)
+    assert client.delete(f"/admin/api/devices/{phone.id}", headers={"X-CSRF-Token": csrf(client)}).status_code == 200
+    assert request(client, laptop, now[0], "GET", "/v1/messages").json() == []
 
 
 def test_blocked_device_cannot_unregister_itself(relay):

@@ -148,12 +148,19 @@ class Store:
         Used by the admin "remove device" action (kind "device_removed") and by the device itself
         (DELETE /v1/devices/self, kind "device_unregistered"). Returns False when it was not registered.
         The device row carries its push token; dedupe tombstones name no device and expire on their own.
+
+        A device that unregisters itself keeps what it already sent: those are the unlink notices it
+        sends each peer just before the call, and an offline peer must still receive them. Fetching does
+        not consult peers, and they expire within the sandbox lifetime. An admin removal deletes both.
         """
         with self.transaction() as db:
             if not db.execute("DELETE FROM devices WHERE id=?", (device,)).rowcount:
                 return False
             db.execute("DELETE FROM peers WHERE recipient=? OR sender=?", (device, device))
-            db.execute("DELETE FROM messages WHERE recipient=? OR sender=?", (device, device))
+            if kind == "device_unregistered":
+                db.execute("DELETE FROM messages WHERE recipient=?", (device,))
+            else:
+                db.execute("DELETE FROM messages WHERE recipient=? OR sender=?", (device, device))
             db.execute("DELETE FROM pairings WHERE creator=? OR joiner=?", (device, device))
             self.event(db, now, kind, device)
             return True

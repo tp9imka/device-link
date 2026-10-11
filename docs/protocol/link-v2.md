@@ -218,9 +218,12 @@ Request signing is unchanged from v1 (`X-Device-Key`, `X-Device-Time`,
 
 `DELETE /v1/devices/self` is a signed request with an empty body, like `DELETE /v1/peers/{id}`. In one
 transaction the relay deletes the caller's device record (with its push token), every allowlist entry
-where it is recipient or sender, every waiting envelope to or from it, and every pairing it created or
-joined; it records a `device_unregistered` event (the admin "remove device" action has the same effect and
-records `device_removed`). Response `204`, also when the identity is not registered (already unregistered,
+where it is recipient or sender, every waiting envelope to it, and every pairing it created or joined; it
+records a `device_unregistered` event. Envelopes the caller already sent stay in their recipients'
+mailboxes until acknowledged or expired (fetching does not consult the allowlist): they are the unlink
+notices the device sends each peer just before unregistering, and an offline peer must still receive
+them. The admin "remove device" action deletes the same rows plus the envelopes from the device and
+records `device_removed`. Response `204`, also when the identity is not registered (already unregistered,
 or a retry after a lost response). A blocked device gets `403 device_blocked`. Afterwards the identity's
 other signed calls get `403 registration_required` like any unknown device, and a former peer's upload to
 it gets `403 recipient_not_authorized`. Registering the same key again starts with no links. Apps call it
