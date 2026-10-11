@@ -27,6 +27,12 @@ session_secret = "replace-with-64-random-hex-characters"   # unset: admins are s
 max_ttl_ms = 600000
 max_poll_wait = 50            # keep below your proxy's idle timeout (Cloudflare: 100 s)
 
+# Upload body limits: a body may take body_grace_ms + its size / body_min_rate (bytes per second)
+# and pause at most body_idle_ms between chunks, else 408 body_timeout. Lower the rate for very slow links.
+body_grace_ms = 10000
+body_min_rate = 32768
+body_idle_ms = 20000
+
 # Optional APNs wake-ups for the iOS app (token-based .p8 key from your Apple developer account).
 # apns_key_path = "/secure/AuthKey_XXXXXXXXXX.p8"
 # apns_key_id = "XXXXXXXXXX"

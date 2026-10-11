@@ -162,19 +162,41 @@ def create_app(settings=None, clock=None, push_transport=None):
         return JSONResponse({"error": exc.code}, status_code=exc.status,
                             headers={"Retry-After": "60"} if exc.status == 429 else None)
 
-    async def signed(request, registration=False):
-        maximum = settings.body_limit if request.method == "POST" and request.url.path == "/v1/messages" else 32 * 1024
-        async with uploads:
-            body = bytearray()
+    async def read_body(request, maximum, expected):
+        """Reads the body within a size-scaled deadline and an idle limit (408 body_timeout otherwise).
+
+        A fixed total cut off large uploads on slow links; a size-scaled deadline still bounds a slow drip,
+        and the idle limit frees the slot quickly when a client stops sending.
+        """
+        loop = asyncio.get_running_loop()
+        budget = settings.body_grace_ms / 1000 + expected / max(1, settings.body_min_rate)
+        deadline = loop.time() + budget
+        idle = settings.body_idle_ms / 1000
+        chunks = request.stream().__aiter__()
+        body = bytearray()
+        while True:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                raise RelayError(408, "body_timeout")
             try:
-                async with asyncio.timeout(30):
-                    async for chunk in request.stream():
-                        if len(body) + len(chunk) > maximum:
-                            raise RelayError(413, "body_too_large")
-                        body.extend(chunk)
+                chunk = await asyncio.wait_for(anext(chunks), min(idle, remaining))
+            except StopAsyncIteration:
+                return bytes(body)
             except TimeoutError:
                 raise RelayError(408, "body_timeout") from None
-            body = bytes(body)
+            if len(body) + len(chunk) > maximum:
+                raise RelayError(413, "body_too_large")
+            body.extend(chunk)
+
+    async def signed(request, registration=False):
+        maximum = settings.body_limit if request.method == "POST" and request.url.path == "/v1/messages" else 32 * 1024
+        declared = request.headers.get("content-length", "")
+        expected = int(declared) if declared.isdigit() else maximum
+        if expected > maximum:
+            # Refused before taking an upload slot or reading a byte.
+            raise RelayError(413, "body_too_large")
+        async with uploads:
+            body = await read_body(request, maximum, expected)
             try:
                 target = request.scope["raw_path"].decode("ascii")
                 if request.scope["query_string"]:
