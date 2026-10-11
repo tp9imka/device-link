@@ -131,7 +131,7 @@ What leaves the device, from `sdk/core` and `server/relay/store.py`:
 | Data | Where | Declare as |
 | --- | --- | --- |
 | Clip text, images, files, device names | End-to-end encrypted to the recipient device (HPKE, `docs/protocol/link-v2.md`), relay cannot read them | Not collected (Play's end-to-end encryption exemption) |
-| Device public keys, device ID (SHA-256 of the key), which devices are linked | Relay, until the operator deletes the device | Device or other IDs: collected, not shared, required, app functionality |
+| Device public keys, device ID (SHA-256 of the key), which devices are linked | Relay, until the user resets the device in the app or the operator deletes it | Device or other IDs: collected, not shared, required, app functionality |
 | Platform, phone model, app version | Relay, sent at registration | App info and performance → Diagnostics: collected, not shared, required, app functionality |
 | Item sizes, timestamps, send/receive counters, event log | Relay; event log 7 days by default | Covered by the rows above (**unverified** whether Play wants "App interactions" for counters; declaring it is the safe choice) |
 
@@ -140,9 +140,10 @@ Other answers:
 - Is all data encrypted in transit? Yes. Release builds refuse plain `http://` relays
   (`android:usesCleartextTraffic="false"`; `allowInsecureRelay` is only on for debuggable builds).
 - Data shared with third parties: none. The relay belongs to the person or organisation that runs it.
-- Can users request deletion? Yes, through the relay operator, who removes a device in `/admin`.
-  Resetting in the app (Android "Reset this phone…", iOS "Reset device") deletes local keys and links; it does **not** delete the device row on the
-  relay (no client unregister endpoint exists).
+- Can users request deletion? Yes. Resetting in the app (Android "Reset this phone…", iOS "Reset device")
+  first asks the relay to delete the device (`DELETE /v1/devices/self`, given up after 5 s), then deletes
+  local keys and links whatever the answer; if the relay was unreachable the app says the reset was local
+  only. Users can also ask the relay operator, who removes a device in `/admin`.
 - Privacy policy URL: publish `docs/wiki/Privacy.md` (wiki page "Privacy") with the placeholders filled in.
 
 ## iOS (App Store)
@@ -224,6 +225,12 @@ What the relay keeps:
 | Pairing rendezvous (sealed) | Until confirmed or expired |
 | Replay nonces | Until the signed timestamp can no longer be accepted (about ±60 s) |
 | Event log (kind, device IDs, size, time) | `event_retention_ms` 7 days, at most `max_events` 50,000 |
-| Devices (public key, platform, model, app version, label, push token, counters, created/last seen) and links | Until the operator deletes the device in `/admin` (no automatic expiry) |
+| Devices (public key, platform, model, app version, label, push token, counters, created/last seen) and links | Until the device resets itself in the app (`DELETE /v1/devices/self`) or the operator deletes it in `/admin` (no automatic expiry) |
 
-Deleting a row is not forensic erasure (SQLite reuses pages).
+Both removals (`store.remove_device`) delete, in one transaction, the device row with its push token, every
+link naming it, every waiting item addressed to it and every pairing it created or joined. The operator's
+removal also deletes items it sent; a self-reset keeps them (they are the unlink notices it just sent its
+peers) until they are delivered or expire within the sandbox lifetime. Both add a
+`device_unregistered` or `device_removed` event; existing events that name the device stay until event
+retention drops them, and backups keep what they captured. A device that reset while offline stays until
+the operator removes it. Deleting a row is not forensic erasure (SQLite reuses pages).

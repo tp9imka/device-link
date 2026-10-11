@@ -39,7 +39,7 @@ To route items, the relay stores:
 | --- | --- |
 | Encrypted items on the relay | Deleted as soon as the receiving device confirms delivery, otherwise when they expire: 5 minutes by default, never more than 10 minutes |
 | Activity log on the relay (event type, device IDs, size, time; no content) | 7 days by default, at most 50,000 entries |
-| Device records and links on the relay | Until the operator removes the device |
+| Device records and links on the relay | Until you reset the device in the app, or the operator removes it |
 | Clip history on your device | Entries older than 24 hours are dropped (at most 50 entries) |
 | Received files on Android | Deleted once older than 24 hours, checked each time the app starts |
 | Received files on iPhone | Kept in the app until you remove the item or clear the list |
@@ -51,8 +51,13 @@ The operator decides how long backups are kept: `<backup retention>`.
 
 Your private keys never leave the device. Clip history and received files are kept in the app's private
 storage (on Android excluded from device backups) for the times listed above. Resetting the device
-in the app (Android: Info › **Reset this phone…**; iPhone: ⓘ › **Reset device**) deletes the keys and links on that device; ask the operator to remove the device record from
-the relay as well.
+in the app (Android: Info › **Reset this phone…**; iPhone: ⓘ › **Reset device**) first asks the relay to
+delete that device's record, its push token, its links, the items waiting for it and its open pairing
+codes, then deletes the keys, links and clip history on the device. The unlink notices it sends your other
+devices wait on the relay until delivered or expired (at most 10 minutes). Activity-log entries already
+written stay for their normal retention, and relay backups keep what they captured. If the relay cannot
+be reached within a few seconds, the reset happens on the device only and the app tells you; then ask the
+operator to remove the device record.
 
 ## Permissions and why
 
