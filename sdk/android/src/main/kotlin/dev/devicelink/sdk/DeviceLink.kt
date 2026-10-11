@@ -347,7 +347,7 @@ class DeviceLinkInstance internal constructor(private val context: Context, val 
             appendLine("Relay: ${d.relayUrl.ifEmpty { "not configured" }} · registered: ${d.registered}")
             appendLine("Linked devices: ${d.peers} · receiver on: $receiverEnabled · status: ${client.status.value}")
             appendLine("Last poll: ${at(d.lastPollAt)} · last receive: ${at(d.lastReceiveAt)} · last send: ${at(d.lastSendAt)}")
-            appendLine("Received: ${d.received} · sent: ${d.sent} (since app start)")
+            appendLine("Received: ${d.received} · sent: ${d.sent} · undecryptable: ${d.undecryptable} (since app start)")
             append("Last error: ${d.lastError ?: "none"}${d.lastErrorAt?.let { " at " + at(it) } ?: ""}")
         }
     }
