@@ -211,6 +211,8 @@ public actor DeviceLinkClient {
     }
 
     private func noteFailure(_ error: Error) {
+        // A cancelled request (Off, app backgrounded, a superseded long poll) is not a failure.
+        if error is CancellationError || (error as? URLError)?.code == .cancelled { return }
         let text: String
         switch error {
         case DeviceLinkError.relay(let status, let code): text = "relay \(status) \(code)"

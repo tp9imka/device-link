@@ -441,6 +441,30 @@ final class EngineTests: XCTestCase {
         XCTAssertEqual(statuses.get, [.failed])
     }
 
+    /// Passes through to the fake relay; mailbox polls fail like a URLSession task cancelled mid-flight.
+    final class CancelledPolls: HTTPTransport, @unchecked Sendable {
+        let inner: HTTPTransport
+        init(_ inner: HTTPTransport) { self.inner = inner }
+        func send(method: String, url: URL, headers: [String: String], body: Data, timeout: TimeInterval) async throws -> HTTPResponse {
+            if method == "GET", url.path == "/v1/messages" { throw URLError(.cancelled) }
+            return try await inner.send(method: method, url: url, headers: headers, body: body, timeout: timeout)
+        }
+    }
+
+    func testCancelledLongPollIsNotRecordedAsAnError() async throws {
+        let android = try client("Pixel")
+        let iphone = try DeviceLinkClient(identity: SoftwareIdentity(), encryption: EncryptionKeyPair(), store: MemoryLinkStore(),
+                                          config: LinkConfig(deviceName: "iPhone"), transport: CancelledPolls(relay), clock: { [now] in now.get })
+        try await link(android, iphone)
+        do {
+            _ = try await iphone.receiveOnce(wait: 0) { _ in .copied }
+            XCTFail("the cancelled poll must still end receiveOnce")
+        } catch {}
+        let diagnostics = await iphone.currentDiagnostics()
+        XCTAssertNil(diagnostics.lastError)
+        XCTAssertNil(diagnostics.lastErrorAt)
+    }
+
     func testUndecryptableEnvelopesAreDroppedAndCounted() async throws {
         let android = try client("Pixel"), iphone = try client("iPhone")
         try await link(android, iphone)

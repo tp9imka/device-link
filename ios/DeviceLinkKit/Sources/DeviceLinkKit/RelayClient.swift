@@ -37,6 +37,10 @@ public final class URLSessionTransport: HTTPTransport, @unchecked Sendable {
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<HTTPResponse, Error>) in
                 let task = session.dataTask(with: request) { data, response, error in
+                    // Our own cancellation surfaces as CancellationError, like every other suspension point.
+                    if let error = error as? URLError, error.code == .cancelled, box.cancelled {
+                        continuation.resume(throwing: CancellationError()); return
+                    }
                     if let error { continuation.resume(throwing: error); return }
                     continuation.resume(returning: HTTPResponse(status: (response as? HTTPURLResponse)?.statusCode ?? 0, body: data ?? Data()))
                 }
@@ -44,12 +48,26 @@ public final class URLSessionTransport: HTTPTransport, @unchecked Sendable {
                 task.resume()
             }
         } onCancel: {
-            box.task?.cancel()
+            box.cancel()
         }
     }
 
     private final class TaskBox: @unchecked Sendable {
-        var task: URLSessionDataTask?
+        private let lock = NSLock()
+        private var _task: URLSessionDataTask?
+        private var _cancelled = false
+        var task: URLSessionDataTask? {
+            get { lock.lock(); defer { lock.unlock() }; return _task }
+            set {
+                lock.lock(); _task = newValue; let cancelled = _cancelled; lock.unlock()
+                if cancelled { newValue?.cancel() }
+            }
+        }
+        var cancelled: Bool { lock.lock(); defer { lock.unlock() }; return _cancelled }
+        func cancel() {
+            lock.lock(); _cancelled = true; let task = _task; lock.unlock()
+            task?.cancel()
+        }
     }
 }
 
