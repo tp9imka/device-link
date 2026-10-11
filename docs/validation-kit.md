@@ -60,7 +60,7 @@ Record the SHA-256 of every file fixture before sending (`shasum -a 256` on desk
 | D10 | Turn A's receiver **off** (or close the iOS app), send `T1`, wait 6 minutes, turn it on. | Item never arrives (expired). Admin: an `expired` event, sandbox empty. |
 | D11 | Turn A's receiver off, send `T2`, turn it on after 1 min. | `T2` arrives once. |
 | D12 | Airplane mode on the sender mid-send of `F2`, then off within 1 min. | Either delivered once (retry) or a visible failure; never a duplicate or partial file. |
-| D13 | SDK host built with `DeviceLinkOptions(autoCopy = false)`. Send `T1` to it. | Clipboard unchanged; notification offers **Copy**. |
+| D13 | SDK host in host-app mode (`DeviceLinkOptions(autoCopy = false)`): in the Android sample turn on **Host-app mode**, then tap **Restart now** (the SDK reads options at process start; the card text must say "On: …"). Send `T1` to it. Android only: DeviceLinkSample (iOS) has no such switch. | Clipboard unchanged; notification offers **Copy**. |
 
 ## 3. Sending from a device without the SDK
 
