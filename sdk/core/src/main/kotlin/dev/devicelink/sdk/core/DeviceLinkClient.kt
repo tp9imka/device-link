@@ -129,17 +129,19 @@ private const val POLL_PAUSE_MILLIS = 200L
 internal const val POLL_ALREADY_ACTIVE = "poll_already_active"
 private const val POLL_COLLISION_MILLIS = 2_000L
 private const val MAILBOX_FULL = "mailbox_full"
+private const val PEER_LIMIT = "peer_limit"
 
 /** Pauses before the 2nd, 3rd and 4th upload attempt of one envelope (4 attempts, about 7 s in total). */
 internal val UPLOAD_RETRY_DELAYS_MILLIS = longArrayOf(1_000L, 2_000L, 4_000L)
 
 /**
- * Upload failures worth resending the same envelope for: 408, 429 (except `mailbox_full`, which has its own
- * wait), 5xx, and transport errors other than certificate failures. Other 4xx (400, 401, 403, 404, 409, 413)
- * cannot succeed on a retry.
+ * Relay failures worth resending the same request for (uploads, pairing confirm and allow): 408, 429 (except
+ * `mailbox_full`, which has its own wait, and `peer_limit`, which only an unlink clears), 5xx, and transport
+ * errors other than certificate failures. Other 4xx (400, 401, 403, 404, 409, 413) cannot succeed on a retry.
  */
 internal fun isTransientUploadFailure(failure: Throwable): Boolean = when (failure) {
-    is RelayException -> failure.code != MAILBOX_FULL && (failure.status == 408 || failure.status == 429 || failure.status in 500..599)
+    is RelayException -> failure.code != MAILBOX_FULL && failure.code != PEER_LIMIT &&
+        (failure.status == 408 || failure.status == 429 || failure.status in 500..599)
     is SSLPeerUnverifiedException -> false
     is IOException -> generateSequence<Throwable>(failure) { it.cause }.none { it is CertificateException }
     else -> false
@@ -269,7 +271,7 @@ class DeviceLinkClient(
                     "joined", "confirmed" -> {
                         val bundle = invite.openJoin(requireNotNull(status.sealed))
                         if (bundle.id != status.joinerId || bundle.id == deviceId) throw PairingException("Pairing data does not match joiner")
-                        relay.allow(bundle.id)
+                        allow(relay, bundle.id)
                         // "confirmed" here means an earlier confirm by this inviter was accepted (response lost).
                         if (status.state == "joined") confirm(relay, bundle.id)
                         val peer = LinkedPeer(bundle, clock(), invite.confirmationCode(bundle.id))
@@ -279,6 +281,29 @@ class DeviceLinkClient(
                         return peer
                     }
                     else -> throw PairingException("Pairing ${status.state}")
+                }
+            }
+        }
+
+        /**
+         * Allows the joiner on the relay before confirming. `PUT /v1/peers` is idempotent, so a transient failure
+         * ([isTransientUploadFailure]) is resent up to [UPLOAD_RETRY_DELAYS_MILLIS] more times within the
+         * pairing's lifetime. Anything else (403, 429 `peer_limit`) throws at once; nothing was confirmed yet.
+         */
+        private suspend fun allow(relay: RelayClient, joinerId: String) {
+            var attempt = 0
+            while (true) {
+                try {
+                    relay.allow(joinerId)
+                    return
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (failure: Exception) {
+                    if (!isTransientUploadFailure(failure) || attempt >= UPLOAD_RETRY_DELAYS_MILLIS.size || clock() >= expiresAt) {
+                        failure(failure)
+                        throw failure
+                    }
+                    delay(UPLOAD_RETRY_DELAYS_MILLIS[attempt++])
                 }
             }
         }

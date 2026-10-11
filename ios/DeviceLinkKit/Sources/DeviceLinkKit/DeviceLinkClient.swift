@@ -110,12 +110,13 @@ private let permanentURLErrors: Set<URLError.Code> = [
     .appTransportSecurityRequiresSecureConnection,
 ]
 
-/// Upload failures worth resending the same envelope for: 408, 429 (except `mailbox_full`, which has its own
-/// wait), 5xx, and transport errors a retry can fix. Other 4xx (400, 401, 403, 404, 409, 413) cannot succeed.
+/// Relay failures worth resending the same request for (uploads, pairing confirm and allow): 408, 429 (except
+/// `mailbox_full`, which has its own wait, and `peer_limit`, which only an unlink clears), 5xx, and transport
+/// errors a retry can fix. Other 4xx (400, 401, 403, 404, 409, 413) cannot succeed.
 func isTransientUploadFailure(_ error: Error) -> Bool {
     switch error {
     case DeviceLinkError.relay(let status, let code):
-        return code != "mailbox_full" && (status == 408 || status == 429 || (500...599).contains(status))
+        return code != "mailbox_full" && code != "peer_limit" && (status == 408 || status == 429 || (500...599).contains(status))
     case let error as URLError: return !permanentURLErrors.contains(error.code)
     default: return false
     }
@@ -319,13 +320,35 @@ public actor DeviceLinkClient {
             case "joined", "confirmed":
                 let bundle = try session.invite.openJoin(status.sealed ?? "")
                 guard bundle.id == status.joinerId, bundle.id != deviceId else { throw DeviceLinkError.pairing("Pairing data does not match joiner") }
-                try await relay.allow(bundle.id)
+                try await allow(session, relay: relay, joinerId: bundle.id)
                 // "confirmed" here means an earlier confirm by this inviter was accepted (response lost).
                 if status.state == "joined" { try await confirm(session, relay: relay, joinerId: bundle.id) }
                 let peer = try addPeer(bundle, code: session.invite.confirmationCode(joinerId: bundle.id))
                 emit(.peerLinked(peer))
                 return peer
             default: throw DeviceLinkError.pairing("Pairing \(status.state)")
+            }
+        }
+    }
+
+    /// Allows the joiner on the relay before confirming. `PUT /v1/peers` is idempotent, so a transient failure
+    /// (`isTransientUploadFailure`) is resent up to `retryDelaysMillis` more times within the pairing's
+    /// lifetime. Anything else (403, 429 `peer_limit`) throws at once; nothing was confirmed yet.
+    private func allow(_ session: PairingSession, relay: RelayClient, joinerId: String) async throws {
+        var attempt = 0
+        while true {
+            do {
+                try await relay.allow(joinerId)
+                return
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                guard isTransientUploadFailure(error), attempt < retryDelaysMillis.count, clock() < session.expiresAt else {
+                    noteFailure(error)
+                    throw error
+                }
+                try await Task.sleep(nanoseconds: retryDelaysMillis[attempt] * 1_000_000)
+                attempt += 1
             }
         }
     }

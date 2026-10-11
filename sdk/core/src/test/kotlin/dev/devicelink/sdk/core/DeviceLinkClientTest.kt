@@ -39,6 +39,10 @@ private class FakeRelay(private val clock: () -> Long) : HttpTransport {
     val confirms = mutableListOf<String>()
     /** The next `PUT /v1/peers/…` by this device ID fails with a network error. */
     var failNextAllowBy: String? = null
+    /** Every `PUT /v1/peers/…` by this device ID is refused with this status and error code. */
+    var refuseAllowBy: Pair<String, Pair<Int, String>>? = null
+    /** `PUT /v1/peers/…` attempts per calling device ID. */
+    val allowAttempts = mutableMapOf<String, Int>()
     val polls = mutableListOf<String>()
     /** `POST /v1/messages` attempts so far; [uploadFaults] answers (or throws for) the attempt with that 1-based number. */
     var uploads = 0
@@ -82,6 +86,10 @@ private class FakeRelay(private val clock: () -> Long) : HttpTransport {
         }
         if (caller !in devices) return error(403, "registration_required")
         val json = if (body.isEmpty()) JsonObject(emptyMap()) else wireJson.decodeFromString<JsonObject>(body.toString(Charsets.UTF_8))
+        if (path.size == 3 && path[1] == "peers" && method == "PUT") {
+            allowAttempts.merge(caller, 1, Int::plus)
+            refuseAllowBy?.takeIf { it.first == caller }?.let { (_, refusal) -> return error(refusal.first, refusal.second) }
+        }
         return when {
             path == listOf("v1", "pairings") && method == "POST" -> {
                 pairings[json["id"]!!.jsonPrimitive.content] = mutableMapOf("creator" to caller, "state" to "open", "expires" to json["expiresAt"]!!.jsonPrimitive.long.toString())
@@ -529,6 +537,29 @@ class DeviceLinkClientTest {
         linked()
         assertEquals(listOf(android.deviceId), iphone.peers.value.map { it.id })
         assertTrue((iphone.deviceId to android.deviceId) in relay.allow)
+    }
+
+    @Test fun `a network error on the inviter's allow is retried and both sides end linked`() {
+        relay.failNextAllowBy = android.deviceId
+        linkedInVirtualTime()
+        assertEquals(listOf(iphone.deviceId), android.peers.value.map { it.id })
+        assertEquals(listOf(android.deviceId), iphone.peers.value.map { it.id })
+        assertTrue(relay.allow.containsAll(listOf(android.deviceId to iphone.deviceId, iphone.deviceId to android.deviceId)))
+        assertEquals(2, relay.allowAttempts[android.deviceId])
+    }
+
+    // Virtual time, so a wrongly retried refusal would show up as extra attempts rather than a slow test.
+    @Test fun `a relay refusal of the inviter's allow fails at once`() = runTest {
+        relay.refuseAllowBy = android.deviceId to (429 to "peer_limit")
+        android.configure("https://relay.example")
+        val session = android.invite()
+        val joiner = launch { runCatching { iphone.join(session.uri) } }
+        val failure = runCatching { session.awaitPeer() }.exceptionOrNull()
+        joiner.cancel()
+        assertEquals("peer_limit", (failure as RelayException).code)
+        assertEquals(1, relay.allowAttempts[android.deviceId])
+        assertTrue(android.peers.value.isEmpty())
+        assertTrue(iphone.peers.value.isEmpty())
     }
 
     private fun relayError(status: Int, code: String): () -> HttpResponse = { HttpResponse(status, """{"error":"$code"}""".toByteArray()) }

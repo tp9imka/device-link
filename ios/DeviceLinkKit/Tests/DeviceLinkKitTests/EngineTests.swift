@@ -31,6 +31,10 @@ final class FakeRelay: HTTPTransport, @unchecked Sendable {
         var confirms: [String] = []
         /// The next `PUT /v1/peers/…` by this device ID fails with a network error.
         var failNextAllowBy: String?
+        /// Every `PUT /v1/peers/…` by this device ID is refused with this status and error code.
+        var refuseAllowBy: (String, Int, String)?
+        /// `PUT /v1/peers/…` attempts per calling device ID.
+        var allowAttempts: [String: Int] = [:]
         var polls = 0
         /// `POST /v1/messages` attempts so far; `uploadFaults` answers (or throws for) the attempt with that 1-based number.
         var uploads = 0
@@ -51,13 +55,17 @@ final class FakeRelay: HTTPTransport, @unchecked Sendable {
 
     func send(method: String, url: URL, headers: [String: String], body: Data, timeout: TimeInterval) async throws -> HTTPResponse {
         if state.get.down { throw URLError(.cannotConnectToHost) }
-        if method == "PUT", url.path.hasPrefix("/v1/peers/"), let key = try? Encoding.unb64(headers["X-Device-Key"] ?? "", maxBytes: 128),
-           state.with({ state in
-               guard state.failNextAllowBy == Identity.deviceId(key) else { return false }
-               state.failNextAllowBy = nil
-               return true
-           }) {
-            throw URLError(.networkConnectionLost)
+        if method == "PUT", url.path.hasPrefix("/v1/peers/"), let key = try? Encoding.unb64(headers["X-Device-Key"] ?? "", maxBytes: 128) {
+            let caller = Identity.deviceId(key)
+            let (refusal, drop) = state.with { state -> ((Int, String)?, Bool) in
+                state.allowAttempts[caller, default: 0] += 1
+                if let (refused, status, code) = state.refuseAllowBy, refused == caller { return ((status, code), false) }
+                guard state.failNextAllowBy == caller else { return (nil, false) }
+                state.failNextAllowBy = nil
+                return (nil, true)
+            }
+            if let (status, code) = refusal { return HTTPResponse(status: status, body: Data("{\"error\":\"\(code)\"}".utf8)) }
+            if drop { throw URLError(.networkConnectionLost) }
         }
         if method == "POST", url.path == "/v1/messages",
            let fault = state.with({ state -> (() throws -> HTTPResponse)? in
@@ -408,6 +416,47 @@ final class EngineTests: XCTestCase {
         let joinerPeers = await iphone.peers
         XCTAssertEqual(joinerPeers.map(\.id), [android.deviceId])
         XCTAssertTrue(relay.state.get.allow.contains("\(iphone.deviceId)>\(android.deviceId)"))
+    }
+
+    func testNetworkErrorOnInvitersAllowIsRetriedAndBothSidesEndLinked() async throws {
+        let android = try client("Pixel"), iphone = try client("iPhone")
+        relay.state.with { $0.failNextAllowBy = android.deviceId }
+        await android.setRetryDelays([1, 1, 1])
+        try await android.configure(relayURL: "https://relay.example")
+        let session = try await android.invite()
+        // The joiner runs aside: if the inviter gave up, it would wait for a confirm forever on the frozen clock.
+        let joiner = Task { try await iphone.join(session.uri) }
+        let linked: LinkedPeer
+        do { linked = try await android.awaitPeer(session) } catch { joiner.cancel(); throw error }
+        XCTAssertEqual(linked.id, iphone.deviceId)
+        let joined = try await joiner.value
+        XCTAssertEqual(joined.id, android.deviceId)
+        let inviterPeers = await android.peers, joinerPeers = await iphone.peers
+        XCTAssertEqual(inviterPeers.map(\.id), [iphone.deviceId])
+        XCTAssertEqual(joinerPeers.map(\.id), [android.deviceId])
+        let allow = relay.state.get.allow
+        XCTAssertTrue(allow.contains("\(android.deviceId)>\(iphone.deviceId)") && allow.contains("\(iphone.deviceId)>\(android.deviceId)"))
+        XCTAssertEqual(relay.state.get.allowAttempts[android.deviceId], 2)
+    }
+
+    func testRelayRefusalOfInvitersAllowFailsAtOnce() async throws {
+        let android = try client("Pixel"), iphone = try client("iPhone")
+        try await android.configure(relayURL: "https://relay.example")
+        let session = try await android.invite()
+        relay.state.with { $0.refuseAllowBy = (android.deviceId, 429, "peer_limit") }
+        await android.setRetryDelays([1, 1, 1])
+        let joiner = Task { _ = try? await iphone.join(session.uri) }
+        do {
+            _ = try await android.awaitPeer(session)
+            XCTFail("the relay refused the allow, awaitPeer must throw")
+        } catch DeviceLinkError.relay(_, let code) {
+            XCTAssertEqual(code, "peer_limit")
+        }
+        joiner.cancel()
+        XCTAssertEqual(relay.state.get.allowAttempts[android.deviceId], 1)
+        let inviterPeers = await android.peers, joinerPeers = await iphone.peers
+        XCTAssertTrue(inviterPeers.isEmpty)
+        XCTAssertTrue(joinerPeers.isEmpty)
     }
 
     static func relayError(_ status: Int, _ code: String) -> () throws -> HTTPResponse {
