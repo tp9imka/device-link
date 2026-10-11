@@ -574,7 +574,7 @@ public actor DeviceLinkClient {
             throw DeviceLinkError.invalid("File is larger than \(Limits.maxFileBytes / (1024 * 1024)) MB")
         }
         let targets = peers.filter { peerIds?.contains($0.id) ?? true }
-        if let source, source.size > Int64(Limits.maxContentBytes) { return try await sendChunked(source, to: targets, now: now) }
+        if let source, source.size > Int64(Limits.chunkBytes) { return try await sendChunked(source, to: targets, now: now) }
         let payload: Payload
         switch content {
         case .text(let text): payload = .text(text, now: now)

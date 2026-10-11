@@ -19,7 +19,10 @@ object Limits {
     const val MAX_NAME_CHARS = 48
     const val MAX_FILE_NAME_CHARS = 120
     const val MAX_HTML_BYTES = 256 * 1024
-    /** Files above [MAX_CONTENT_BYTES] are split into chunks of this size (one envelope each). */
+    /**
+     * Senders split any image or file above this size into chunks of this size (one envelope each), so each
+     * envelope is sealed just before its upload. Single envelopes up to [MAX_CONTENT_BYTES] are still accepted.
+     */
     const val CHUNK_BYTES = 4 * 1024 * 1024
     const val MAX_PARTS = 10
     const val MAX_FILE_BYTES = CHUNK_BYTES * MAX_PARTS

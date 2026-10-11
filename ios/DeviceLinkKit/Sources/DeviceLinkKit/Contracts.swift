@@ -10,6 +10,8 @@ public enum Limits {
     public static let maxNameUTF16 = 48
     public static let maxFileNameUTF16 = 120
     public static let maxHTMLBytes = 256 * 1024
+    /// Senders split any image or file above this size into chunks of this size, so each envelope is sealed just
+    /// before its upload. Single envelopes up to `maxContentBytes` are still accepted.
     public static let chunkBytes = 4 * 1024 * 1024
     public static let maxParts = 10
     public static let maxFileBytes = chunkBytes * maxParts

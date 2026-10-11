@@ -402,6 +402,46 @@ class DeviceLinkClientTest {
         assertTrue(relay.mailbox.isEmpty())
     }
 
+    @Test fun `an image one byte over a chunk goes as two chunks and arrives as one image`() = runBlocking {
+        linked()
+        val image = ByteArray(Limits.CHUNK_BYTES + 1) { (it * 7).toByte() }
+        val sent = android.send(OutgoingContent.Image("photo.jpg", "image/jpeg", image)).single()
+        assertTrue(sent.accepted)
+        assertEquals(2, relay.mailbox.size)
+        val items = mutableListOf<IncomingItem>()
+        val contents = mutableListOf<ByteArray?>()
+        repeat(2) { iphone.receiveOnce { items += it; contents += it.bytes(); ReceiptStatus.COPIED } }
+        val item = items.single()
+        assertEquals(sent.itemId, item.id)
+        assertEquals(PayloadKind.IMAGE, item.kind)
+        assertEquals("image/jpeg", item.mime)
+        assertEquals("photo.jpg", item.fileName)
+        assertTrue(image.contentEquals(contents.single()!!))
+    }
+
+    @Test fun `an image of exactly one chunk goes as one envelope`() = runBlocking {
+        linked()
+        val image = ByteArray(Limits.CHUNK_BYTES) { (it * 7).toByte() }
+        assertTrue(android.send(OutgoingContent.Image("photo.jpg", "image/jpeg", image)).single().accepted)
+        assertEquals(1, relay.mailbox.size)
+        val items = mutableListOf<IncomingItem>()
+        iphone.receiveOnce { items += it; ReceiptStatus.COPIED }
+        assertFalse(items.single().payload.isChunk)
+        assertTrue(image.contentEquals(items.single().bytes()!!))
+    }
+
+    @Test fun `a 10 MiB single envelope from an older sender is still accepted`() = runBlocking {
+        val identity = SoftwareIdentity(); val keys = EncryptionKeyPair.generate()
+        val sender = DeviceLinkClient(identity, keys, MemoryLinkStore(), LinkConfig("Pixel", "android"), relay) { now }
+        link(sender, iphone)
+        val image = ByteArray(Limits.MAX_CONTENT_BYTES) { (it * 7).toByte() }
+        relay.mailbox += EnvelopeCrypto(identity, keys).seal(Payload.image("old.png", "image/png", image, now), iphone.localBundle, now, 100L)
+        val items = mutableListOf<IncomingItem>()
+        assertEquals(1, iphone.receiveOnce { items += it; ReceiptStatus.COPIED })
+        assertEquals(PayloadKind.IMAGE, items.single().kind)
+        assertTrue(image.contentEquals(items.single().bytes()!!))
+    }
+
     @Test fun `rich text and sensitive flag reach the receiver`() = runBlocking {
         linked()
         android.send(OutgoingContent.Text("bold", html = "<b>bold</b>", sensitive = true))

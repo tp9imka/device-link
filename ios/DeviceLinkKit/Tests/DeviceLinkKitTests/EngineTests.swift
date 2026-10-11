@@ -674,6 +674,51 @@ final class EngineTests: XCTestCase {
         XCTAssertEqual(statuses.get, [.failed])
     }
 
+    func testImageOneByteOverAChunkGoesAsTwoChunksAndArrivesAsOneImage() async throws {
+        let android = try client("Pixel"), iphone = try client("iPhone")
+        try await link(android, iphone)
+        let image = Data((0..<(Limits.chunkBytes + 1)).map { UInt8(truncatingIfNeeded: $0 &* 7) })
+        let sent = try await android.send(.image(name: "photo.jpg", mime: "image/jpeg", data: image))[0]
+        XCTAssertTrue(sent.accepted)
+        XCTAssertEqual(relay.mailbox.count, 2)
+        let items = Locked<[IncomingItem]>([])
+        let contents = Locked<[Data?]>([])
+        for _ in 0..<2 { try await iphone.receiveOnce(wait: 0) { item in items.with { $0.append(item) }; contents.with { $0.append(item.bytes()) }; return .copied } }
+        XCTAssertEqual(items.get.map(\.id), [sent.itemId!])
+        XCTAssertEqual(items.get.first?.kind, .image)
+        XCTAssertEqual(items.get.first?.mime, "image/jpeg")
+        XCTAssertEqual(items.get.first?.fileName, "photo.jpg")
+        XCTAssertEqual(contents.get.first ?? nil, image)
+    }
+
+    func testImageOfExactlyOneChunkGoesAsOneEnvelope() async throws {
+        let android = try client("Pixel"), iphone = try client("iPhone")
+        try await link(android, iphone)
+        let image = Data((0..<Limits.chunkBytes).map { UInt8(truncatingIfNeeded: $0 &* 7) })
+        let sent = try await android.send(.image(name: "photo.jpg", mime: "image/jpeg", data: image))[0]
+        XCTAssertTrue(sent.accepted)
+        XCTAssertEqual(relay.mailbox.count, 1)
+        let items = Locked<[IncomingItem]>([])
+        try await iphone.receiveOnce(wait: 0) { item in items.with { $0.append(item) }; return .copied }
+        XCTAssertEqual(items.get.first?.payload.isChunk, false)
+        XCTAssertEqual(items.get.first?.bytes(), image)
+    }
+
+    func testTenMiBSingleEnvelopeFromAnOlderSenderIsStillAccepted() async throws {
+        let identity = SoftwareIdentity(), keys = EncryptionKeyPair()
+        let sender = try client("Pixel", identity: identity, keys: keys), iphone = try client("iPhone")
+        try await link(sender, iphone)
+        let image = Data((0..<Limits.maxContentBytes).map { UInt8(truncatingIfNeeded: $0 &* 7) })
+        let envelope = try EnvelopeCrypto(identity: identity, encryption: keys)
+            .seal(.image(name: "old.png", mime: "image/png", bytes: image, now: now.get), to: iphone.localBundle, now: now.get, sequence: 100)
+        relay.state.with { $0.mailbox.append(envelope) }
+        let items = Locked<[IncomingItem]>([])
+        let applied = try await iphone.receiveOnce(wait: 0) { item in items.with { $0.append(item) }; return .copied }
+        XCTAssertEqual(applied, 1)
+        XCTAssertEqual(items.get.first?.kind, .image)
+        XCTAssertEqual(items.get.first?.bytes(), image)
+    }
+
     /// Passes through to the fake relay; mailbox polls fail like a URLSession task cancelled mid-flight.
     final class CancelledPolls: HTTPTransport, @unchecked Sendable {
         let inner: HTTPTransport

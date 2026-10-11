@@ -102,8 +102,9 @@ Optional fields (all encrypted, all ignorable by older decoders):
 - `html` (text only, ≤ 256 KiB): rich-text alternative; `text` stays the plain fallback.
 - `sensitive: true`: receivers hide previews in notifications and history, and expire the clip from
   the clipboard where the platform supports it (iOS: 2 minutes).
-- Chunked files: content over 10 MiB is split into up to 10 chunks of ≤ 4 MiB (`MAX_FILE_BYTES` 40 MiB).
-  Each chunk is its own envelope with the same `name`/`mime` plus `group` (UUID), `part` (0-based),
+- Chunked files: senders split any image or file over 4 MiB (`CHUNK_BYTES`) into up to 10 chunks of
+  ≤ 4 MiB (`MAX_FILE_BYTES` 40 MiB), so each envelope is sealed just before its own upload and a slow
+  link cannot outlive its lifetime. Receivers still accept single envelopes up to 10 MiB. Each chunk is its own envelope with the same `name`/`mime` plus `group` (UUID), `part` (0-based),
   `parts` (2–10) and `size` (total bytes). Receivers store each chunk envelope (still encrypted) durably
   on the device before acknowledging it, so a restart mid-transfer resumes the file; they reassemble when
   all parts are present and the total equals `size`, delete the stored chunks, and send one receipt for

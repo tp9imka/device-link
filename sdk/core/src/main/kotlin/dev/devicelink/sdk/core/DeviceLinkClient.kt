@@ -509,7 +509,7 @@ class DeviceLinkClient(
         }
         require(source == null || source.size <= Limits.MAX_FILE_BYTES) { "File is larger than ${Limits.MAX_FILE_BYTES / (1024 * 1024)} MB" }
         val targets = store.load().peers.filter { peerIds == null || it.id in peerIds }
-        if (source != null && source.size > Limits.MAX_CONTENT_BYTES) return sendChunked(source, targets, now)
+        if (source != null && source.size > Limits.CHUNK_BYTES) return sendChunked(source, targets, now)
         val payload = when (content) {
             is OutgoingContent.Text -> Payload.text(content.text, now, content.html, content.sensitive)
             is OutgoingContent.Image -> Payload.image(content.name, content.mime, content.bytes, now)
