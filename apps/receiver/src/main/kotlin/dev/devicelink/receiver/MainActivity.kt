@@ -221,10 +221,8 @@ class MainActivity : Activity() {
             .setNeutralButton(R.string.diagnostics_test) { _, _ ->
                 scope.launch {
                     val stamp = java.text.DateFormat.getTimeInstance().format(java.util.Date())
-                    val outcomes = runCatching { link.sendText(getString(R.string.test_clip, stamp)) }.getOrDefault(emptyList())
-                    Toast.makeText(this@MainActivity, if (outcomes.isNotEmpty() && outcomes.all { it.accepted })
-                        getString(dev.devicelink.sdk.R.string.dl_send_ok, link.peers.value.joinToString { it.name })
-                        else getString(dev.devicelink.sdk.R.string.dl_send_failed), Toast.LENGTH_SHORT).show()
+                    val result = runCatching { link.sendText(getString(R.string.test_clip, stamp)) }
+                    Toast.makeText(this@MainActivity, link.sendResultMessage(result), Toast.LENGTH_LONG).show()
                 }
             }
             .setNegativeButton(R.string.diagnostics_close, null)
@@ -276,11 +274,10 @@ class MainActivity : Activity() {
     private fun pasteAndSend() {
         val clip = getSystemService(ClipboardManager::class.java).primaryClip
         if (clip == null || clip.itemCount == 0) { Toast.makeText(this, R.string.clipboard_empty, Toast.LENGTH_SHORT).show(); return }
+        if (clip.getItemAt(0).uri != null) Toast.makeText(this, dev.devicelink.sdk.R.string.dl_sending, Toast.LENGTH_SHORT).show()
         scope.launch {
-            val outcomes = runCatching { link.sendClip(clip) }.getOrDefault(emptyList())
-            Toast.makeText(this@MainActivity, if (outcomes.isNotEmpty() && outcomes.all { it.accepted })
-                getString(dev.devicelink.sdk.R.string.dl_send_ok, link.peers.value.joinToString { it.name })
-                else getString(dev.devicelink.sdk.R.string.dl_send_failed), Toast.LENGTH_SHORT).show()
+            val result = runCatching { link.sendClip(clip) }
+            Toast.makeText(this@MainActivity, link.sendResultMessage(result), Toast.LENGTH_LONG).show()
         }
     }
 
@@ -300,10 +297,12 @@ class MainActivity : Activity() {
         super.onActivityResult(requestCode, resultCode, data)
         if (DeviceLinkPairing.onActivityResult(this, requestCode, resultCode, data)) return
         val uri = data?.data
-        if (requestCode == PICK_FILE && resultCode == RESULT_OK && uri != null) scope.launch {
-            val result = runCatching { link.sendUri(uri) }
-            Toast.makeText(this@MainActivity, result.exceptionOrNull()?.message
-                ?: getString(dev.devicelink.sdk.R.string.dl_send_ok, link.peers.value.joinToString { it.name }), Toast.LENGTH_SHORT).show()
+        if (requestCode == PICK_FILE && resultCode == RESULT_OK && uri != null) {
+            Toast.makeText(this, dev.devicelink.sdk.R.string.dl_sending, Toast.LENGTH_SHORT).show()
+            scope.launch {
+                val result = runCatching { link.sendUri(uri) }
+                Toast.makeText(this@MainActivity, link.sendResultMessage(result), Toast.LENGTH_LONG).show()
+            }
         }
     }
 

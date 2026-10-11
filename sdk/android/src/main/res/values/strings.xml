@@ -20,6 +20,7 @@
  <string name="dl_file">File</string>
  <string name="dl_share_label">Send to device</string>
  <string name="dl_send_ok">Sent to %1$s</string>
+ <string name="dl_sending">Sending…</string>
  <string name="dl_send_failed">Could not send. Check the connection and try again.</string>
  <string name="dl_send_nothing">Nothing to send</string>
  <string name="dl_send_too_large">Too big to send. Files can be up to %1$d MB, text up to %2$d KB.</string>

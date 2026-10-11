@@ -46,10 +46,11 @@ class MainActivity : Activity() {
             copy(ClipData(ClipDescription(getString(R.string.image_heading), arrayOf("image/png")), ClipData.Item(imageUri)))
         }
         findViewById<Button>(R.id.send_file).setOnClickListener {
+            Toast.makeText(this, dev.devicelink.sdk.R.string.dl_sending, Toast.LENGTH_SHORT).show()
             scope.launch {
                 val uri = Uri.parse("android.resource://$packageName/${R.raw.sample_notes}")
                 val result = runCatching { link.sendUri(uri, "text/plain") }
-                Toast.makeText(this@MainActivity, result.exceptionOrNull()?.message ?: getString(R.string.copied_sent, peerNames()), Toast.LENGTH_SHORT).show()
+                Toast.makeText(this@MainActivity, link.sendResultMessage(result), Toast.LENGTH_LONG).show()
             }
         }
         addSamples()

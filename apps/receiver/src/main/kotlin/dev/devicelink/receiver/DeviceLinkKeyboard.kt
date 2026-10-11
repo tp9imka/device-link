@@ -305,10 +305,9 @@ class DeviceLinkKeyboard : InputMethodService(), KeyboardView.Listener {
 
     private fun send(clip: ClipData, quiet: Boolean) {
         scope.launch {
-            val outcomes = runCatching { link.sendClip(clip) }.getOrDefault(emptyList())
-            val ok = outcomes.isNotEmpty() && outcomes.all { it.accepted }
-            if (ok) toast(getString(dev.devicelink.sdk.R.string.dl_send_ok, link.peers.value.joinToString { it.name }))
-            else if (!quiet || outcomes.isNotEmpty()) toast(getString(dev.devicelink.sdk.R.string.dl_send_failed))
+            val result = runCatching { link.sendClip(clip) }
+            // Auto-send stays silent when there was nothing to send; any real outcome is reported.
+            if (!quiet || result.getOrNull()?.isNotEmpty() != false) toast(link.sendResultMessage(result))
         }
     }
 

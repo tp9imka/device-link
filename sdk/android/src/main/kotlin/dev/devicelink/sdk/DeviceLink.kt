@@ -196,6 +196,23 @@ class DeviceLinkInstance internal constructor(private val context: Context, val 
         return if (text.isBlank()) emptyList() else sendText(text, item.htmlText?.takeIf { it.isNotBlank() }, sensitive)
     }
 
+    /**
+     * User-facing text for the result of a `send*` call wrapped in `runCatching`: "Sent to …" naming
+     * only the devices that accepted it when every target did, otherwise the reason the user can act on.
+     * `send*` reports relay failures in [SendOutcome] instead of throwing, so never infer success from
+     * the absence of an exception.
+     */
+    fun sendResultMessage(result: Result<List<SendOutcome>>): String {
+        val peers = client.peers.value
+        return when (val problem = SendProblem.of(result, peers.isNotEmpty(), client.diagnostics.value.lastError)) {
+            // Only the devices this went to: sendTargets may limit it to some of them.
+            null -> context.getString(R.string.dl_send_ok, result.getOrThrow()
+                .mapNotNull { outcome -> peers.firstOrNull { it.id == outcome.peerId }?.name }.joinToString())
+            SendProblem.TOO_LARGE -> context.getString(problem.message, Limits.MAX_FILE_BYTES / (1024 * 1024), Limits.MAX_TEXT_BYTES / 1024)
+            else -> context.getString(problem.message)
+        }
+    }
+
     private fun record(outcomes: List<SendOutcome>, kind: String, text: String? = null, name: String? = null,
                        mime: String? = null, uri: String? = null, sensitive: Boolean = false): List<SendOutcome> {
         val names = client.peers.value.associate { it.id to it.name }

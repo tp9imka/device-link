@@ -7,7 +7,6 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.widget.Toast
-import dev.devicelink.sdk.core.Limits
 import dev.devicelink.sdk.core.SendOutcome
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -15,15 +14,12 @@ import kotlinx.coroutines.withContext
 
 /** Shared toast wording for every "send" entry point: success, or the reason the user can act on. */
 internal fun Activity.reportSend(result: Result<List<SendOutcome>>, link: DeviceLinkInstance) {
-    val peers = link.peers.value
-    val message = when (val problem = SendProblem.of(result, peers.isNotEmpty(), link.diagnostics.value.lastError)) {
-        // Only the devices this went to: sendTargets may limit it to some of them.
-        null -> getString(R.string.dl_send_ok, result.getOrThrow().mapNotNull { outcome -> peers.firstOrNull { it.id == outcome.peerId }?.name }
-            .joinToString())
-        SendProblem.TOO_LARGE -> getString(problem.message, Limits.MAX_FILE_BYTES / (1024 * 1024), Limits.MAX_TEXT_BYTES / 1024)
-        else -> getString(problem.message)
-    }
-    Toast.makeText(applicationContext, message, Toast.LENGTH_LONG).show()
+    Toast.makeText(applicationContext, link.sendResultMessage(result), Toast.LENGTH_LONG).show()
+}
+
+/** Files and images can take a while to seal and upload: say so at once instead of staying silent. */
+internal fun Activity.reportSending() {
+    Toast.makeText(applicationContext, R.string.dl_sending, Toast.LENGTH_SHORT).show()
 }
 
 /**
@@ -43,6 +39,7 @@ class SendClipboardActivity : Activity() {
             Toast.makeText(applicationContext, R.string.dl_send_nothing, Toast.LENGTH_SHORT).show()
             finish(); return
         }
+        if (clip.itemCount > 0 && clip.getItemAt(0).uri != null) reportSending()
         link.scope.launch {
             val result = runCatching { link.sendClip(clip) }
             withContext(Dispatchers.Main) { reportSend(result, link); finish() }
@@ -59,6 +56,7 @@ class ShareToDeviceActivity : Activity() {
         super.onCreate(savedInstanceState)
         val link = DeviceLink.get(this)
         val intent = intent
+        if (intent.action == Intent.ACTION_SEND_MULTIPLE || (intent.action == Intent.ACTION_SEND && intent.hasExtra(Intent.EXTRA_STREAM))) reportSending()
         link.scope.launch {
             val result = runCatching { send(link, intent) }
             withContext(Dispatchers.Main) { reportSend(result, link); finish() }
