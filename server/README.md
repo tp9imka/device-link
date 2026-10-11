@@ -102,7 +102,7 @@ SHA256_HEX_BODY
 | `GET /v1/info` | Unauthenticated: version, `maxLifetimeSeconds`, enrollment mode, push providers. |
 | `POST /v1/pairings` | Body `{"id":"<32 hex>","expiresAt":ms}`; at most 5 open per device. |
 | `POST /v1/pairings/{id}/join` | Body `{"sealed":"<Base64>"}`; exactly one joiner. `X-Pairing-Id` on `/v1/register` admits exactly one new identity without the enrollment token while the pairing is open; that identity may retry its registration, others get 403. |
-| `GET /v1/pairings/{id}?wait=0..25` | Creator or joiner only: `{"state","joinerId","sealed"}`; long-polls for the next state. |
+| `GET /v1/pairings/{id}?wait=0..25` | Creator or joiner only: `{"state","joinerId","sealed"}`; long-polls for the next state. A `confirmed` pairing stays readable until the joiner allows the creator (`PUT /v1/peers/{creator}`) or it expires. |
 | `POST /v1/pairings/{id}/confirm` | Creator; records the link and allows the joiner into the creator's mailbox. |
 | `DELETE /v1/pairings/{id}` | Cancel. |
 | `PUT /v1/push`, `DELETE /v1/push` | Register/remove an APNs token (`provider`, `token`, `environment`, `topic`). |

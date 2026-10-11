@@ -467,7 +467,7 @@ def _overview(store, settings, now, polling):
                             "WHERE a.recipient < a.sender").fetchone()[0]
         one_way = db.execute("SELECT count(*) FROM peers a WHERE NOT EXISTS (SELECT 1 FROM peers b "
                              "WHERE b.recipient=a.sender AND b.sender=a.recipient)").fetchone()[0]
-        open_pairings = db.execute("SELECT count(*) FROM pairings WHERE expires>?", (now,)).fetchone()[0]
+        open_pairings = db.execute("SELECT count(*) FROM pairings WHERE expires>? AND state!='confirmed'", (now,)).fetchone()[0]
         full = db.execute("SELECT count(*) FROM (SELECT recipient FROM messages GROUP BY recipient HAVING count(*)>=?)",
                           (settings.mailbox_count,)).fetchone()[0]
         rows = db.execute("SELECT at, kind, value FROM events WHERE at>? AND kind IN ('sent','delivered','expired')", (day,)).fetchall()

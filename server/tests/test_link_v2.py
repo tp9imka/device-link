@@ -41,11 +41,43 @@ def test_qr_pairing_rendezvous_links_both_directions(relay):
     status = request(client, inviter, now[0], "GET", f"/v1/pairings/{pairing_id()}?wait=5").json()
     assert status == {"state": "joined", "joinerId": joiner.id, "sealed": SEALED}
     assert request(client, inviter, now[0], "POST", f"/v1/pairings/{pairing_id()}/confirm", {"sealed": SEALED}).status_code == 204
-    assert request(client, joiner, now[0], "GET", f"/v1/pairings/{pairing_id()}").json()["state"] == "confirmed"
-    # Finished rendezvous is removed once the joiner has read the confirmation.
+    confirmed = {"state": "confirmed", "joinerId": joiner.id, "sealed": SEALED}
+    assert request(client, joiner, now[0], "GET", f"/v1/pairings/{pairing_id()}").json() == confirmed
+    # A lost response is not fatal: the joiner's retry reads the same confirmation.
+    assert request(client, joiner, now[0], "GET", f"/v1/pairings/{pairing_id()}?wait=1").json() == confirmed
+    # The rendezvous ends when the joiner allows the inviter.
+    assert request(client, joiner, now[0], "PUT", f"/v1/peers/{inviter.id}", {}).status_code == 204
     assert request(client, joiner, now[0], "GET", f"/v1/pairings/{pairing_id()}").status_code == 404
+    assert request(client, inviter, now[0], "GET", f"/v1/pairings/{pairing_id()}").status_code == 404
     # Confirmation authorized the joiner to write into the inviter's sandbox.
     assert request(client, joiner, now[0], "POST", "/v1/messages", envelope(joiner, inviter, now[0], version=2)).status_code == 201
+
+
+def confirmed_pairing(client, now, inviter, joiner, pid):
+    create(client, inviter, now, pid=pid, ttl=60_000)
+    request(client, joiner, now, "POST", f"/v1/pairings/{pid}/join", {"sealed": SEALED})
+    assert request(client, inviter, now, "POST", f"/v1/pairings/{pid}/confirm", {"sealed": SEALED}).status_code == 204
+
+
+def test_confirmed_pairing_lasts_until_the_joiner_allows_the_inviter_or_it_expires(relay):
+    _, now, client = relay
+    inviter, joiner, other = Device(), Device(), Device()
+    for device in (inviter, joiner, other):
+        register(client, device, now[0])
+    # Re-pairing devices that are already linked: the existing allowance still ends the rendezvous.
+    request(client, joiner, now[0], "PUT", f"/v1/peers/{inviter.id}", {})
+    confirmed_pairing(client, now[0], inviter, joiner, pairing_id(1))
+    # Allowing some other device, or the inviter allowing the joiner, does not end it.
+    request(client, joiner, now[0], "PUT", f"/v1/peers/{other.id}", {})
+    request(client, inviter, now[0], "PUT", f"/v1/peers/{joiner.id}", {})
+    assert request(client, joiner, now[0], "GET", f"/v1/pairings/{pairing_id(1)}").json()["state"] == "confirmed"
+    request(client, joiner, now[0], "PUT", f"/v1/peers/{inviter.id}", {})
+    assert request(client, joiner, now[0], "GET", f"/v1/pairings/{pairing_id(1)}").status_code == 404
+    # Never allowed: it disappears at expiry.
+    confirmed_pairing(client, now[0], inviter, joiner, pairing_id(2))
+    assert request(client, joiner, now[0], "GET", f"/v1/pairings/{pairing_id(2)}").json()["state"] == "confirmed"
+    now[0] += 60_000
+    assert request(client, joiner, now[0], "GET", f"/v1/pairings/{pairing_id(2)}").status_code == 404
 
 
 def test_pairing_is_single_use_private_and_bounded(relay):

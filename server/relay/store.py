@@ -152,6 +152,8 @@ class Store:
                 if removed:
                     self.event(db, now, "unlinked", recipient, sender)
                 return
+            # The joiner allowing its inviter is the last step of a QR pairing: the rendezvous is finished.
+            db.execute("DELETE FROM pairings WHERE state='confirmed' AND joiner=? AND creator=?", (recipient, sender))
             if db.execute("SELECT 1 FROM peers WHERE recipient=? AND sender=?", (recipient, sender)).fetchone():
                 return
             if db.execute("SELECT count(*) FROM peers WHERE recipient=?", (recipient,)).fetchone()[0] >= self.settings.max_peers:
@@ -257,9 +259,8 @@ class Store:
             creator, state, joiner, join_sealed, confirm_sealed = row
             if caller == creator:
                 return {"state": state, "joinerId": joiner, "sealed": join_sealed}
-            if state == "confirmed":
-                # The joiner has everything it needs; the rendezvous is finished.
-                db.execute("DELETE FROM pairings WHERE id=?", (pairing,))
+            # A confirmed pairing stays readable (a lost response is retried) until the joiner
+            # allows the creator (see peer()) or it expires.
             return {"state": state, "joinerId": joiner, "sealed": confirm_sealed}
 
     def cancel_pairing(self, caller, pairing):

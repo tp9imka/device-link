@@ -179,8 +179,10 @@ Flow:
    withdraws the allowance (`DELETE /v1/peers/{joiner}`, unless that device was already linked) and
    reports the failure.
 4. Joiner long-polls the same pairing, opens the inviter bundle, checks that its
-   ID equals the ID in the QR, pins it and allows it. The relay records the link
-   for the admin dashboard and deletes the pairing.
+   ID equals the ID in the QR, pins it and allows it (`PUT /v1/peers/{inviter}`). The relay records the
+   link for the admin dashboard at the confirm. A confirmed pairing stays readable by the joiner, so a
+   lost response can be retried by polling again, until the joiner's allowance of the inviter deletes
+   it or it expires, whichever comes first.
 
 Confirmation code (display only, first setup only): both devices show
 `HKDF(s, "DeviceLink/pairing-code/v2|" + inviterId + "|" + joinerId, 4 bytes)` as a big-endian integer
