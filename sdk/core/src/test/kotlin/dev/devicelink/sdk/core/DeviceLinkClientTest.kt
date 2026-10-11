@@ -75,7 +75,8 @@ private class FakeRelay(private val clock: () -> Long) : HttpTransport {
             // Same effect as server/relay store.remove_device; idempotent for an unknown device.
             devices -= caller
             allow.removeAll { it.first == caller || it.second == caller }
-            mailbox.removeAll { it.senderId == caller || it.recipientId == caller }
+            // What it sent (its unlink notices) stays until delivered or expired.
+            mailbox.removeAll { it.recipientId == caller }
             pairings.values.removeAll { it["creator"] == caller || it["joiner"] == caller }
             return HttpResponse(204, ByteArray(0))
         }
@@ -606,6 +607,9 @@ class DeviceLinkClientTest {
         assertTrue(relay.allow.none { android.deviceId in it.toList() })
         assertTrue(android.peers.value.isEmpty())
         assertEquals(LinkEvent.PeerUnlinked(iphone.deviceId, byRemote = false), withTimeout(1_000) { unlinked.await() })
+        // The peer was not polling; the unlink notice outlives the unregister and it drops the link later.
+        iphone.receiveOnce { error("no content expected") }
+        assertTrue(iphone.peers.value.isEmpty())
         assertFalse(android.diagnostics.value.registered)
         assertEquals("https://relay.example", android.relayUrl)
     }

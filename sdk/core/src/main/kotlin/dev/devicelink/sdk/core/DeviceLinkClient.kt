@@ -391,9 +391,10 @@ class DeviceLinkClient(
     suspend fun unlinkAll() { store.load().peers.forEach { unlink(it.id) } }
 
     /**
-     * First step of "Reset device". Sends every linked peer an unlink notice (one attempt each, so peers that
-     * are online drop the link instead of sending into a void), then asks the relay to delete this device
-     * (`DELETE /v1/devices/self`: its links, waiting messages to and from it, pairings and push token).
+     * First step of "Reset device". Sends every linked peer an unlink notice (one attempt each), then asks the
+     * relay to delete this device (`DELETE /v1/devices/self`: its links, waiting messages to it, pairings and
+     * push token). The relay keeps the notices just sent, so a peer that is offline drops the link when it
+     * next polls instead of sending into a void.
      *
      * Best effort: never throws for a network or relay failure. Returns true only when the relay confirmed
      * the delete. Whatever the result, and even when cancelled (wrap it in a short timeout), the local link

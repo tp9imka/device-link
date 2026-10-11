@@ -104,7 +104,8 @@ final class FakeRelay: HTTPTransport, @unchecked Sendable {
             // Same effect as server/relay store.remove_device; idempotent for an unknown device.
             state.devices.remove(caller)
             state.allow = state.allow.filter { !$0.split(separator: ">").map(String.init).contains(caller) }
-            state.mailbox.removeAll { $0.senderId == caller || $0.recipientId == caller }
+            // What it sent (its unlink notices) stays until delivered or expired.
+            state.mailbox.removeAll { $0.recipientId == caller }
             state.pairings = state.pairings.filter { $0.value["creator"] != caller && $0.value["joiner"] != caller }
             return ok("", 204)
         }
@@ -535,6 +536,10 @@ final class EngineTests: XCTestCase {
         let peers = await android.peers, relayURL = await android.relayURL
         XCTAssertTrue(peers.isEmpty)
         XCTAssertEqual(unlinked.get, [iphone.deviceId])
+        // The peer was not polling; the unlink notice outlives the unregister and it drops the link later.
+        try await iphone.receiveOnce(wait: 0) { _ in XCTFail("no content expected"); return .failed }
+        let joinerPeers = await iphone.peers
+        XCTAssertTrue(joinerPeers.isEmpty)
         let registered = await android.currentDiagnostics().registered
         XCTAssertFalse(registered)
         XCTAssertEqual(relayURL, "https://relay.example")

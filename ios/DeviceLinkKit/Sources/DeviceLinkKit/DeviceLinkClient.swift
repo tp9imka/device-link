@@ -439,9 +439,10 @@ public actor DeviceLinkClient {
     /// "Remove this device everywhere": tells every peer, revokes them on the relay, forgets them locally.
     public func unlinkAll() async throws { for peer in peers { try await unlink(peer.id) } }
 
-    /// First step of "Reset device". Sends every linked peer an unlink notice (one attempt each, so peers that
-    /// are online drop the link instead of sending into a void), then asks the relay to delete this device
-    /// (`DELETE /v1/devices/self`: its links, waiting messages to and from it, pairings and push token).
+    /// First step of "Reset device". Sends every linked peer an unlink notice (one attempt each), then asks the
+    /// relay to delete this device (`DELETE /v1/devices/self`: its links, waiting messages to it, pairings and
+    /// push token). The relay keeps the notices just sent, so a peer that is offline drops the link when it
+    /// next polls instead of sending into a void.
     ///
     /// Best effort: never throws. Returns true only when the relay confirmed the delete. Whatever the result,
     /// and even when the task is cancelled (wrap it in a short timeout), the local link state is cleared:
