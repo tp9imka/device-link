@@ -141,7 +141,7 @@ Other answers:
   (`android:usesCleartextTraffic="false"`; `allowInsecureRelay` is only on for debuggable builds).
 - Data shared with third parties: none. The relay belongs to the person or organisation that runs it.
 - Can users request deletion? Yes, through the relay operator, who removes a device in `/admin`.
-  "Reset device" in the app deletes local keys and links; it does **not** delete the device row on the
+  Resetting in the app (Android "Reset this phone…", iOS "Reset device") deletes local keys and links; it does **not** delete the device row on the
   relay (no client unregister endpoint exists).
 - Privacy policy URL: publish `docs/wiki/Privacy.md` (wiki page "Privacy") with the placeholders filled in.
 

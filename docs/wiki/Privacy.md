@@ -50,8 +50,8 @@ The operator decides how long backups are kept: `<backup retention>`.
 ## What stays on your device
 
 Your private keys never leave the device. Clip history and received files are kept in the app's private
-storage (on Android excluded from device backups) for the times listed above. "Reset device"
-in the app deletes the keys and links on that device; ask the operator to remove the device record from
+storage (on Android excluded from device backups) for the times listed above. Resetting the device
+in the app (Android: Info › **Reset this phone…**; iPhone: ⓘ › **Reset device**) deletes the keys and links on that device; ask the operator to remove the device record from
 the relay as well.
 
 ## Permissions and why

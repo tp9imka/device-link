@@ -37,7 +37,7 @@ Record the SHA-256 of every file fixture before sending (`shasum -a 256` on desk
 | ID | Steps | Pass |
 | --- | --- | --- |
 | P1 | Fresh install on A. Open the app; check admin **Devices**. Then tap **Show my code**. | A creates its identity with no prompt and offers **Show my code** / **Scan a code**. Admin: A is **not** listed yet (it registers lazily, on its first relay call: showing or joining a code; nothing polls while it has no link). After **Show my code**: QR shown, A registered in admin, an open pairing code in Activity. |
-| P2 | On B (fresh install), tap **Scan link code** and scan A's QR. | Both show "Linked" and the **same 6-digit code** once. Admin: one mutual link, pairing consumed. |
+| P2 | On B (fresh install), tap **Scan a code** (both platforms) and scan A's QR. (Code as text instead: Android **Paste a link code**, iPhone **Paste** under "Link your first device".) | Both show "Linked" and the **same 6-digit code** once. Admin: one mutual link, pairing consumed. |
 | P3 | Scan the same QR again from a third device or B after unlinking. | Refused (code already used). |
 | P4 | Wait 6 minutes with a QR shown, then scan it. | Refused (expired); a fresh code works. |
 | P5 | iPhone: point the system **Camera** at A's QR. | Opens DeviceLink (or the `/pair` landing page, then the app) and links. |
@@ -54,7 +54,7 @@ Record the SHA-256 of every file fixture before sending (`shasum -a 256` on desk
 | D4 | Send `H1` to a device and paste into a rich editor (Docs/Notes/Mail). | Formatting kept; plain-text editors get plain text. |
 | D5 | Send `S1`. | Notification and history are **masked**. Android 13+: clipboard preview hidden. iOS: the clip is local-only and gone after 2 min. |
 | D6 | Send `I1` and `I2`. | Image pasted as an image (not a URI string) in a chat or notes app. |
-| D7 | Send `F1`. | Notification **Open / Share / Save**; Share shows the system chooser; saved bytes match SHA-256. |
+| D7 | Send `F1`. | Notification **Open / Share… / Save…**; Share… shows the system chooser; saved bytes match SHA-256. |
 | D8 | Send `F2` (> 10 MB). | Arrives as **one** item after reassembly; SHA-256 matches; admin shows several envelopes then none. |
 | D9 | Try to send `F3`. | Refused locally with a clear message; nothing uploaded. |
 | D10 | Turn A's receiver **off** (or close the iOS app), send `T1`, wait 6 minutes, turn it on. | Item never arrives (expired). Admin: an `expired` event, sandbox empty. |
@@ -67,10 +67,10 @@ Record the SHA-256 of every file fixture before sending (`shasum -a 256` on desk
 | ID | Steps | Pass |
 | --- | --- | --- |
 | S1a | Android: select text in any app → **Send to device** (text selection menu). | Delivered. |
-| S2 | Android: any app → Share → DeviceLink (text, image, file). | Delivered. |
-| S3 | Android: Quick Settings **DeviceLink** tile after copying something elsewhere. | The clipboard is sent (brief invisible activity, no app UI left behind). |
+| S2 | Android: any app → Share → **Send to device** (text, image, file). | Delivered. |
+| S3 | Android: Quick Settings **Send clipboard** tile after copying something elsewhere. | The clipboard is sent (brief invisible activity, no app UI left behind). |
 | S4 | Android: enable the **DeviceLink keyboard**, tap **Auto-send off** and accept the disclosure (**Turn on**), and use it as the only keyboard for a day: chat, browser URL bar, search, a number field, a password field. Copy in several apps. Sensitive check: copy a clip marked sensitive (a password manager that sets `ClipDescription.EXTRA_IS_SENSITIVE`, which ones do is **unverified**; or a scratch test app, see below), then copy a password from an app that does not set the flag. | Each copy is sent automatically, except a clip carrying `EXTRA_IS_SENSITIVE = true`, which is skipped. A password copied without the flag **is** sent (record which app; it arrives as a normal clip). Typing is comfortable: shift/caps lock, auto-capitals, hold-for-alternates, delete repeat, space-bar cursor slide, Enter action labels, number pad in number fields, 🌐 switching, light/dark, landscape. Note anything awkward. |
-| S5 | iPhone: Share sheet → DeviceLink (text, photo, file). | Delivered. |
+| S5 | iPhone: Share sheet → **Send to device** (text, photo, file). | Delivered. |
 | S6 | iPhone: a Shortcut *Get Clipboard → Send to DeviceLink*, bound to Back Tap (Settings → Accessibility → Touch → Back Tap). | Delivered without opening the app. |
 | S7 | iPhone: Back Tap bound to **Get DeviceLink clip** with the app closed. | Newest waiting item lands on the clipboard. |
 | S8 | Mac: copy text/image in any app with DeviceLinkMac running, then copy from a password manager. | Delivered. A copy whose pasteboard types include `org.nspasteboard.ConcealedType` or `org.nspasteboard.TransientType` is **not** sent; record whether your password manager sets them (**unverified** per app). |
@@ -107,7 +107,7 @@ the item (case D5); Share and text selection → **Send to device** get plain te
 | R1 | Restart the relay during an idle receiver period. | Receivers reconnect within ~1 min with no user action. |
 | R2 | Admin: block A, then send from B. | Refused; unblocking restores delivery. |
 | R3 | Unlink on B. | A shows the peer removed; sends between them stop. Admin: link gone. |
-| R4 | **Reset device** on B (Info → Reset). | New identity; all peers unlinked; a new scan is needed for B only. |
+| R4 | Reset B: Android **Info** → **Reset this phone…** → **Reset and unlink all**; iPhone ⓘ → **Reset device** → **Reset device**. | New identity; all peers unlinked; a new scan is needed for B only. |
 | R5 | Inspect an item in admin Sandboxes. | Only sizes, timings, fingerprints; no content. |
 | R6 | `adb logcat -d | grep -i devicelink` after a session. | No clipboard text, file names, URIs, keys or peer names. |
 | R7 | Copy the **diagnostics report**: Android **Info** → **Copy report**; iPhone ⓘ (Diagnostics) → **Copy report**. Paste it into a notes app on the device. | Lines, both platforms: app and OS version, hardware model (Android manufacturer + model, iOS model identifier such as `iPhone15,2`); device ID as its **first 16 hex characters + …**; relay URL (by design: your own relay) and `registered`; number of linked devices and receiver status (Android also `Keys` and `receiver on`); last poll/receive/send times; received/sent counts; last error as `relay <status> <code>`, `network: <error type or code>` or an error type name. **Never** in it: clip text, file names, URIs, keys or enrollment token, peer or device names, a full device ID. |
