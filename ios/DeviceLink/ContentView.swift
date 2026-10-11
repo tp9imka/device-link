@@ -70,7 +70,12 @@ struct ContentView: View {
             .alert(model.message ?? "", isPresented: Binding(get: { model.message != nil }, set: { if !$0 { model.message = nil } })) {
                 Button("OK", role: .cancel) {}
             }
-            .overlay { if model.busy { ProgressView("Linking…").padding().background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12)) } }
+            .overlay {
+                if model.busy || model.resetting {
+                    ProgressView(model.resetting ? "Resetting…" : "Linking…").padding().background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+                }
+            }
+            .disabled(model.resetting)
         }
     }
 

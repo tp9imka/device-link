@@ -11,6 +11,8 @@ final class LinkModel: ObservableObject {
     @Published var pairingExpiresAt: Date?
     @Published var message: String?
     @Published var busy = false
+    /// True while "Reset device" tells the relay and wipes keys; receiving stays off meanwhile.
+    @Published private(set) var resetting = false
     let clips = ClipStore.shared
     private(set) var client: DeviceLinkClient?
     private var receiving: Task<Void, Never>?
@@ -64,7 +66,7 @@ final class LinkModel: ObservableObject {
 
     func setActive(_ active: Bool) {
         if active {
-            guard receiving == nil, let client else { return }
+            guard receiving == nil, !resetting, let client else { return }
             receiving = Task { [clips] in
                 await client.runReceiver { item in await MainActor.run { clips.apply(item) } }
             }
@@ -212,12 +214,19 @@ final class LinkModel: ObservableObject {
         sendText("DeviceLink test clip · \(DateFormatter.localizedString(from: Date(), dateStyle: .none, timeStyle: .medium))")
     }
 
-    /// Unlinks everything (telling each device), deletes keys and history, and starts with a new identity.
+    /// Upper bound for telling peers and the relay during reset; the local wipe follows regardless.
+    static let resetUnregisterTimeout: Duration = .seconds(5)
+
+    /// Tells every linked device, removes this device from the relay (bounded, best effort, so reset also
+    /// works offline), deletes keys and history, and starts with a new identity.
     func resetDevice() {
-        guard let client else { return }
+        guard let client, !resetting else { return }
+        resetting = true
+        // Stop polling first: a poll after the relay delete would register this device again.
+        setActive(false)
         Task {
-            try? await client.unlinkAll()
-            setActive(false)
+            defer { resetting = false }
+            let removed = await Self.unregister(client, within: Self.resetUnregisterTimeout)
             clips.clear()
             Keychain.delete("identity.se"); Keychain.delete("identity.sw"); Keychain.delete("encryption.x25519")
             try? FileManager.default.removeItem(at: LinkEnvironment.container.appendingPathComponent("DeviceLink/links.json"))
@@ -228,10 +237,23 @@ final class LinkModel: ObservableObject {
                 events?.cancel()
                 events = Task { [weak self] in for await event in await fresh.events() { await self?.handle(event) } }
                 await refresh()
-                message = "Device reset. Show or scan a code to link again."
+                message = removed
+                    ? "Device reset. Show or scan a code to link again."
+                    : "Device reset on this device. The relay could not be reached, so linked devices may still list it until you unlink it there. Show or scan a code to link again."
             } catch {
                 message = "Reset failed. Restart the app and try again."
             }
+        }
+    }
+
+    /// `client.unregister()` raced against `limit`; on timeout it is cancelled (it still clears local links).
+    private static func unregister(_ client: DeviceLinkClient, within limit: Duration) async -> Bool {
+        await withTaskGroup(of: Bool?.self) { group in
+            group.addTask { await client.unregister() }
+            group.addTask { try? await Task.sleep(for: limit); return nil }
+            let first: Bool?? = await group.next()
+            group.cancelAll()
+            return (first ?? nil) ?? false
         }
     }
 
