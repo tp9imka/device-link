@@ -4,14 +4,16 @@
 #
 #   scripts/interop_e2e.sh
 #
-# Overrides: PYTHON (relay interpreter), SWIFT_CLI (command running the `devicelink` executable),
+# Overrides: PYTHON (relay interpreter; default server/.venv/bin/python when present, else python3), SWIFT_CLI (command running the `devicelink` executable),
 # KOTLIN_TEST (command running sdk/core's InteropPeerTest), RELAY_PORT.
 set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 work="$(mktemp -d)"
 port="${RELAY_PORT:-8790}"
 token="interop-$(date +%s)"
-PYTHON="${PYTHON:-python3}"
+if [ -z "${PYTHON:-}" ]; then
+  if [ -x "$root/server/.venv/bin/python" ]; then PYTHON="$root/server/.venv/bin/python"; else PYTHON=python3; fi
+fi
 SWIFT_CLI="${SWIFT_CLI:-swift run --package-path $root/ios/DeviceLinkKit devicelink}"
 KOTLIN_TEST="${KOTLIN_TEST:-$root/gradlew -p $root :sdk:core:test --tests dev.devicelink.sdk.core.InteropPeerTest --no-daemon -q}"
 fail() { echo "FAILED: $*"; for f in received.jsonl kotlin.log relay.log; do [ -f "$work/$f" ] && { echo "--- $f"; tail -40 "$work/$f"; }; done; exit 1; }
