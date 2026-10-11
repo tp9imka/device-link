@@ -174,15 +174,23 @@ Flow:
    verifies its signature and that its ID equals the authenticated `joinerId`,
    allows it (`PUT /v1/peers/{joiner}`) and confirms:
    `POST /v1/pairings/{id}/confirm {"sealed": Base64(seal(confirmKey, "confirm", inviterBundle))}`.
-   It pins and shows the link only after the confirm succeeded. If the confirm fails, it re-reads the
-   pairing (`wait=0`): `confirmed` means the response was lost and the link stands; otherwise it
-   withdraws the allowance (`DELETE /v1/peers/{joiner}`, unless that device was already linked) and
-   reports the failure.
+   It pins and shows the link only after the confirm succeeded. The inviter seals the confirm once and
+   resends that same body: the relay answers a repeated confirm by the same creator with the same
+   `sealed` with `204` (a different one gets `409 pairing_not_joined`). If the confirm fails, it re-reads
+   the pairing (`wait=0`): `confirmed` means the response was lost and the link stands; `joined`, or a
+   re-read that fails too, after a transient failure (408, 429, 5xx, network error) means it resends
+   the confirm, up to 3 times (1 s, 2 s, 4 s) and not past the pairing's expiry; otherwise it withdraws
+   the allowance (`DELETE /v1/peers/{joiner}`, unless that device was already linked) and reports the
+   failure.
 4. Joiner long-polls the same pairing, opens the inviter bundle, checks that its
    ID equals the ID in the QR, pins it and allows it (`PUT /v1/peers/{inviter}`). The relay records the
-   link for the admin dashboard at the confirm. A confirmed pairing stays readable by the joiner, so a
-   lost response can be retried by polling again, until the joiner's allowance of the inviter deletes
-   it or it expires, whichever comes first.
+   link for the admin dashboard at the confirm.
+
+A pairing lives until its `expiresAt` (at most 10 minutes ahead) or until either side cancels it
+(`DELETE /v1/pairings/{id}`); the relay never deletes it when the flow completes. Until then both sides
+can re-read its final state, so a lost response on either side is recovered by reading again: the
+joiner re-reads the inviter's confirm, the inviter learns that its confirm was committed even when the
+joiner has already allowed it. A pairing still accepts only one joiner and one confirm.
 
 Confirmation code (display only, first setup only): both devices show
 `HKDF(s, "DeviceLink/pairing-code/v2|" + inviterId + "|" + joinerId, 4 bytes)` as a big-endian integer

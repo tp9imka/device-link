@@ -31,6 +31,12 @@ private class FakeRelay(private val clock: () -> Long) : HttpTransport {
     var failConfirm: Pair<Int, String>? = null
     /** The confirm is stored, then the response is lost (answered with [failConfirm]). */
     var confirmCommitsBeforeFailing = false
+    /** The next confirm is stored, then the connection drops before the response arrives. */
+    var confirmResponseLost = false
+    /** The next N `GET /v1/pairings/{id}?wait=0` (the inviter's re-read after a failed confirm) fail with a network error. */
+    var failPairingReReads = 0
+    /** Every confirm body the relay received, in order. */
+    val confirms = mutableListOf<String>()
     /** The next `PUT /v1/peers/…` by this device ID fails with a network error. */
     var failNextAllowBy: String? = null
     val polls = mutableListOf<String>()
@@ -87,12 +93,22 @@ private class FakeRelay(private val clock: () -> Long) : HttpTransport {
             }
             path.size == 4 && path[1] == "pairings" && path[3] == "confirm" -> {
                 if (failConfirm != null && !confirmCommitsBeforeFailing) return error(failConfirm!!.first, failConfirm!!.second)
-                val pairing = pairings[path[2]]!!
+                val sealed = json["sealed"]!!.jsonPrimitive.content
+                confirms += sealed
+                val pairing = pairings[path[2]] ?: return error(404, "pairing_not_found")
                 check(pairing["creator"] == caller)
+                // Same as server/relay store.confirm_pairing: a resend of the same confirm is idempotent.
+                if (pairing["state"] == "confirmed" && pairing["confirmSealed"] == sealed) return ok()
                 if (pairing["state"] != "joined") return error(409, "pairing_not_joined")
-                pairing += mapOf("state" to "confirmed", "confirmSealed" to json["sealed"]!!.jsonPrimitive.content)
+                pairing += mapOf("state" to "confirmed", "confirmSealed" to sealed)
+                allow += caller to pairing.getValue("joiner")
+                if (confirmResponseLost) { confirmResponseLost = false; throw java.io.IOException("connection reset") }
                 failConfirm?.let { (status, code) -> return error(status, code) }
                 ok()
+            }
+            path.size == 3 && path[1] == "pairings" && method == "GET" && "wait=0" in target && failPairingReReads > 0 -> {
+                failPairingReReads--
+                throw java.io.IOException("connection reset")
             }
             path.size == 3 && path[1] == "pairings" && method == "GET" -> {
                 val p = pairings[path[2]] ?: return error(404, "pairing_not_found")
@@ -461,7 +477,8 @@ class DeviceLinkClientTest {
         assertEquals(1, iphone.drain { ReceiptStatus.COPIED }.applied)
     }
 
-    @Test fun `a failed confirm leaves neither side linked`() = runBlocking {
+    // Virtual time: the confirm is resent with pauses before the inviter gives up.
+    @Test fun `a failed confirm leaves neither side linked`() = runTest {
         android.configure("https://relay.example")
         val session = android.invite()
         relay.failConfirm = 503 to "unavailable"
@@ -483,6 +500,27 @@ class DeviceLinkClientTest {
         linked()
         assertEquals(listOf(iphone.deviceId), android.peers.value.map { it.id })
         assertEquals(listOf(android.deviceId), iphone.peers.value.map { it.id })
+    }
+
+    /** [linked] in virtual time, so confirm retry pauses are skipped. */
+    private fun linkedInVirtualTime() = runTest {
+        android.configure("https://relay.example")
+        val session = android.invite()
+        val inviter = async { session.awaitPeer() }
+        assertEquals(android.deviceId, iphone.join(session.uri).id)
+        assertEquals(iphone.deviceId, inviter.await().id)
+    }
+
+    @Test fun `a lost confirm response ends linked on both sides even when the re-read fails too`() {
+        relay.confirmResponseLost = true
+        relay.failPairingReReads = 1
+        linkedInVirtualTime()
+        assertEquals(listOf(iphone.deviceId), android.peers.value.map { it.id })
+        assertEquals(listOf(android.deviceId), iphone.peers.value.map { it.id })
+        assertTrue(relay.allow.containsAll(listOf(android.deviceId to iphone.deviceId, iphone.deviceId to android.deviceId)))
+        // The resend carried the very same sealed confirm, which the relay accepts as idempotent.
+        assertEquals(2, relay.confirms.size)
+        assertEquals(1, relay.confirms.toSet().size)
     }
 
     @Test fun `a network error on the joiner's allow after confirm is retried`() {

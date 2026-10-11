@@ -156,7 +156,7 @@ public actor DeviceLinkClient {
     private let spool: ChunkSpool
     /// Spooled files left by a previous process are resumed once, on the first receive.
     private var spoolResumed = false
-    /// Upload retry pauses; tests shorten them.
+    /// Upload and pairing-confirm retry pauses; tests shorten them.
     var retryDelaysMillis = uploadRetryDelaysMillis
     func setRetryDelays(_ delays: [UInt64]) { retryDelaysMillis = delays }
     public private(set) var diagnostics: Diagnostics
@@ -330,17 +330,39 @@ public actor DeviceLinkClient {
         }
     }
 
+    /// Confirms the joiner. The confirm is sealed once and every attempt resends that same body, which the
+    /// relay accepts as idempotent. After a failure the pairing is re-read (the relay keeps it until it
+    /// expires): `confirmed` means the response was lost and the link stands. A transient failure with the
+    /// pairing still `joined`, or a re-read that failed too, is resent up to `retryDelaysMillis` more times
+    /// within the pairing's lifetime. Anything else withdraws the joiner's allowance and throws.
     private func confirm(_ session: PairingSession, relay: RelayClient, joinerId: String) async throws {
-        do {
-            try await relay.confirmPairing(session.invite.pairingId, sealed: try session.invite.sealConfirm(localBundle))
-        } catch is CancellationError {
-            throw CancellationError()
-        } catch {
-            if (try? await relay.pollPairing(session.invite.pairingId, wait: 0))?.state == "confirmed" { return }
+        let sealed = try session.invite.sealConfirm(localBundle)
+        var attempt = 0
+        while true {
+            let failure: Error
+            do {
+                try await relay.confirmPairing(session.invite.pairingId, sealed: sealed)
+                return
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                failure = error
+            }
+            let state: String?
+            do { state = try await relay.pollPairing(session.invite.pairingId, wait: 0).state } catch is CancellationError {
+                throw CancellationError()
+            } catch { state = nil }
+            if state == "confirmed" { return }
+            if state == nil || state == "joined", isTransientUploadFailure(failure), attempt < retryDelaysMillis.count,
+               clock() < session.expiresAt {
+                try await Task.sleep(nanoseconds: retryDelaysMillis[attempt] * 1_000_000)
+                attempt += 1
+                continue
+            }
             // Keep an existing link to the same device (re-pairing) allowed.
             if !peers.contains(where: { $0.id == joinerId }) { try? await relay.revoke(joinerId) }
-            noteFailure(error)
-            if case DeviceLinkError.relay(_, let code) = error { throw DeviceLinkError.pairing("Relay refused pairing (\(code))") }
+            noteFailure(failure)
+            if case DeviceLinkError.relay(_, let code) = failure { throw DeviceLinkError.pairing("Relay refused pairing (\(code))") }
             throw DeviceLinkError.pairing("Could not reach the relay to confirm the link")
         }
     }
@@ -373,8 +395,8 @@ public actor DeviceLinkClient {
             case "confirmed":
                 let bundle = try invite.openConfirm(status.sealed ?? "")
                 guard bundle.id == invite.inviterId else { throw DeviceLinkError.pairing("Inviter identity does not match the code") }
-                // The relay deletes the pairing once the joiner has read "confirmed", so a network error
-                // here is retried in place: re-polling would only find the pairing gone.
+                // The relay keeps the pairing readable until it expires, but the confirm is already in
+                // hand: a network error on the allow is retried in place instead of polling again.
                 var attempt: UInt64 = 0
                 while true {
                     do { try await relay.allow(bundle.id); break } catch let error as URLError {

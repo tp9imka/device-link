@@ -23,6 +23,12 @@ final class FakeRelay: HTTPTransport, @unchecked Sendable {
         var failConfirm: (Int, String)?
         /// The confirm is stored, then the response is lost (answered with `failConfirm`).
         var confirmCommitsBeforeFailing = false
+        /// The next confirm is stored, then the connection drops before the response arrives.
+        var confirmResponseLost = false
+        /// The next N `GET /v1/pairings/{id}?wait=0` (the inviter's re-read after a failed confirm) fail with a network error.
+        var failPairingReReads = 0
+        /// Every confirm body the relay received, in order.
+        var confirms: [String] = []
         /// The next `PUT /v1/peers/…` by this device ID fails with a network error.
         var failNextAllowBy: String?
         var polls = 0
@@ -60,7 +66,19 @@ final class FakeRelay: HTTPTransport, @unchecked Sendable {
            }) {
             return try fault()
         }
+        let isPairing = url.path.hasPrefix("/v1/pairings/")
+        if method == "GET", isPairing, url.query == "wait=0", state.with({ state -> Bool in
+            guard state.failPairingReReads > 0 else { return false }
+            state.failPairingReReads -= 1
+            return true
+        }) {
+            throw URLError(.networkConnectionLost)
+        }
         let response = state.with { handle(method: method, url: url, headers: headers, body: body, state: &$0) }
+        if method == "POST", isPairing, url.path.hasSuffix("/confirm"), response.status == 204 || response.status == 200,
+           state.with({ state -> Bool in defer { state.confirmResponseLost = false }; return state.confirmResponseLost }) {
+            throw URLError(.networkConnectionLost)
+        }
         if longPoll.get, method == "GET", url.path == "/v1/messages", response.body == Data("[]".utf8),
            let wait = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "wait" })?.value.flatMap(UInt64.init) {
             try await Task.sleep(nanoseconds: wait * 1_000_000_000)
@@ -103,10 +121,15 @@ final class FakeRelay: HTTPTransport, @unchecked Sendable {
             return ok()
         case ("POST", 4, "pairings") where path[3] == "confirm":
             if let (status, code) = state.failConfirm, !state.confirmCommitsBeforeFailing { return error(status, code) }
+            let sealed = json["sealed"] as? String
+            state.confirms.append(sealed ?? "")
             guard var pairing = state.pairings[path[2]], pairing["creator"] == caller else { return error(404, "pairing_not_found") }
+            // Same as server/relay store.confirm_pairing: a resend of the same confirm is idempotent.
+            if pairing["state"] == "confirmed", pairing["confirmSealed"] == sealed { return ok() }
             guard pairing["state"] == "joined" else { return error(409, "pairing_not_joined") }
-            pairing["state"] = "confirmed"; pairing["confirmSealed"] = json["sealed"] as? String
+            pairing["state"] = "confirmed"; pairing["confirmSealed"] = sealed
             state.pairings[path[2]] = pairing
+            state.allow.insert("\(caller)>\(pairing["joiner"]!)")
             if let (status, code) = state.failConfirm { return error(status, code) }
             return ok()
         case ("GET", 3, "pairings"):
@@ -335,6 +358,7 @@ final class EngineTests: XCTestCase {
         try await android.configure(relayURL: "https://relay.example")
         let session = try await android.invite()
         relay.state.with { $0.failConfirm = (503, "unavailable") }
+        await android.setRetryDelays([1, 1, 1]) // the confirm is resent before the inviter gives up
         let events = await android.events()
         let linkedEvents = Locked(0)
         let collector = Task { for await event in events { if case .peerLinked = event { linkedEvents.with { $0 += 1 } } } }
@@ -358,6 +382,22 @@ final class EngineTests: XCTestCase {
         let inviterPeers = await android.peers, joinerPeers = await iphone.peers
         XCTAssertEqual(inviterPeers.map(\.id), [iphone.deviceId])
         XCTAssertEqual(joinerPeers.map(\.id), [android.deviceId])
+    }
+
+    func testLostConfirmResponseEndsLinkedOnBothSidesEvenWhenTheReReadFailsToo() async throws {
+        let android = try client("Pixel"), iphone = try client("iPhone")
+        relay.state.with { $0.confirmResponseLost = true; $0.failPairingReReads = 1 }
+        await android.setRetryDelays([1, 1, 1])
+        try await link(android, iphone)
+        let inviterPeers = await android.peers, joinerPeers = await iphone.peers
+        XCTAssertEqual(inviterPeers.map(\.id), [iphone.deviceId])
+        XCTAssertEqual(joinerPeers.map(\.id), [android.deviceId])
+        let allow = relay.state.get.allow
+        XCTAssertTrue(allow.contains("\(android.deviceId)>\(iphone.deviceId)") && allow.contains("\(iphone.deviceId)>\(android.deviceId)"))
+        // The resend carried the very same sealed confirm, which the relay accepts as idempotent.
+        let confirms = relay.state.get.confirms
+        XCTAssertEqual(confirms.count, 2)
+        XCTAssertEqual(Set(confirms).count, 1)
     }
 
     func testNetworkErrorOnJoinersAllowAfterConfirmIsRetried() async throws {

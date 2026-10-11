@@ -283,14 +283,39 @@ class DeviceLinkClient(
             }
         }
 
+        /**
+         * Confirms the joiner. The confirm is sealed once and every attempt resends that same body, which the
+         * relay accepts as idempotent. After a failure the pairing is re-read (the relay keeps it until it
+         * expires): `confirmed` means the response was lost and the link stands. A transient failure with the
+         * pairing still `joined`, or a re-read that failed too, is resent up to [UPLOAD_RETRY_DELAYS_MILLIS]
+         * more times within the pairing's lifetime. Anything else withdraws the joiner's allowance and throws.
+         */
         private suspend fun confirm(relay: RelayClient, joinerId: String) {
-            try {
-                relay.confirmPairing(invite.pairingId, invite.sealConfirm(localBundle))
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (failure: Exception) {
-                val committed = runCatching { relay.pollPairing(invite.pairingId, 0).state == "confirmed" }.getOrDefault(false)
-                if (committed) return
+            val sealed = invite.sealConfirm(localBundle)
+            var attempt = 0
+            while (true) {
+                val failure = try {
+                    relay.confirmPairing(invite.pairingId, sealed)
+                    return
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (failure: Exception) {
+                    failure
+                }
+                val state = try {
+                    relay.pollPairing(invite.pairingId, 0).state
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: Exception) {
+                    null
+                }
+                if (state == "confirmed") return
+                val retry = (state == null || state == "joined") && isTransientUploadFailure(failure) &&
+                    attempt < UPLOAD_RETRY_DELAYS_MILLIS.size && clock() < expiresAt
+                if (retry) {
+                    delay(UPLOAD_RETRY_DELAYS_MILLIS[attempt++])
+                    continue
+                }
                 // Keep an existing link to the same device (re-pairing) allowed.
                 if (store.load().peers.none { it.id == joinerId }) runCatching { relay.revoke(joinerId) }
                 failure(failure)
@@ -331,8 +356,8 @@ class DeviceLinkClient(
                 "confirmed" -> {
                     val bundle = invite.openConfirm(requireNotNull(status.sealed))
                     if (bundle.id != invite.inviterId) throw PairingException("Inviter identity does not match the code")
-                    // The relay deletes the pairing once the joiner has read "confirmed", so a network error
-                    // here is retried in place: re-polling would only find the pairing gone.
+                    // The relay keeps the pairing readable until it expires, but the confirm is already in
+                    // hand: a network error on the allow is retried in place instead of polling again.
                     var attempt = 0
                     while (true) {
                         try { relay.allow(bundle.id); break } catch (failure: IOException) {
