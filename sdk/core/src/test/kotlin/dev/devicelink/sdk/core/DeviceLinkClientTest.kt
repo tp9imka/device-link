@@ -531,6 +531,21 @@ class DeviceLinkClientTest {
         assertFalse(timeout!!.accepted)
     }
 
+    @Test fun `a chunked file that cannot be assembled gets a failed receipt`() = runBlocking {
+        val identity = SoftwareIdentity(); val keys = EncryptionKeyPair.generate()
+        val sender = DeviceLinkClient(identity, keys, MemoryLinkStore(), LinkConfig("Pixel", "android"), relay) { now }
+        link(sender, iphone)
+        // Every part claims one byte more than the parts hold: consistent, but the total never matches.
+        val bytes = ByteArray(Limits.CHUNK_BYTES + 10) { it.toByte() }
+        val parts = Payload.chunks(PayloadKind.FILE, "big.bin", "application/octet-stream", bytes, now).map { it.copy(size = bytes.size + 1L) }
+        val crypto = EnvelopeCrypto(identity, keys)
+        parts.forEachIndexed { index, part -> relay.mailbox += crypto.seal(part, iphone.localBundle, now, 100L + index) }
+        repeat(2) { assertEquals(0, iphone.receiveOnce { error("a broken file must not be applied") }) }
+        val receipt = async(start = CoroutineStart.UNDISPATCHED) { sender.events.first { it is LinkEvent.Receipt } }
+        sender.receiveOnce { error("no content") }
+        assertEquals(LinkEvent.Receipt(parts.first().group!!, iphone.deviceId, ReceiptStatus.FAILED), withTimeout(1_000) { receipt.await() })
+    }
+
     @Test fun `unlink all forgets every peer`() = runBlocking {
         linked()
         android.unlinkAll()

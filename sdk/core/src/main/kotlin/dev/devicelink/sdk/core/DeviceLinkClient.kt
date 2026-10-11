@@ -584,19 +584,19 @@ class DeviceLinkClient(
         val now = clock()
         val opened = stored.map { envelope ->
             val payload = runCatching { crypto.open(envelope, peer.bundle, now) }.getOrNull()
-            if (payload == null || !payload.isChunk) { spool.remove(key); return false }
+            if (payload == null || !payload.isChunk) { return rejectFile(key, peer) }
             envelope to payload
         }.sortedBy { it.second.part }
         val first = opened.firstOrNull()?.second ?: return false
         val consistent = opened.map { it.second.part } == (0 until first.parts!!).toList() &&
             opened.all { (_, p) -> p.parts == first.parts && p.size == first.size && p.group == first.group && p.kind == first.kind }
         if (!consistent) {
-            if (opened.size >= first.parts!!) spool.remove(key)
-            return false
+            // Fewer parts than announced: still arriving. As many or more and still inconsistent: never completes.
+            return if (opened.size >= first.parts!!) rejectFile(key, peer) else false
         }
         val output = java.io.ByteArrayOutputStream(first.size!!.toInt())
         opened.forEach { output.write(it.second.dataBytes()!!) }
-        if (output.size().toLong() != first.size) { spool.remove(key); return false }
+        if (output.size().toLong() != first.size) return rejectFile(key, peer)
         val envelopes = opened.map { it.first }
         val newest = envelopes.maxBy { it.sequence }
         val stale = first.kind != PayloadKind.FILE && newest.sequence <= (state.lastClip[peer.id] ?: 0)
@@ -606,6 +606,20 @@ class DeviceLinkClient(
         spool.remove(key)
         runCatching { deliver(Payload.receipt(item.id, status), peer) }
         return true
+    }
+
+    /**
+     * Drops a chunked file that can never be assembled (a part does not open, parts disagree, or the total
+     * does not match `size`) and tells the sender with a `failed` receipt for the group, so it does not wait
+     * for a receipt that never comes. Returns false: the handler did not run.
+     */
+    private suspend fun rejectFile(key: String, peer: LinkedPeer): Boolean {
+        spool.remove(key)
+        val group = key.substringAfter('_')
+        if (runCatching { java.util.UUID.fromString(group).toString() == group }.getOrDefault(false)) {
+            runCatching { deliver(Payload.receipt(group, ReceiptStatus.FAILED), peer) }
+        }
+        return false
     }
 
     /** Completes files whose chunks were all stored by a previous process that stopped before applying. */

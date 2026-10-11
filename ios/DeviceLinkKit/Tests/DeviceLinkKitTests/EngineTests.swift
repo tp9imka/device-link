@@ -413,6 +413,34 @@ final class EngineTests: XCTestCase {
         XCTAssertFalse(timeout.accepted)
     }
 
+    func testChunkedFileThatCannotBeAssembledGetsAFailedReceipt() async throws {
+        let identity = SoftwareIdentity(), keys = EncryptionKeyPair()
+        let sender = try client("Pixel", identity: identity, keys: keys), iphone = try client("iPhone")
+        try await link(sender, iphone)
+        // Every part claims one byte more than the parts hold: consistent, but the total never matches.
+        let bytes = Data((0..<(Limits.chunkBytes + 10)).map { UInt8(truncatingIfNeeded: $0) })
+        let parts = try Payload.chunks(kind: .file, name: "big.bin", mime: "application/octet-stream", bytes: bytes, now: now.get)
+            .map { part -> Payload in var part = part; part.size = Int64(bytes.count) + 1; return part }
+        let crypto = EnvelopeCrypto(identity: identity, encryption: keys)
+        for (index, part) in parts.enumerated() {
+            let envelope = try crypto.seal(part, to: iphone.localBundle, now: now.get, sequence: 100 + Int64(index))
+            relay.state.with { $0.mailbox.append(envelope) }
+        }
+        for _ in 0..<2 {
+            let applied = try await iphone.receiveOnce(wait: 0) { _ in XCTFail("a broken file must not be applied"); return .failed }
+            XCTAssertEqual(applied, 0)
+        }
+        let stream = await sender.events()
+        let statuses = Locked<[ReceiptStatus]>([])
+        let ids = Locked<[String]>([])
+        let task = Task { for await event in stream { if case .receipt(let id, _, let status) = event { ids.with { $0.append(id) }; statuses.with { $0.append(status) } } } }
+        try await sender.receiveOnce(wait: 0) { _ in XCTFail("no content expected"); return .failed }
+        try await Task.sleep(nanoseconds: 50_000_000)
+        task.cancel()
+        XCTAssertEqual(ids.get, [parts[0].group!])
+        XCTAssertEqual(statuses.get, [.failed])
+    }
+
     func testUndecryptableEnvelopesAreDroppedAndCounted() async throws {
         let android = try client("Pixel"), iphone = try client("iPhone")
         try await link(android, iphone)

@@ -622,7 +622,7 @@ public actor DeviceLinkClient {
         let now = clock()
         var opened: [(Envelope, Payload)] = []
         for envelope in stored {
-            guard let payload = try? crypto.open(envelope, from: peer.bundle, now: now), payload.isChunk else { spool.remove(key); return false }
+            guard let payload = try? crypto.open(envelope, from: peer.bundle, now: now), payload.isChunk else { return await rejectFile(key, peer: peer) }
             opened.append((envelope, payload))
         }
         opened.sort { ($0.1.part ?? 0) < ($1.1.part ?? 0) }
@@ -631,12 +631,12 @@ public actor DeviceLinkClient {
             p.parts == parts && p.size == size && p.group == first.group && p.kind == first.kind
         }
         guard consistent else {
-            if opened.count >= parts { spool.remove(key) }
-            return false
+            // Fewer parts than announced: still arriving. As many or more and still inconsistent: never completes.
+            return opened.count >= parts ? await rejectFile(key, peer: peer) : false
         }
         var whole = Data(capacity: Int(size))
         for (_, payload) in opened { whole.append(try payload.dataBytes() ?? Data()) }
-        guard Int64(whole.count) == size, let group = first.group else { spool.remove(key); return false }
+        guard Int64(whole.count) == size, let group = first.group else { return await rejectFile(key, peer: peer) }
         let envelopes = opened.map(\.0)
         let newest = envelopes.map(\.sequence).max() ?? 0
         let stale = first.kind != .file && newest <= (state.lastClip[peer.id] ?? 0)
@@ -648,6 +648,18 @@ public actor DeviceLinkClient {
         spool.remove(key)
         _ = try? await deliver(.receipt(group, status), to: peer)
         return true
+    }
+
+    /// Drops a chunked file that can never be assembled (a part does not open, parts disagree, or the total
+    /// does not match `size`) and tells the sender with a `failed` receipt for the group, so it does not wait
+    /// for a receipt that never comes. Returns false: the handler did not run.
+    private func rejectFile(_ key: String, peer: LinkedPeer) async -> Bool {
+        spool.remove(key)
+        let group = String(key.drop { $0 != "_" }.dropFirst())
+        if UUID(uuidString: group)?.uuidString.lowercased() == group {
+            _ = try? await deliver(.receipt(group, .failed), to: peer)
+        }
+        return false
     }
 
     /// Completes files whose chunks were all stored by a previous process that stopped before applying.
