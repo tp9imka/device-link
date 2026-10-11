@@ -36,7 +36,7 @@ Record the SHA-256 of every file fixture before sending (`shasum -a 256` on desk
 
 | ID | Steps | Pass |
 | --- | --- | --- |
-| P1 | Fresh install on A. Open the app. | A creates its identity with no prompt and shows **Show link code** (QR). Admin: A registered. |
+| P1 | Fresh install on A. Open the app; check admin **Devices**. Then tap **Show my code**. | A creates its identity with no prompt and offers **Show my code** / **Scan a code**. Admin: A is **not** listed yet (it registers lazily, on its first relay call: showing or joining a code; nothing polls while it has no link). After **Show my code**: QR shown, A registered in admin, an open pairing code in Activity. |
 | P2 | On B (fresh install), tap **Scan link code** and scan A's QR. | Both show "Linked" and the **same 6-digit code** once. Admin: one mutual link, pairing consumed. |
 | P3 | Scan the same QR again from a third device or B after unlinking. | Refused (code already used). |
 | P4 | Wait 6 minutes with a QR shown, then scan it. | Refused (expired); a fresh code works. |
