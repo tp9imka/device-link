@@ -34,6 +34,9 @@ private class FakeRelay(private val clock: () -> Long) : HttpTransport {
     /** The next `PUT /v1/peers/…` by this device ID fails with a network error. */
     var failNextAllowBy: String? = null
     val polls = mutableListOf<String>()
+    /** `POST /v1/messages` attempts so far; [uploadFaults] answers (or throws for) the attempt with that 1-based number. */
+    var uploads = 0
+    val uploadFaults = mutableMapOf<Int, () -> HttpResponse>()
 
     /** Empty mailbox polls wait out `wait` (virtual time under runTest), like the real long poll. */
     var longPoll = false
@@ -90,6 +93,7 @@ private class FakeRelay(private val clock: () -> Long) : HttpTransport {
             }
             path.size == 3 && path[1] == "peers" -> { if (method == "PUT") allow += caller to path[2] else allow -= caller to path[2]; HttpResponse(204, ByteArray(0)) }
             path == listOf("v1", "messages") && method == "POST" -> {
+                uploadFaults.remove(++uploads)?.let { return it() }
                 val envelope = Envelope.decode(body.toString(Charsets.UTF_8))
                 if (envelope.senderId != caller) return error(403, "sender_mismatch")
                 if ((envelope.recipientId to caller) !in allow) return error(403, "recipient_not_authorized")
@@ -473,6 +477,58 @@ class DeviceLinkClientTest {
         linked()
         assertEquals(listOf(android.deviceId), iphone.peers.value.map { it.id })
         assertTrue((iphone.deviceId to android.deviceId) in relay.allow)
+    }
+
+    private fun relayError(status: Int, code: String): () -> HttpResponse = { HttpResponse(status, """{"error":"$code"}""".toByteArray()) }
+
+    /** Sends a 4-chunk file after linking, in virtual time (retry pauses are skipped). */
+    private fun sendBigFileWith(vararg faults: Pair<Int, () -> HttpResponse>): SendOutcome {
+        linked()
+        val before = relay.uploads
+        faults.forEach { (attempt, fault) -> relay.uploadFaults[before + attempt] = fault }
+        var outcome: SendOutcome? = null
+        runTest { outcome = android.send(OutgoingContent.File("big.bin", "application/octet-stream", bigFile())).single() }
+        return outcome!!
+    }
+
+    @Test fun `a transient relay error on one chunk resends only that chunk`() {
+        val outcome = sendBigFileWith(3 to relayError(503, "unavailable"))
+        assertTrue(outcome.accepted)
+        assertEquals(4, relay.mailbox.size)
+        assertEquals("4 chunks + 1 resend of chunk 3", 5, relay.uploads)
+    }
+
+    @Test fun `a dropped connection on a chunk is retried and the item completes`() {
+        val outcome = sendBigFileWith(4 to { throw java.io.IOException("connection reset") }, 5 to relayError(408, "timeout"))
+        assertTrue(outcome.accepted)
+        assertEquals(4, relay.mailbox.size)
+    }
+
+    @Test fun `a refused chunk is not retried and reports the relay code`() {
+        val outcome = sendBigFileWith(2 to relayError(413, "payload_too_large"))
+        assertFalse(outcome.accepted)
+        assertEquals("payload_too_large", outcome.error)
+        assertEquals(1, relay.mailbox.size)
+        assertEquals(2, relay.uploads)
+    }
+
+    @Test fun `a persistent transient failure gives up after four attempts`() {
+        val outcome = sendBigFileWith(*Array(10) { (it + 1) to relayError(502, "bad_gateway") })
+        assertEquals("bad_gateway", outcome.error)
+        assertEquals(4, relay.uploads)
+        assertTrue(relay.mailbox.isEmpty())
+    }
+
+    @Test fun `transport failures report stable network and timeout codes`() {
+        val network = sendBigFileWith(*Array(4) { (it + 1) to { throw java.net.ConnectException("refused") } })
+        assertEquals(SendOutcome.NETWORK, network.error)
+        relay.uploadFaults.clear()
+        val start = relay.uploads
+        repeat(4) { relay.uploadFaults[start + it + 1] = { throw java.net.SocketTimeoutException("read timed out") } }
+        var timeout: SendOutcome? = null
+        runTest { timeout = android.send(OutgoingContent.Text("x")).single() }
+        assertEquals(SendOutcome.TIMEOUT, timeout!!.error)
+        assertFalse(timeout!!.accepted)
     }
 
     @Test fun `unlink all forgets every peer`() = runBlocking {

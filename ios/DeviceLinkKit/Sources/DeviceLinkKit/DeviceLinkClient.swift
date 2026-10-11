@@ -71,11 +71,54 @@ public struct Diagnostics: Sendable, Equatable {
     public var undecryptable = 0
 }
 
+/// Result of sending one item to one peer.
+///
+/// `error` is nil when the relay accepted every envelope of the item. Otherwise it is one of:
+/// - the relay's JSON `error` code when the relay answered (for example `recipient_not_authorized`,
+///   `mailbox_full`, `rate_limit`, `payload_too_large`), or `http_<status>` when its answer had no code;
+/// - `SendOutcome.network`: no HTTP answer (connection refused, reset or lost, DNS or TLS failure);
+/// - `SendOutcome.timeout`: the request timed out;
+/// - `SendOutcome.sendFailed`: a local failure before or after the upload (for example the link file could not be saved).
+/// Transient failures (408, 429 other than `mailbox_full`, 5xx, network, timeout) were already retried.
 public struct SendOutcome: Sendable {
+    public static let network = "network"
+    public static let timeout = "timeout"
+    public static let sendFailed = "send_failed"
+
     public let peerId: String
     public let itemId: String?
     public let error: String?
     public var accepted: Bool { itemId != nil && error == nil }
+
+    static func code(for error: Error) -> String {
+        switch error {
+        case DeviceLinkError.relay(_, let code): return code
+        case let error as URLError: return error.code == .timedOut ? timeout : network
+        default: return sendFailed
+        }
+    }
+}
+
+/// Pauses before the 2nd, 3rd and 4th upload attempt of one envelope (4 attempts, about 7 s in total).
+let uploadRetryDelaysMillis: [UInt64] = [1_000, 2_000, 4_000]
+
+/// URL errors a retry cannot fix (cancellation, bad URL, certificate and ATS failures).
+private let permanentURLErrors: Set<URLError.Code> = [
+    .cancelled, .badURL, .unsupportedURL, .userAuthenticationRequired, .userCancelledAuthentication,
+    .serverCertificateUntrusted, .serverCertificateHasBadDate, .serverCertificateHasUnknownRoot,
+    .serverCertificateNotYetValid, .clientCertificateRejected, .clientCertificateRequired,
+    .appTransportSecurityRequiresSecureConnection,
+]
+
+/// Upload failures worth resending the same envelope for: 408, 429 (except `mailbox_full`, which has its own
+/// wait), 5xx, and transport errors a retry can fix. Other 4xx (400, 401, 403, 404, 409, 413) cannot succeed.
+func isTransientUploadFailure(_ error: Error) -> Bool {
+    switch error {
+    case DeviceLinkError.relay(let status, let code):
+        return code != "mailbox_full" && (status == 408 || status == 429 || (500...599).contains(status))
+    case let error as URLError: return !permanentURLErrors.contains(error.code)
+    default: return false
+    }
 }
 
 /// Outcome of `DeviceLinkClient.drain`.
@@ -113,6 +156,9 @@ public actor DeviceLinkClient {
     private let spool: ChunkSpool
     /// Spooled files left by a previous process are resumed once, on the first receive.
     private var spoolResumed = false
+    /// Upload retry pauses; tests shorten them.
+    var retryDelaysMillis = uploadRetryDelaysMillis
+    func setRetryDelays(_ delays: [UInt64]) { retryDelaysMillis = delays }
     public private(set) var diagnostics: Diagnostics
     public private(set) var status: ReceiverStatus = .idle
 
@@ -400,18 +446,21 @@ public actor DeviceLinkClient {
                 for payload in payloads { id = try await deliver(payload, to: peer) }
                 note { $0.lastSendAt = clock(); $0.sent += 1 }
                 outcomes.append(SendOutcome(peerId: peer.id, itemId: payloads[0].group ?? id, error: nil))
-            } catch DeviceLinkError.relay(_, let code) {
-                noteFailure(DeviceLinkError.relay(status: 0, code: code))
-                outcomes.append(SendOutcome(peerId: peer.id, itemId: nil, error: code))
+            } catch is CancellationError {
+                throw CancellationError()
             } catch {
                 noteFailure(error)
-                outcomes.append(SendOutcome(peerId: peer.id, itemId: nil, error: String(describing: error)))
+                outcomes.append(SendOutcome(peerId: peer.id, itemId: nil, error: SendOutcome.code(for: error)))
             }
         }
         return outcomes
     }
 
-    private func deliver(_ payload: Payload, to peer: LinkedPeer) async throws -> String {
+    /// Seals `payload` once and uploads it. Each envelope is retried on its own, so a failure on chunk 7 of 8
+    /// resends only chunk 7: transient failures (`isTransientUploadFailure`) up to `uploadRetryDelaysMillis`
+    /// more times, `429 mailbox_full` every 2 s for up to 90 s while the receiver drains. `retry: false` makes
+    /// one attempt (best-effort notices that must not hold up the caller).
+    private func deliver(_ payload: Payload, to peer: LinkedPeer, retry: Bool = true) async throws -> String {
         let sequence = try update { $0.sequence += 1 }.sequence
         let envelope = try crypto.seal(payload, to: peer.bundle, now: clock(), sequence: sequence, lifetimeMillis: config.lifetimeMillis)
         var attempt = 0
@@ -421,14 +470,16 @@ public actor DeviceLinkClient {
                 // Retries resend the exact same envelope: the relay treats it as idempotent.
                 try await registered { try await $0.upload(envelope) }
                 return envelope.id
-            } catch let error as URLError {
+            } catch {
+                if error is CancellationError || !retry { throw error }
+                if case DeviceLinkError.relay(_, "mailbox_full") = error, clock() < deadline {
+                    // The receiver drains its mailbox as it acknowledges; large chunked files rely on this.
+                    try await Task.sleep(nanoseconds: 2_000_000_000)
+                    continue
+                }
+                guard isTransientUploadFailure(error), attempt < retryDelaysMillis.count else { throw error }
+                try await Task.sleep(nanoseconds: retryDelaysMillis[attempt] * 1_000_000)
                 attempt += 1
-                if attempt >= 3 { throw error }
-                try await Task.sleep(nanoseconds: UInt64(attempt) * 500_000_000)
-            } catch DeviceLinkError.relay(let status, "mailbox_full") where clock() < deadline {
-                // The receiver drains its mailbox as it acknowledges; large chunked files rely on this.
-                _ = status
-                try await Task.sleep(nanoseconds: 2_000_000_000)
             }
         }
     }

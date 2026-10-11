@@ -1,6 +1,9 @@
 package dev.devicelink.sdk.core
 
 import java.io.IOException
+import java.net.SocketTimeoutException
+import java.security.cert.CertificateException
+import javax.net.ssl.SSLPeerUnverifiedException
 import kotlin.random.Random
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.currentCoroutineContext
@@ -76,8 +79,25 @@ data class Diagnostics(
     val undecryptable: Int = 0,
 )
 
+/**
+ * Result of sending one item to one peer.
+ *
+ * [error] is null when the relay accepted every envelope of the item. Otherwise it is one of:
+ * - the relay's JSON `error` code when the relay answered (for example `recipient_not_authorized`,
+ *   `mailbox_full`, `rate_limit`, `payload_too_large`), or `http_<status>` when its answer had no code;
+ * - [NETWORK]: no HTTP answer (connection refused, reset or dropped, DNS or TLS failure);
+ * - [TIMEOUT]: the connection or the response timed out;
+ * - [SEND_FAILED]: a local failure before or after the upload (for example the link file could not be saved).
+ * Transient failures (408, 429 other than `mailbox_full`, 5xx, network, timeout) were already retried.
+ */
 data class SendOutcome(val peerId: String, val itemId: String?, val error: String? = null) {
     val accepted: Boolean get() = itemId != null && error == null
+
+    companion object {
+        const val NETWORK = "network"
+        const val TIMEOUT = "timeout"
+        const val SEND_FAILED = "send_failed"
+    }
 }
 
 enum class ReceiverStatus { IDLE, CONNECTING, ONLINE, OFFLINE, NEEDS_SETUP, REJECTED }
@@ -106,6 +126,22 @@ private const val POLL_PAUSE_MILLIS = 200L
 /** Relay error for a second concurrent mailbox poll by the same device; see [DeviceLinkClient.runReceiver]. */
 internal const val POLL_ALREADY_ACTIVE = "poll_already_active"
 private const val POLL_COLLISION_MILLIS = 2_000L
+private const val MAILBOX_FULL = "mailbox_full"
+
+/** Pauses before the 2nd, 3rd and 4th upload attempt of one envelope (4 attempts, about 7 s in total). */
+internal val UPLOAD_RETRY_DELAYS_MILLIS = longArrayOf(1_000L, 2_000L, 4_000L)
+
+/**
+ * Upload failures worth resending the same envelope for: 408, 429 (except `mailbox_full`, which has its own
+ * wait), 5xx, and transport errors other than certificate failures. Other 4xx (400, 401, 403, 404, 409, 413)
+ * cannot succeed on a retry.
+ */
+internal fun isTransientUploadFailure(failure: Throwable): Boolean = when (failure) {
+    is RelayException -> failure.code != MAILBOX_FULL && (failure.status == 408 || failure.status == 429 || failure.status in 500..599)
+    is SSLPeerUnverifiedException -> false
+    is IOException -> generateSequence<Throwable>(failure) { it.cause }.none { it is CertificateException }
+    else -> false
+}
 
 /**
  * Platform-neutral DeviceLink engine: QR pairing, fan-out send, receive loop with receipts.
@@ -355,17 +391,27 @@ class DeviceLinkClient(
                 SendOutcome(peer.id, payloads.first().group ?: id)
             } catch (cancelled: CancellationException) {
                 throw cancelled
-            } catch (failure: RelayException) {
-                failure(failure)
-                SendOutcome(peer.id, null, failure.code)
             } catch (failure: Exception) {
                 failure(failure)
-                SendOutcome(peer.id, null, failure.message ?: "send_failed")
+                SendOutcome(peer.id, null, sendError(failure))
             }
         }
     }
 
-    private suspend fun deliver(payload: Payload, peer: LinkedPeer): String {
+    private fun sendError(failure: Exception): String = when (failure) {
+        is RelayException -> failure.code
+        is SocketTimeoutException -> SendOutcome.TIMEOUT
+        is IOException -> SendOutcome.NETWORK
+        else -> SendOutcome.SEND_FAILED
+    }
+
+    /**
+     * Seals [payload] once and uploads it. Each envelope is retried on its own, so a failure on chunk 7 of 8
+     * resends only chunk 7: transient failures ([isTransientUploadFailure]) up to [UPLOAD_RETRY_DELAYS_MILLIS]
+     * more times, `429 mailbox_full` every 2 s for up to 90 s while the receiver drains. [retry] false makes
+     * one attempt (best-effort notices that must not hold up the caller).
+     */
+    private suspend fun deliver(payload: Payload, peer: LinkedPeer, retry: Boolean = true): String {
         val sequence = update { it.copy(sequence = Math.addExact(it.sequence, 1)) }.sequence
         val envelope = crypto.seal(payload, peer.bundle, clock(), sequence, config.lifetimeMillis)
         var attempt = 0
@@ -375,13 +421,12 @@ class DeviceLinkClient(
                 // Retries resend the exact same envelope: the relay treats it as idempotent.
                 registered { it.upload(envelope) }
                 return envelope.id
-            } catch (failure: IOException) {
-                if (++attempt >= 3) throw failure
-                delay(500L * attempt)
-            } catch (failure: RelayException) {
+            } catch (failure: Exception) {
+                if (failure is CancellationException || !retry) throw failure
                 // A full mailbox drains as the receiver acknowledges; large chunked files rely on this.
-                if (failure.code != "mailbox_full" || clock() >= deadline) throw failure
-                delay(2_000L)
+                if (failure is RelayException && failure.code == MAILBOX_FULL && clock() < deadline) { delay(2_000L); continue }
+                if (!isTransientUploadFailure(failure) || attempt >= UPLOAD_RETRY_DELAYS_MILLIS.size) throw failure
+                delay(UPLOAD_RETRY_DELAYS_MILLIS[attempt++])
             }
         }
     }

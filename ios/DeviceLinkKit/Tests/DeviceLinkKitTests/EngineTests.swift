@@ -26,6 +26,9 @@ final class FakeRelay: HTTPTransport, @unchecked Sendable {
         /// The next `PUT /v1/peers/…` by this device ID fails with a network error.
         var failNextAllowBy: String?
         var polls = 0
+        /// `POST /v1/messages` attempts so far; `uploadFaults` answers (or throws for) the attempt with that 1-based number.
+        var uploads = 0
+        var uploadFaults: [Int: () throws -> HTTPResponse] = [:]
     }
     let state = Locked(State())
     let clock: @Sendable () -> Int64
@@ -44,6 +47,13 @@ final class FakeRelay: HTTPTransport, @unchecked Sendable {
                return true
            }) {
             throw URLError(.networkConnectionLost)
+        }
+        if method == "POST", url.path == "/v1/messages",
+           let fault = state.with({ state -> (() throws -> HTTPResponse)? in
+               state.uploads += 1
+               return state.uploadFaults.removeValue(forKey: state.uploads)
+           }) {
+            return try fault()
         }
         let response = state.with { handle(method: method, url: url, headers: headers, body: body, state: &$0) }
         if longPoll.get, method == "GET", url.path == "/v1/messages", response.body == Data("[]".utf8),
@@ -343,6 +353,64 @@ final class EngineTests: XCTestCase {
         let joinerPeers = await iphone.peers
         XCTAssertEqual(joinerPeers.map(\.id), [android.deviceId])
         XCTAssertTrue(relay.state.get.allow.contains("\(iphone.deviceId)>\(android.deviceId)"))
+    }
+
+    static func relayError(_ status: Int, _ code: String) -> () throws -> HTTPResponse {
+        { HTTPResponse(status: status, body: Data("{\"error\":\"\(code)\"}".utf8)) }
+    }
+
+    /// Links two devices and sends a 4-chunk file from the first with `faults` keyed by upload attempt.
+    func sendBigFile(faults: [Int: () throws -> HTTPResponse]) async throws -> SendOutcome {
+        let android = try client("Pixel"), iphone = try client("iPhone")
+        try await link(android, iphone)
+        await android.setRetryDelays([1, 1, 1])
+        relay.state.with { $0.uploadFaults = faults }
+        return try await android.send(.file(name: "big.bin", mime: "application/octet-stream", data: bigFile()))[0]
+    }
+
+    func testTransientRelayErrorOnOneChunkResendsOnlyThatChunk() async throws {
+        let outcome = try await sendBigFile(faults: [3: Self.relayError(503, "unavailable")])
+        XCTAssertTrue(outcome.accepted)
+        XCTAssertEqual(relay.mailbox.count, 4)
+        XCTAssertEqual(relay.state.get.uploads, 5, "4 chunks + 1 resend of chunk 3")
+    }
+
+    func testDroppedConnectionOnAChunkIsRetriedAndTheItemCompletes() async throws {
+        let outcome = try await sendBigFile(faults: [4: { throw URLError(.networkConnectionLost) }, 5: Self.relayError(408, "timeout")])
+        XCTAssertTrue(outcome.accepted)
+        XCTAssertEqual(relay.mailbox.count, 4)
+    }
+
+    func testRefusedChunkIsNotRetriedAndReportsTheRelayCode() async throws {
+        let outcome = try await sendBigFile(faults: [2: Self.relayError(413, "payload_too_large")])
+        XCTAssertFalse(outcome.accepted)
+        XCTAssertEqual(outcome.error, "payload_too_large")
+        XCTAssertEqual(relay.mailbox.count, 1)
+        XCTAssertEqual(relay.state.get.uploads, 2)
+    }
+
+    func testPersistentTransientFailureGivesUpAfterFourAttempts() async throws {
+        var faults: [Int: () throws -> HTTPResponse] = [:]
+        for attempt in 1...10 { faults[attempt] = Self.relayError(502, "bad_gateway") }
+        let outcome = try await sendBigFile(faults: faults)
+        XCTAssertEqual(outcome.error, "bad_gateway")
+        XCTAssertEqual(relay.state.get.uploads, 4)
+        XCTAssertTrue(relay.mailbox.isEmpty)
+    }
+
+    func testTransportFailuresReportStableNetworkAndTimeoutCodes() async throws {
+        var faults: [Int: () throws -> HTTPResponse] = [:]
+        for attempt in 1...4 { faults[attempt] = { throw URLError(.cannotConnectToHost) } }
+        for attempt in 5...8 { faults[attempt] = { throw URLError(.timedOut) } }
+        let android = try client("Pixel"), iphone = try client("iPhone")
+        try await link(android, iphone)
+        await android.setRetryDelays([1, 1, 1])
+        relay.state.with { $0.uploadFaults = faults }
+        let network = try await android.send(.text("x"))[0]
+        XCTAssertEqual(network.error, SendOutcome.network)
+        let timeout = try await android.send(.text("y"))[0]
+        XCTAssertEqual(timeout.error, SendOutcome.timeout)
+        XCTAssertFalse(timeout.accepted)
     }
 
     func testUndecryptableEnvelopesAreDroppedAndCounted() async throws {
