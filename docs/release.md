@@ -211,6 +211,10 @@ Whoever runs the relay controls the metadata, so the store listings point users 
 - Backups: `python -m relay.backup DEST --keep N` (timer in `server/deploy/`). Backups hold metadata and
   short-lived ciphertext; keep them private and encrypted at rest.
 - Access logs are off in the normal runner; keep proxy request logs off too (`deploy/nginx.conf` does).
+- Upload time limits: `body_grace_ms`, `body_min_rate` and `body_idle_ms` bound how long a request body may
+  take (grace plus its size at the minimum rate) and pause, else `408 body_timeout`. Lower `body_min_rate`
+  only if your users' links are slower than the default allows; defaults in
+  [server/README.md](../server/README.md).
 
 What the relay keeps:
 
