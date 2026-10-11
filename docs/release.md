@@ -100,8 +100,8 @@ Demo video: show turning Receive on, sending a clip from a second device, the no
 > user-initiated), and an "Auto-send" switch. Auto-send is off by default. The first time the user turns
 > it on, the keyboard shows a disclosure ("Send every copy automatically?") explaining that while
 > DeviceLink is the active keyboard, whatever the user copies in any app (text, links, images) is sent,
-> end-to-end encrypted, to their linked devices (listed by name), that copies marked sensitive by
-> password managers are skipped, and how to stop. Auto-send turns on only if the user taps "Turn on";
+> end-to-end encrypted, to their linked devices (listed by name), that copies password managers mark as
+> sensitive are skipped, and how to stop. Auto-send turns on only if the user taps "Turn on";
 > "Not now" or dismissing keeps it off and the next attempt asks again. While auto-send is off the
 > keyboard does not read the clipboard. While it is on, it reads a clip only when the system reports a
 > new copy, skips clips flagged sensitive, and sends nothing when no device is linked. The user turns it

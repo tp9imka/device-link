@@ -69,11 +69,27 @@ Record the SHA-256 of every file fixture before sending (`shasum -a 256` on desk
 | S1a | Android: select text in any app → **Send to device** (text selection menu). | Delivered. |
 | S2 | Android: any app → Share → DeviceLink (text, image, file). | Delivered. |
 | S3 | Android: Quick Settings **DeviceLink** tile after copying something elsewhere. | The clipboard is sent (brief invisible activity, no app UI left behind). |
-| S4 | Android: enable the **DeviceLink keyboard** and use it as the only keyboard for a day: chat, browser URL bar, search, a number field, a password field. Copy in several apps. | Each copy is sent automatically (password-manager copies are not); typing is comfortable: shift/caps lock, auto-capitals, hold-for-alternates, delete repeat, space-bar cursor slide, Enter action labels, number pad in number fields, 🌐 switching, light/dark, landscape. Note anything awkward. |
+| S4 | Android: enable the **DeviceLink keyboard**, tap **Auto-send off** and accept the disclosure (**Turn on**), and use it as the only keyboard for a day: chat, browser URL bar, search, a number field, a password field. Copy in several apps. Sensitive check: copy a clip marked sensitive (a password manager that sets `ClipDescription.EXTRA_IS_SENSITIVE`, which ones do is **unverified**; or a scratch test app, see below), then copy a password from an app that does not set the flag. | Each copy is sent automatically, except a clip carrying `EXTRA_IS_SENSITIVE = true`, which is skipped. A password copied without the flag **is** sent (record which app; it arrives as a normal clip). Typing is comfortable: shift/caps lock, auto-capitals, hold-for-alternates, delete repeat, space-bar cursor slide, Enter action labels, number pad in number fields, 🌐 switching, light/dark, landscape. Note anything awkward. |
 | S5 | iPhone: Share sheet → DeviceLink (text, photo, file). | Delivered. |
 | S6 | iPhone: a Shortcut *Get Clipboard → Send to DeviceLink*, bound to Back Tap (Settings → Accessibility → Touch → Back Tap). | Delivered without opening the app. |
 | S7 | iPhone: Back Tap bound to **Get DeviceLink clip** with the app closed. | Newest waiting item lands on the clipboard. |
-| S8 | Mac: copy text/image in any app with DeviceLinkMac running. | Delivered; copying from a password manager is **not** sent. |
+| S8 | Mac: copy text/image in any app with DeviceLinkMac running, then copy from a password manager. | Delivered. A copy whose pasteboard types include `org.nspasteboard.ConcealedType` or `org.nspasteboard.TransientType` is **not** sent; record whether your password manager sets them (**unverified** per app). |
+
+S4 sensitive clip without a password manager: the keyboard skips a clip when
+`description.extras` holds `ClipDescription.EXTRA_IS_SENSITIVE = true` (`DeviceLinkKeyboard.kt`,
+`isSensitive()`; the key is documented from Android 13, the keyboard reads it on any version). A
+throwaway debug app (not in this repository) can copy one with:
+
+```kotlin
+val clip = ClipData.newPlainText("test", "DeviceLink sensitive test").apply {
+    description.extras = PersistableBundle().apply { putBoolean(ClipDescription.EXTRA_IS_SENSITIVE, true) }
+}
+getSystemService(ClipboardManager::class.java).setPrimaryClip(clip)
+```
+
+Only the keyboard's auto-send skips sensitive clips. An explicit send still sends them: the **Send
+clipboard** tile and the keyboard's **Send ↑** pass the flag on (Android 13+), so the receiver masks
+the item (case D5); Share and text selection → **Send to device** get plain text without the flag.
 
 ## 4. iPhone specifics
 
