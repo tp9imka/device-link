@@ -15,6 +15,8 @@ final class Locked<Value>: @unchecked Sendable {
 final class FakeRelay: HTTPTransport, @unchecked Sendable {
     struct State {
         var devices = Set<String>()
+        var registrations: [DeviceMetadata] = []
+        var registrationFault: (() throws -> HTTPResponse)?
         var allow = Set<String>() // "recipient>sender"
         var mailbox: [Envelope] = []
         var pairings: [String: [String: String]] = [:]
@@ -55,6 +57,14 @@ final class FakeRelay: HTTPTransport, @unchecked Sendable {
 
     func send(method: String, url: URL, headers: [String: String], body: Data, timeout: TimeInterval) async throws -> HTTPResponse {
         if state.get.down { throw URLError(.cannotConnectToHost) }
+        if method == "POST", url.path == "/v1/register" {
+            let metadata = try Wire.decoder.decode(DeviceMetadata.self, from: body)
+            let fault = state.with { state in
+                state.registrations.append(metadata)
+                return state.registrationFault
+            }
+            if let fault { return try fault() }
+        }
         if method == "PUT", url.path.hasPrefix("/v1/peers/"), let key = try? Encoding.unb64(headers["X-Device-Key"] ?? "", maxBytes: 128) {
             let caller = Identity.deviceId(key)
             let (refusal, drop) = state.with { state -> ((Int, String)?, Bool) in
@@ -222,6 +232,121 @@ final class EngineTests: XCTestCase {
 
     func start(_ device: Restartable, store: LinkStore? = nil) throws -> DeviceLinkClient {
         try client("Desk", store: store ?? FileLinkStore(url: device.file), identity: device.identity, keys: device.keys)
+    }
+
+    func metadataClient(_ device: Restartable, _ metadata: DeviceMetadata) throws -> DeviceLinkClient {
+        try DeviceLinkClient(identity: device.identity, encryption: device.keys, store: FileLinkStore(url: device.file),
+                             config: LinkConfig(deviceName: "Phone", platform: metadata.platform, model: metadata.model,
+                                                appVersion: metadata.appVersion),
+                             transport: relay, clock: { [now] in now.get })
+    }
+
+    func testMetadataRefreshesOncePerChangeAndSurvivesEngineRestart() async throws {
+        let device = Restartable()
+        let original = DeviceMetadata(platform: "ios", model: "Phone", appVersion: "1.0")
+        let first = try metadataClient(device, original)
+        try await first.configure(relayURL: "https://relay.example")
+        try await first.ensureRegistered()
+        let store = FileLinkStore(url: device.file)
+        for metadata in [original, DeviceMetadata(platform: "ios", model: "Phone", appVersion: "2.0.0"),
+                         DeviceMetadata(platform: "ios", model: "Tablet", appVersion: "2.0.0"),
+                         DeviceMetadata(platform: "desktop", model: "Tablet", appVersion: "2.0.0")] {
+            let before = relay.state.get.registrations.count
+            let changed = store.load().registeredMetadata != metadata
+            let engine = try metadataClient(device, metadata)
+            let registered = await engine.currentDiagnostics().registered
+            XCTAssertTrue(registered)
+            for _ in 0..<2 {
+                let count = try await engine.receiveOnce(wait: 0) { _ in XCTFail("empty mailbox"); return .failed }
+                XCTAssertEqual(count, 0)
+            }
+            let restarted = try metadataClient(device, metadata)
+            try await restarted.receiveOnce(wait: 0) { _ in XCTFail("empty mailbox"); return .failed }
+            XCTAssertEqual(relay.state.get.registrations.count, before + (changed ? 1 : 0))
+            XCTAssertEqual(relay.state.get.registrations.last, metadata)
+            XCTAssertEqual(store.load().registeredMetadata, metadata)
+        }
+    }
+
+    func testLegacyRegistrationWithoutMetadataRefreshesOnce() async throws {
+        let device = Restartable()
+        let metadata = DeviceMetadata(platform: "ios", model: "Phone", appVersion: "2.0.0")
+        let engine = try metadataClient(device, metadata)
+        try await engine.configure(relayURL: "https://relay.example")
+        try await engine.ensureRegistered()
+        let store = FileLinkStore(url: device.file)
+        try store.update { $0.registeredMetadata = nil }
+        for _ in 0..<2 { try await engine.receiveOnce(wait: 0) { _ in XCTFail("empty mailbox"); return .failed } }
+        XCTAssertEqual(relay.state.get.registrations.count, 2)
+        XCTAssertEqual(store.load().registeredMetadata, metadata)
+    }
+
+    func testRelayRejectionOfMetadataRefreshPreservesCallsAndIsNotRetried() async throws {
+        let device = Restartable()
+        let old = DeviceMetadata(platform: "ios", model: "Phone", appVersion: "1.0")
+        let first = try metadataClient(device, old)
+        try await first.configure(relayURL: "https://relay.example")
+        try await first.ensureRegistered()
+        let metadata = DeviceMetadata(platform: "ios", model: "Phone", appVersion: "2.0.0")
+        relay.state.with { $0.registrationFault = { HTTPResponse(status: 403, body: Data(#"{"error":"enrollment_required"}"#.utf8)) } }
+        let updated = try metadataClient(device, metadata)
+        for _ in 0..<2 {
+            let count = try await updated.receiveOnce(wait: 0) { _ in XCTFail("empty mailbox"); return .failed }
+            XCTAssertEqual(count, 0)
+        }
+        let restarted = try metadataClient(device, metadata)
+        try await restarted.receiveOnce(wait: 0) { _ in XCTFail("empty mailbox"); return .failed }
+        XCTAssertEqual(relay.state.get.registrations.count, 2)
+        XCTAssertEqual(relay.state.get.polls, 3)
+        XCTAssertEqual(FileLinkStore(url: device.file).load().registeredMetadata, metadata)
+        let registered = await updated.currentDiagnostics().registered
+        XCTAssertTrue(registered)
+    }
+
+    func testTransportFailureLeavesMetadataRefreshPending() async throws {
+        let device = Restartable()
+        let old = DeviceMetadata(platform: "ios", model: "Phone", appVersion: "1.0")
+        let first = try metadataClient(device, old)
+        try await first.configure(relayURL: "https://relay.example")
+        try await first.ensureRegistered()
+        let metadata = DeviceMetadata(platform: "ios", model: "Phone", appVersion: "2.0.0")
+        let updated = try metadataClient(device, metadata)
+        relay.state.with { $0.registrationFault = { throw URLError(.networkConnectionLost) } }
+        do {
+            try await updated.receiveOnce(wait: 0) { _ in XCTFail("empty mailbox"); return .failed }
+            XCTFail("expected transport failure")
+        } catch is URLError { }
+        XCTAssertEqual(FileLinkStore(url: device.file).load().registeredMetadata, old)
+        relay.state.with { $0.registrationFault = nil }
+        for _ in 0..<2 {
+            let count = try await updated.receiveOnce(wait: 0) { _ in XCTFail("empty mailbox"); return .failed }
+            XCTAssertEqual(count, 0)
+        }
+        XCTAssertEqual(relay.state.get.registrations.count, 3)
+        XCTAssertEqual(FileLinkStore(url: device.file).load().registeredMetadata, metadata)
+    }
+
+    func testEnrollmentFailuresStillPropagateForFirstForcedPairingAndForgottenRegistrations() async throws {
+        for mode in ["first", "forced", "pairing", "forgotten"] {
+            relay.state.with { $0.registrationFault = nil }
+            let device = Restartable()
+            let metadata = DeviceMetadata(platform: "ios", model: "Phone", appVersion: "2.0.0")
+            let engine = try metadataClient(device, metadata)
+            try await engine.configure(relayURL: "https://relay.example")
+            if mode != "first" { try await engine.ensureRegistered() }
+            if mode == "forgotten" { relay.state.with { $0.devices.removeAll() } }
+            let before = FileLinkStore(url: device.file).load()
+            relay.state.with { $0.registrationFault = { HTTPResponse(status: 403, body: Data(#"{"error":"enrollment_required"}"#.utf8)) } }
+            do {
+                switch mode {
+                case "forced": try await engine.ensureRegistered(force: true)
+                case "pairing": try await engine.ensureRegistered(pairingId: String(repeating: "a", count: 32))
+                default: try await engine.receiveOnce(wait: 0) { _ in XCTFail("empty mailbox"); return .failed }
+                }
+                XCTFail("expected enrollment failure")
+            } catch DeviceLinkError.relay(403, "enrollment_required") { }
+            XCTAssertEqual(FileLinkStore(url: device.file).load(), before)
+        }
     }
 
     @discardableResult

@@ -220,7 +220,7 @@ class DeviceLinkClient(
             if (state.relayUrl == normalized) state.copy(enrollmentToken = enrollmentToken)
             else {
                 if (state.peers.isNotEmpty()) throw PairingException("Unlink existing devices before switching relay")
-                state.copy(relayUrl = normalized, enrollmentToken = enrollmentToken, registeredRelay = "")
+                state.copy(relayUrl = normalized, enrollmentToken = enrollmentToken, registeredRelay = "", registeredMetadata = null)
             }
         }
     }
@@ -233,9 +233,16 @@ class DeviceLinkClient(
 
     suspend fun ensureRegistered(pairingId: String? = null, force: Boolean = false) {
         val state = store.load()
-        if (!force && state.registeredRelay == state.relayUrl && pairingId == null) return
-        relay().register(DeviceMetadata(config.platform, config.model, config.appVersion), state.enrollmentToken, pairingId)
-        update { it.copy(registeredRelay = state.relayUrl) }
+        val metadata = DeviceMetadata(config.platform, config.model, config.appVersion)
+        val refresh = !force && pairingId == null && state.relayUrl.isNotEmpty() && state.registeredRelay == state.relayUrl
+        if (refresh && state.registeredMetadata == metadata) return
+        try {
+            relay().register(metadata, state.enrollmentToken, pairingId)
+        } catch (failure: RelayException) {
+            if (!refresh) throw failure
+            // Older relays may require enrollment again; metadata must not cut off an existing device.
+        }
+        update { it.copy(registeredRelay = state.relayUrl, registeredMetadata = metadata) }
     }
 
     /** Runs [block], re-registering once if the relay forgot this device (for example after a reset). */

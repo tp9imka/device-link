@@ -249,7 +249,7 @@ public actor DeviceLinkClient {
         try update { state in
             if state.relayUrl == normalized { state.enrollmentToken = enrollmentToken; return }
             guard state.peers.isEmpty else { throw DeviceLinkError.pairing("Unlink existing devices before switching relay") }
-            state.relayUrl = normalized; state.enrollmentToken = enrollmentToken; state.registeredRelay = ""
+            state.relayUrl = normalized; state.enrollmentToken = enrollmentToken; state.registeredRelay = ""; state.registeredMetadata = nil
         }
     }
 
@@ -262,10 +262,15 @@ public actor DeviceLinkClient {
 
     public func ensureRegistered(pairingId: String? = nil, force: Bool = false) async throws {
         let state = store.load()
-        if !force, pairingId == nil, state.registeredRelay == state.relayUrl { return }
-        try await relay().register(DeviceMetadata(platform: config.platform, model: config.model, appVersion: config.appVersion),
-                                   enrollmentToken: state.enrollmentToken, pairingId: pairingId)
-        try update { $0.registeredRelay = state.relayUrl }
+        let metadata = DeviceMetadata(platform: config.platform, model: config.model, appVersion: config.appVersion)
+        let refresh = !force && pairingId == nil && !state.relayUrl.isEmpty && state.registeredRelay == state.relayUrl
+        if refresh, state.registeredMetadata == metadata { return }
+        do {
+            try await relay().register(metadata, enrollmentToken: state.enrollmentToken, pairingId: pairingId)
+        } catch DeviceLinkError.relay where refresh {
+            // Older relays may require enrollment again; metadata must not cut off an existing device.
+        }
+        try update { $0.registeredRelay = state.relayUrl; $0.registeredMetadata = metadata }
     }
 
     private func registered<T>(_ block: (RelayClient) async throws -> T) async throws -> T {

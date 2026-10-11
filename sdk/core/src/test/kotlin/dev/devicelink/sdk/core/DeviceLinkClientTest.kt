@@ -25,6 +25,8 @@ private class FakeRelay(private val clock: () -> Long) : HttpTransport {
     val mailbox = mutableListOf<Envelope>()
     val pairings = mutableMapOf<String, MutableMap<String, String>>()
     var requests = 0
+    val registrations = mutableListOf<DeviceMetadata>()
+    var registrationFault: (() -> HttpResponse)? = null
     /** Injected failures: the next N acknowledgements / mailbox polls / confirms answer with this error. */
     var failAcks = 0
     val pollErrors = ArrayDeque<Pair<Int, String>>()
@@ -74,7 +76,12 @@ private class FakeRelay(private val clock: () -> Long) : HttpTransport {
         val path = uri.rawPath.split('/').drop(1)
         fun ok(text: String = "{}") = HttpResponse(200, text.toByteArray())
         fun error(status: Int, code: String) = HttpResponse(status, """{"error":"$code"}""".toByteArray())
-        if (path == listOf("v1", "register")) { devices += caller; return ok() }
+        if (path == listOf("v1", "register")) {
+            registrations += wireJson.decodeFromString<DeviceMetadata>(body.toString(Charsets.UTF_8))
+            registrationFault?.let { return it() }
+            devices += caller
+            return ok()
+        }
         if (path == listOf("v1", "devices", "self") && method == "DELETE") {
             // Same effect as server/relay store.remove_device; idempotent for an unknown device.
             devices -= caller
@@ -167,6 +174,94 @@ class DeviceLinkClientTest {
 
     private val android = client("Pixel", "android")
     private val iphone = client("iPhone", "ios")
+
+    private fun metadataClient(device: Restartable, metadata: DeviceMetadata) =
+        device.start(LinkConfig("Phone", metadata.platform, metadata.model, metadata.appVersion))
+
+    @Test fun `metadata refreshes once per change and survives engine restart`() = runBlocking {
+        val device = Restartable()
+        val original = DeviceMetadata("android", "Phone", "1.0")
+        metadataClient(device, original).apply { configure("https://relay.example"); ensureRegistered() }
+        for (metadata in listOf(original, original.copy(appVersion = "2.0.0"),
+                original.copy(appVersion = "2.0.0", model = "Tablet"),
+                original.copy(appVersion = "2.0.0", model = "Tablet", platform = "desktop"))) {
+            val before = relay.registrations.size
+            val changed = device.store.load().registeredMetadata != metadata
+            val engine = metadataClient(device, metadata)
+            assertTrue(engine.diagnostics.value.registered)
+            repeat(2) { assertEquals(0, engine.receiveOnce(0) { error("empty mailbox") }) }
+            metadataClient(device, metadata).receiveOnce(0) { error("empty mailbox") }
+            assertEquals(before + if (changed) 1 else 0, relay.registrations.size)
+            assertEquals(metadata, relay.registrations.last())
+            assertEquals(metadata, device.store.load().registeredMetadata)
+        }
+    }
+
+    @Test fun `legacy registration without metadata refreshes once`() = runBlocking {
+        val device = Restartable()
+        val metadata = DeviceMetadata("android", "Phone", "2.0.0")
+        val engine = metadataClient(device, metadata)
+        engine.configure("https://relay.example")
+        engine.ensureRegistered()
+        device.store.update { it.copy(registeredMetadata = null) }
+        repeat(2) { engine.receiveOnce(0) { error("empty mailbox") } }
+        assertEquals(2, relay.registrations.size)
+        assertEquals(metadata, device.store.load().registeredMetadata)
+    }
+
+    @Test fun `relay rejection of metadata refresh preserves calls and is not retried`() = runBlocking {
+        val device = Restartable()
+        val old = DeviceMetadata("android", "Phone", "1.0")
+        metadataClient(device, old).apply { configure("https://relay.example"); ensureRegistered() }
+        val metadata = old.copy(appVersion = "2.0.0")
+        relay.registrationFault = relayError(403, "enrollment_required")
+        val updated = metadataClient(device, metadata)
+        repeat(2) { assertEquals(0, updated.receiveOnce(0) { error("empty mailbox") }) }
+        metadataClient(device, metadata).receiveOnce(0) { error("empty mailbox") }
+        assertEquals(2, relay.registrations.size)
+        assertEquals(3, relay.polls.size)
+        assertEquals(metadata, device.store.load().registeredMetadata)
+        assertTrue(updated.diagnostics.value.registered)
+    }
+
+    @Test fun `transport failure leaves metadata refresh pending`() = runBlocking {
+        val device = Restartable()
+        val old = DeviceMetadata("android", "Phone", "1.0")
+        metadataClient(device, old).apply { configure("https://relay.example"); ensureRegistered() }
+        val metadata = old.copy(appVersion = "2.0.0")
+        val updated = metadataClient(device, metadata)
+        relay.registrationFault = { throw java.io.IOException("connection reset") }
+        try { updated.receiveOnce(0) { error("empty mailbox") }; error("expected transport failure") }
+        catch (_: java.io.IOException) { }
+        assertEquals(old, device.store.load().registeredMetadata)
+        relay.registrationFault = null
+        repeat(2) { assertEquals(0, updated.receiveOnce(0) { error("empty mailbox") }) }
+        assertEquals(3, relay.registrations.size)
+        assertEquals(metadata, device.store.load().registeredMetadata)
+    }
+
+    @Test fun `enrollment failures still propagate for first forced pairing and forgotten registrations`() = runBlocking {
+        for (mode in listOf("first", "forced", "pairing", "forgotten")) {
+            relay.registrationFault = null
+            val device = Restartable()
+            val metadata = DeviceMetadata("android", "Phone", "2.0.0")
+            val engine = metadataClient(device, metadata)
+            engine.configure("https://relay.example")
+            if (mode != "first") engine.ensureRegistered()
+            if (mode == "forgotten") relay.devices.clear()
+            val before = device.store.load()
+            relay.registrationFault = relayError(403, "enrollment_required")
+            try {
+                when (mode) {
+                    "forced" -> engine.ensureRegistered(force = true)
+                    "pairing" -> engine.ensureRegistered(pairingId = "a".repeat(32))
+                    else -> engine.receiveOnce(0) { error("empty mailbox") }
+                }
+                error("expected enrollment failure")
+            } catch (failure: RelayException) { assertEquals("enrollment_required", failure.code) }
+            assertEquals(before, device.store.load())
+        }
+    }
 
     private fun linked() = runBlocking {
         android.configure("https://relay.example")
@@ -355,7 +450,8 @@ class DeviceLinkClientTest {
         val file = java.io.File.createTempFile("link", ".json").apply { delete(); deleteOnExit() }
         private val identity = SoftwareIdentity()
         private val keys = EncryptionKeyPair.generate()
-        fun start() = DeviceLinkClient(identity, keys, FileLinkStore(file), LinkConfig(name, "desktop"), relay) { now }
+        val store get() = FileLinkStore(file)
+        fun start(config: LinkConfig = LinkConfig(name, "desktop")) = DeviceLinkClient(identity, keys, store, config, relay) { now }
         fun spooled() = java.io.File(file.parentFile, file.name + ".chunks").listFiles().orEmpty().toList()
     }
 

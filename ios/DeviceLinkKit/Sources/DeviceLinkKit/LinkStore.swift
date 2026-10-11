@@ -15,6 +15,7 @@ public struct LinkState: Codable, Equatable, Sendable {
     public var relayUrl: String = ""
     public var enrollmentToken: String = ""
     public var registeredRelay: String = ""
+    public var registeredMetadata: DeviceMetadata? = nil
     public var sequence: Int64 = 0
     public var peers: [LinkedPeer] = []
     public var seen: [String: Int64] = [:]
@@ -28,6 +29,7 @@ public struct LinkState: Codable, Equatable, Sendable {
         relayUrl = try c.decodeIfPresent(String.self, forKey: .relayUrl) ?? ""
         enrollmentToken = try c.decodeIfPresent(String.self, forKey: .enrollmentToken) ?? ""
         registeredRelay = try c.decodeIfPresent(String.self, forKey: .registeredRelay) ?? ""
+        registeredMetadata = try c.decodeIfPresent(DeviceMetadata.self, forKey: .registeredMetadata)
         sequence = try c.decodeIfPresent(Int64.self, forKey: .sequence) ?? 0
         peers = try c.decodeIfPresent([LinkedPeer].self, forKey: .peers) ?? []
         seen = try c.decodeIfPresent([String: Int64].self, forKey: .seen) ?? [:]

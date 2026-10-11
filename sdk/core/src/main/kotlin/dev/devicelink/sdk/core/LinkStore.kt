@@ -25,6 +25,7 @@ data class LinkState(
     val lastClip: Map<String, Long> = emptyMap(),
     /** Server-side revocations not yet confirmed by the relay. */
     val pendingRevocations: Set<String> = emptySet(),
+    val registeredMetadata: DeviceMetadata? = null,
 )
 
 interface LinkStore {

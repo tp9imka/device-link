@@ -79,7 +79,7 @@ public struct RelayInfo: Codable, Sendable {
     public var push: [String]?
 }
 
-public struct DeviceMetadata: Codable, Sendable {
+public struct DeviceMetadata: Codable, Equatable, Sendable {
     public var platform: String
     public var model: String
     public var appVersion: String
