@@ -12,6 +12,10 @@
  <string name="dl_action_share">Share…</string>
  <string name="dl_action_open">Open</string>
  <string name="dl_action_copy">Copy</string>
+ <string name="dl_action_save">Save…</string>
+ <string name="dl_save_done">Saved</string>
+ <string name="dl_save_failed">Could not save the file. Try again or use Share…</string>
+ <string name="dl_save_gone">This file is no longer here. Received files are kept for 24 hours.</string>
  <string name="dl_copied_from">Copied from %1$s · ready to paste</string>
  <string name="dl_received_from">From %1$s</string>
  <string name="dl_share_title">Share from %1$s</string>

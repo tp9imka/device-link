@@ -265,8 +265,14 @@ class MainActivity : Activity() {
 
     private fun menu(anchor: View, record: ClipRecord) {
         PopupMenu(this, anchor).apply {
-            menu.add(0, 1, 0, R.string.copy); menu.add(0, 2, 1, R.string.share); menu.add(0, 3, 2, R.string.remove)
-            setOnMenuItemClickListener { when (it.itemId) { 1 -> recopy(record); 2 -> share(record); else -> link.forget(record) }; true }
+            val save = link.saveIntent(record)
+            menu.add(0, 1, 0, R.string.copy); menu.add(0, 2, 1, R.string.share)
+            if (save != null) menu.add(0, 4, 2, R.string.save)
+            menu.add(0, 3, 3, R.string.remove)
+            setOnMenuItemClickListener {
+                when (it.itemId) { 1 -> recopy(record); 2 -> share(record); 4 -> save?.let(::startActivity); else -> link.forget(record) }
+                true
+            }
         }.show()
     }
 

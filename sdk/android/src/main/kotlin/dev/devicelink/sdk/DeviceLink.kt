@@ -307,6 +307,14 @@ class DeviceLinkInstance internal constructor(private val context: Context, val 
     }
 
     fun shareIntent(record: ClipRecord) = Notifications.shareIntent(context, record)
+
+    /**
+     * Opens the system "save as" picker for a received image or file and copies it there, so it
+     * outlives the 24-hour private retention. Null when the record carries no file. Start it with
+     * `startActivity`; the SDK shows the result.
+     */
+    fun saveIntent(record: ClipRecord): android.content.Intent? =
+        if (record.direction == ClipDirection.RECEIVED) SaveFileActivity.intent(context, record) else null
     fun forget(record: ClipRecord) = clipHistory.remove(record.id)
     fun clearHistory() { clipHistory.clear(); scope.launch(Dispatchers.IO) { ReceivedFiles.clear(context) } }
 

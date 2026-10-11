@@ -47,6 +47,7 @@
  <string name="copied_again">Copied</string>
  <string name="copy">Copy</string>
  <string name="share">Share…</string>
+ <string name="save">Save…</string>
  <string name="remove">Remove</string>
  <string name="tile_send">Send clipboard</string>
  <string name="paste_link_title">Paste a link code</string>

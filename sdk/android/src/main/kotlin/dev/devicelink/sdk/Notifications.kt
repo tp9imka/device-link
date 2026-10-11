@@ -68,7 +68,7 @@ internal object Notifications {
 
     /**
      * Content that cannot go to the clipboard (files, or a failed write): offer the share sheet so the
-     * user can hand it to any app, plus Open / Copy where they make sense.
+     * user can hand it to any app, plus Copy / Open / Save where they make sense.
      */
     fun shareNeeded(context: Context, record: ClipRecord) {
         val title = context.getString(R.string.dl_received_from, record.peerName)
@@ -78,22 +78,31 @@ internal object Notifications {
             .setStyle(Notification.BigTextStyle().bigText(body)).setAutoCancel(true)
             .setVisibility(Notification.VISIBILITY_PRIVATE).setPublicVersion(publicVersion(context, title))
             .setCategory(Notification.CATEGORY_MESSAGE)
-        shareIntent(context, record)?.let { chooser ->
-            builder.addAction(Notification.Action.Builder(null, context.getString(R.string.dl_action_share),
-                PendingIntent.getActivity(context, record.id.hashCode(), chooser, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)).build())
-        }
-        record.uri?.let { uri ->
-            val view = Intent(Intent.ACTION_VIEW).setDataAndType(Uri.parse(uri), record.mime)
-                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
-            builder.addAction(Notification.Action.Builder(null, context.getString(R.string.dl_action_open),
-                PendingIntent.getActivity(context, record.id.hashCode() + 1, Intent.createChooser(view, null),
-                    PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)).build())
-        }
-        if (record.text != null || record.mime?.startsWith("image/") == true) {
+        val flags = PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        val actions = mutableListOf<Notification.Action>()
+        val copyable = record.text != null || record.mime?.startsWith("image/") == true
+        if (copyable) {
             val copy = Intent(context, NotificationActionReceiver::class.java).setAction(NotificationActionReceiver.COPY).putExtra("id", record.id)
-            builder.addAction(Notification.Action.Builder(null, context.getString(R.string.dl_action_copy),
-                PendingIntent.getBroadcast(context, record.id.hashCode() + 2, copy, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)).build())
+            actions += Notification.Action.Builder(null, context.getString(R.string.dl_action_copy),
+                PendingIntent.getBroadcast(context, record.id.hashCode() + 2, copy, flags)).build()
         }
+        // Images can be copied, so Open gives way to Save there; the notification shows at most three actions.
+        if (record.uri != null && !copyable) {
+            val view = Intent(Intent.ACTION_VIEW).setDataAndType(Uri.parse(record.uri), record.mime)
+                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+            actions += Notification.Action.Builder(null, context.getString(R.string.dl_action_open),
+                PendingIntent.getActivity(context, record.id.hashCode() + 1, Intent.createChooser(view, null), flags)).build()
+        }
+        // Received files are private and pruned after 24 hours: Save keeps a copy where the user chooses.
+        SaveFileActivity.intent(context, record)?.let { save ->
+            actions += Notification.Action.Builder(null, context.getString(R.string.dl_action_save),
+                PendingIntent.getActivity(context, record.id.hashCode() + 3, save, flags)).build()
+        }
+        shareIntent(context, record)?.let { chooser ->
+            actions += Notification.Action.Builder(null, context.getString(R.string.dl_action_share),
+                PendingIntent.getActivity(context, record.id.hashCode(), chooser, flags)).build()
+        }
+        actions.forEach(builder::addAction)
         notify(context, record.id, builder.build())
     }
 
