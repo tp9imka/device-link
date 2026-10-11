@@ -37,6 +37,8 @@ MIGRATIONS = {
                 ("received_bytes", "INTEGER NOT NULL DEFAULT 0")],
     "peers": [("created", "INTEGER NOT NULL DEFAULT 0")],
     "messages": [("created", "INTEGER NOT NULL DEFAULT 0")],
+    # Identity that registered through this pairing's QR without the enrollment token.
+    "pairings": [("admitted", "TEXT")],
 }
 
 
@@ -116,24 +118,60 @@ class Store:
             if existing:
                 db.execute("UPDATE devices SET last_seen=? WHERE id=?", (now, identity.id))
 
-    def open_pairing(self, pairing, now):
-        """True when an unexpired, unjoined pairing exists: its QR admits one new device."""
-        with self.transaction() as db:
-            return db.execute("SELECT 1 FROM pairings WHERE id=? AND state='open' AND expires>?", (pairing, now)).fetchone() is not None
+    def admit_pairing(self, pairing, device, now):
+        """True when an unexpired, unjoined pairing admits [device] without the enrollment token.
 
-    def register(self, identity, now, metadata):
+        Each QR admits exactly one identity: the first registration binds the pairing to it, and
+        only that identity may register through it again (a retry after a lost response).
+        """
         with self.transaction() as db:
-            existing = db.execute("SELECT key FROM devices WHERE id=?", (identity.id,)).fetchone()
+            return db.execute("UPDATE pairings SET admitted=? WHERE id=? AND state='open' AND expires>? "
+                              "AND (admitted IS NULL OR admitted=?)", (device, pairing, now, device)).rowcount == 1
+
+    def is_registered(self, identity):
+        with self.transaction() as db:
+            return db.execute("SELECT 1 FROM devices WHERE id=? AND key=?", (identity.id, identity.key)).fetchone() is not None
+
+    def register(self, identity, now, metadata, *, enrolled):
+        with self.transaction() as db:
+            existing = db.execute("SELECT key, blocked FROM devices WHERE id=?", (identity.id,)).fetchone()
             if existing:
                 if existing[0] != identity.key:
                     raise RelayError(409, "identity_conflict")
+                if existing[1]:
+                    raise RelayError(403, "device_blocked")
             else:
+                if not enrolled:
+                    raise RelayError(403, "enrollment_required")
                 if db.execute("SELECT count(*) FROM devices").fetchone()[0] >= self.settings.max_devices:
                     raise RelayError(507, "registration_capacity")
                 db.execute("INSERT INTO devices(id,key,created,last_seen) VALUES(?,?,?,?)", (identity.id, identity.key, now, now))
                 self.event(db, now, "registered", identity.id)
             db.execute("UPDATE devices SET platform=?, model=?, app_version=?, last_seen=? WHERE id=?",
                        (metadata.get("platform", ""), metadata.get("model", ""), metadata.get("appVersion", ""), now, identity.id))
+
+    def remove_device(self, device, now, kind):
+        """Deletes a device and everything that names it, in one transaction.
+
+        Used by the admin "remove device" action (kind "device_removed") and by the device itself
+        (DELETE /v1/devices/self, kind "device_unregistered"). Returns False when it was not registered.
+        The device row carries its push token; dedupe tombstones name no device and expire on their own.
+
+        A device that unregisters itself keeps what it already sent: those are the unlink notices it
+        sends each peer just before the call, and an offline peer must still receive them. Fetching does
+        not consult peers, and they expire within the sandbox lifetime. An admin removal deletes both.
+        """
+        with self.transaction() as db:
+            if not db.execute("DELETE FROM devices WHERE id=?", (device,)).rowcount:
+                return False
+            db.execute("DELETE FROM peers WHERE recipient=? OR sender=?", (device, device))
+            if kind == "device_unregistered":
+                db.execute("DELETE FROM messages WHERE recipient=?", (device,))
+            else:
+                db.execute("DELETE FROM messages WHERE recipient=? OR sender=?", (device, device))
+            db.execute("DELETE FROM pairings WHERE creator=? OR joiner=?", (device, device))
+            self.event(db, now, kind, device)
+            return True
 
     # ----- allowlists and links ----------------------------------------------------------------
 
@@ -231,9 +269,13 @@ class Store:
 
     def confirm_pairing(self, creator, pairing, sealed, now):
         with self.transaction() as db:
-            row = db.execute("SELECT creator, state, joiner FROM pairings WHERE id=? AND expires>?", (pairing, now)).fetchone()
+            row = db.execute("SELECT creator, state, joiner, confirm_sealed FROM pairings WHERE id=? AND expires>?",
+                             (pairing, now)).fetchone()
             if row is None or row[0] != creator:
                 raise RelayError(404, "pairing_not_found")
+            if row[1] == "confirmed" and row[3] == sealed:
+                # A resend after a lost response: already committed, nothing changes.
+                return
             if row[1] != "joined":
                 raise RelayError(409, "pairing_not_joined")
             db.execute("UPDATE pairings SET state='confirmed', confirm_sealed=? WHERE id=?", (sealed, pairing))
@@ -250,9 +292,9 @@ class Store:
             creator, state, joiner, join_sealed, confirm_sealed = row
             if caller == creator:
                 return {"state": state, "joinerId": joiner, "sealed": join_sealed}
-            if state == "confirmed":
-                # The joiner has everything it needs; the rendezvous is finished.
-                db.execute("DELETE FROM pairings WHERE id=?", (pairing,))
+            # A pairing stays readable by both sides until it expires or is cancelled, so either side
+            # can re-read its final state after a lost response (the joiner its confirm, the inviter
+            # whether its own confirm was committed).
             return {"state": state, "joinerId": joiner, "sealed": confirm_sealed}
 
     def cancel_pairing(self, caller, pairing):

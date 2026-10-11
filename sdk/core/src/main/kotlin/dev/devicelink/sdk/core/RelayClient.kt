@@ -35,6 +35,8 @@ class UrlConnectionTransport(private val maxResponseBytes: Int = 25 * 1024 * 102
                         connection.requestMethod = method
                         connection.instanceFollowRedirects = false
                         connection.useCaches = false
+                        // No total request timeout: an 18 MB upload on a slow link may take minutes. The
+                        // read timeout is an idle timeout on the response; writes are not time-capped here.
                         connection.connectTimeout = 15_000
                         connection.readTimeout = timeoutMillis
                         headers.forEach(connection::setRequestProperty)
@@ -130,13 +132,20 @@ class RelayClient(
     /** Returns 201/200 for new/idempotent retry; both mean the relay durably accepted the envelope. */
     suspend fun upload(envelope: Envelope) { call("POST", "/v1/messages", envelope.encode()) }
 
-    suspend fun poll(waitSeconds: Int, limit: Int = 1): List<Envelope> =
-        Envelope.decodeList(call("GET", "/v1/messages?wait=$waitSeconds&limit=$limit", timeoutMillis = (waitSeconds + 20) * 1000))
+    /** [exclude]: up to 20 envelope IDs the relay must skip (for example ones already processed this round). */
+    suspend fun poll(waitSeconds: Int, limit: Int = 1, exclude: Collection<String> = emptyList()): List<Envelope> {
+        require(exclude.size <= 20 && exclude.all { java.util.UUID.fromString(it).toString() == it })
+        val skip = if (exclude.isEmpty()) "" else "&exclude=" + exclude.joinToString(",")
+        return Envelope.decodeList(call("GET", "/v1/messages?wait=$waitSeconds&limit=$limit$skip", timeoutMillis = (waitSeconds + 20) * 1000))
+    }
 
     /** One waiting envelope by ID (notification previews). Does not acknowledge it. */
     suspend fun fetch(id: String): Envelope = Envelope.decode(String(call("GET", "/v1/messages/$id"), Charsets.UTF_8))
 
     suspend fun acknowledge(id: String) { call("DELETE", "/v1/messages/$id") }
+
+    /** Deletes this device and everything the relay holds for it (links, messages, pairings, push token). */
+    suspend fun unregister() { call("DELETE", "/v1/devices/self") }
 
     suspend fun registerPush(token: String, environment: String, topic: String) {
         call("PUT", "/v1/push", """{"provider":"apns","token":"$token","environment":"$environment","topic":"$topic"}""".toByteArray())

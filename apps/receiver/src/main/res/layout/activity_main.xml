@@ -10,8 +10,6 @@
   </LinearLayout>
   <Button android:id="@+id/diagnostics" style="@style/SecondaryButton" android:layout_width="wrap_content" android:layout_height="wrap_content"
    android:text="@string/diagnostics" android:minWidth="48dp" />
-  <Switch android:id="@+id/receive" android:layout_width="wrap_content" android:layout_height="48dp" android:text="@string/receive"
-   android:textColor="@color/on_surface" android:switchPadding="8dp" />
  </LinearLayout>
 
  <ListView android:id="@+id/clips" android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1"

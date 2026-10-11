@@ -23,6 +23,9 @@
    <intent-filter><action android:name="android.intent.action.PROCESS_TEXT" /><category android:name="android.intent.category.DEFAULT" />
     <data android:mimeType="text/plain" /></intent-filter>
   </activity>
+  <!-- "Save…" on a received file: system save-as picker, no storage permission. Not noHistory: it waits for the picker's result. -->
+  <activity android:name="dev.devicelink.sdk.SaveFileActivity" android:exported="false" android:excludeFromRecents="true"
+   android:taskAffinity="" android:theme="@style/DeviceLink.Invisible" />
   <receiver android:name="dev.devicelink.sdk.NotificationActionReceiver" android:exported="false" />
   <receiver android:name="dev.devicelink.sdk.BootReceiver" android:exported="false">
    <intent-filter><action android:name="android.intent.action.BOOT_COMPLETED" /><action android:name="android.intent.action.MY_PACKAGE_REPLACED" /></intent-filter>

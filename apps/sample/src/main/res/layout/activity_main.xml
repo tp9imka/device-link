@@ -14,6 +14,18 @@
    </LinearLayout>
   </LinearLayout>
 
+  <!-- Host-app mode: DeviceLinkOptions(autoCopy = false). The SDK reads options once, at app start. -->
+  <LinearLayout style="@style/Card" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical"
+   android:layout_marginTop="12dp">
+   <Switch android:id="@+id/host_mode" android:layout_width="match_parent" android:layout_height="wrap_content" android:minHeight="48dp"
+    android:text="@string/host_mode" android:textColor="@color/on_surface" android:textSize="16sp" android:textStyle="bold"
+    android:switchPadding="16dp" />
+   <TextView android:id="@+id/host_mode_state" style="@style/Body" android:layout_width="match_parent" android:layout_height="wrap_content"
+    android:accessibilityLiveRegion="polite" />
+   <Button android:id="@+id/host_mode_restart" style="@style/SecondaryButton" android:layout_width="wrap_content" android:layout_height="wrap_content"
+    android:text="@string/host_mode_restart_now" android:visibility="gone" />
+  </LinearLayout>
+
   <LinearLayout style="@style/Card" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:layout_marginTop="12dp">
    <TextView style="@style/Heading" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="@string/try_heading" />
    <TextView style="@style/Body" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="@string/try_body" />

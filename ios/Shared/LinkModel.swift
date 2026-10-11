@@ -11,6 +11,8 @@ final class LinkModel: ObservableObject {
     @Published var pairingExpiresAt: Date?
     @Published var message: String?
     @Published var busy = false
+    /// True while "Reset device" tells the relay and wipes keys; receiving stays off meanwhile.
+    @Published private(set) var resetting = false
     let clips = ClipStore.shared
     private(set) var client: DeviceLinkClient?
     private var receiving: Task<Void, Never>?
@@ -28,16 +30,24 @@ final class LinkModel: ObservableObject {
 
     init() {
         do {
-            let client = try LinkEnvironment.makeClient()
+            let client = try LinkEnvironment.client()
             self.client = client
             events = Task { [weak self] in
                 for await event in await client.events() { await self?.handle(event) }
             }
             Task { await refresh() }
+        } catch let error as KeysLostError {
+            // Linked devices pinned the old keys; a new one would make everything they send undecryptable.
+            keysLost = error
         } catch {
-            message = "DeviceLink could not create its device keys: \(error)"
+            // Keychain items survive a reinstall, so reset (it works without a client) is the way out.
+            message = "DeviceLink could not read its device keys. Restart the app; if this repeats, open Diagnostics (ⓘ) and reset this device."
         }
     }
+
+    /// Set when the keys were missing or unreadable at launch while devices are linked (for example after
+    /// restoring a backup to a new iPhone). There is no client then; Reset is the way out.
+    @Published private(set) var keysLost: KeysLostError?
 
     func refresh() async {
         guard let client else { return }
@@ -53,7 +63,10 @@ final class LinkModel: ObservableObject {
         case .status(let value): status = value
         case .receipt(let id, _, let status):
             clips.update(id, status == .copied ? .copied : status == .delivered ? .delivered : .failed)
-        case .peerLinked, .peerUnlinked: await refresh()
+        case .peerLinked:
+            await refresh()
+            registerStoredPush() // the launch-time token arrived while nothing was linked yet
+        case .peerUnlinked: await refresh()
         }
     }
 
@@ -61,7 +74,7 @@ final class LinkModel: ObservableObject {
 
     func setActive(_ active: Bool) {
         if active {
-            guard receiving == nil, let client else { return }
+            guard receiving == nil, !resetting, let client else { return }
             receiving = Task { [clips] in
                 await client.runReceiver { item in await MainActor.run { clips.apply(item) } }
             }
@@ -133,8 +146,11 @@ final class LinkModel: ObservableObject {
                                          peerName: names[outcome.peerId] ?? "", kind: fileName == nil ? "text" : "file",
                                          text: preview, fileName: fileName, mime: mime, at: Date(), state: outcome.accepted ? .pending : .failed))
                 }
-                if outcomes.isEmpty { message = "Link a device first" }
-                else if outcomes.contains(where: { !$0.accepted }) { message = "Could not send to every device" }
+                if outcomes.isEmpty { message = SendMessages.notLinked }
+                else if let failed = outcomes.first(where: { !$0.accepted }) {
+                    let reason = SendMessages.describe(outcomeError: failed.error)
+                    message = outcomes.count > 1 ? "Could not send to every device. \(reason)" : reason
+                }
             } catch {
                 message = describe(error)
             }
@@ -151,14 +167,29 @@ final class LinkModel: ObservableObject {
         send(image ? .image(name: name, mime: mime, data: data) : .file(name: name, mime: mime, data: data), preview: nil, fileName: name, mime: mime)
     }
 
+    /// The APNs token from this launch. Kept so a device linked later in the same launch registers it too.
+    private var pushToken: Data?
+
+    /// Set by apps that use notifications: asked once the user confirms their first link (not at launch).
+    var onLinkConfirmed: (@MainActor () -> Void)?
+    /// When true, the link confirmation says why a notification prompt follows.
+    @Published var asksForNotifications = false
+
+    func confirmLink() {
+        linkedConfirmation = nil
+        onLinkConfirmed?()
+    }
+
     func registerPush(token: Data) {
-        guard let client, !peers.isEmpty else { return }
+        pushToken = token
+        registerStoredPush()
+    }
+
+    private func registerStoredPush() {
+        guard let client, let token = pushToken, !peers.isEmpty else { return }
         let hex = token.map { String(format: "%02x", $0) }.joined()
-        #if DEBUG
-        let environment = "sandbox"
-        #else
-        let environment = "production"
-        #endif
+        // Same build setting as the aps-environment entitlement, so the relay targets the matching APNs host.
+        let environment = LinkEnvironment.info("DLAPSEnvironment") == "production" ? "production" : "sandbox"
         let topic = Bundle.main.bundleIdentifier ?? ""
         Task {
             guard let info = try? await client.relayInfo(), info.push?.contains("apns") == true else { return }
@@ -168,19 +199,29 @@ final class LinkModel: ObservableObject {
 
     /// Plain-text report for bug reports. Contains no clipboard content or device names.
     var diagnosticsReport: String {
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
+        if let keysLost {
+            return """
+            DeviceLink \(version) on iOS \(UIDevice.current.systemVersion), \(LinkEnvironment.model)
+            Keys: LOST (\(keysLost.summary)); reset and link again
+            """
+        }
         guard let d = diagnostics else { return "No diagnostics yet" }
         func at(_ time: Int64?) -> String {
             time.map { DateFormatter.localizedString(from: Date(timeIntervalSince1970: TimeInterval($0) / 1000), dateStyle: .short, timeStyle: .medium) } ?? "never"
         }
-        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
+        // Leaving the app cancels the open long poll; URLSession reports that as URLError.cancelled
+        // (-999), which the SDK records. A cancelled request is not an error.
+        let lastError = d.lastError == "network: \(URLError.Code.cancelled.rawValue)" ? nil : d.lastError
         return """
         DeviceLink \(version) on iOS \(UIDevice.current.systemVersion), \(LinkEnvironment.model)
         Device ID: \(d.deviceId.prefix(16))…
+        Keys: ok
         Relay: \(d.relayURL.isEmpty ? "not configured" : d.relayURL) · registered: \(d.registered)
         Linked devices: \(d.peers) · status: \(status.rawValue)
         Last poll: \(at(d.lastPollAt)) · last receive: \(at(d.lastReceiveAt)) · last send: \(at(d.lastSendAt))
         Received: \(d.received) · sent: \(d.sent) (since app start)
-        Last error: \(d.lastError ?? "none")\(d.lastErrorAt.map { " at " + at($0) } ?? "")
+        Last error: \(lastError.map { $0 + (d.lastErrorAt.map { " at " + at($0) } ?? "") } ?? "none")
         """
     }
 
@@ -188,39 +229,52 @@ final class LinkModel: ObservableObject {
         sendText("DeviceLink test clip · \(DateFormatter.localizedString(from: Date(), dateStyle: .none, timeStyle: .medium))")
     }
 
-    /// Unlinks everything (telling each device), deletes keys and history, and starts with a new identity.
+    /// Upper bound for telling peers and the relay during reset; the local wipe follows regardless.
+    static let resetUnregisterTimeout: Duration = .seconds(5)
+
+    /// Tells every linked device, removes this device from the relay (bounded, best effort, so reset also
+    /// works offline), deletes keys and history, and starts with a new identity. Also runs when the keys
+    /// could not be read at launch (no client): the relay step is skipped then, nothing can sign it.
     func resetDevice() {
-        guard let client else { return }
+        guard !resetting else { return }
+        resetting = true
+        // Stop polling first: a poll after the relay delete would register this device again.
+        setActive(false)
+        let client = self.client
         Task {
-            try? await client.unlinkAll()
-            setActive(false)
+            defer { resetting = false }
+            var removed = false
+            if let client { removed = await Self.unregister(client, within: Self.resetUnregisterTimeout) }
             clips.clear()
             Keychain.delete("identity.se"); Keychain.delete("identity.sw"); Keychain.delete("encryption.x25519")
-            try? FileManager.default.removeItem(at: LinkEnvironment.container.appendingPathComponent("DeviceLink/links.json"))
+            try? FileManager.default.removeItem(at: LinkEnvironment.linksURL)
             sendTargets = []
             do {
-                let fresh = try LinkEnvironment.makeClient()
+                let fresh = try LinkEnvironment.replaceClient()
                 self.client = fresh
+                keysLost = nil
                 events?.cancel()
                 events = Task { [weak self] in for await event in await fresh.events() { await self?.handle(event) } }
                 await refresh()
-                message = "Device reset. Show or scan a code to link again."
+                message = removed ? "Device reset. Show or scan a code to link again."
+                    : client == nil ? "Device reset on this device. Its old keys could not be read, so linked devices may still list it until you unlink it there. Show or scan a code to link again."
+                    : "Device reset on this device. The relay could not be reached, so linked devices may still list it until you unlink it there. Show or scan a code to link again."
             } catch {
-                message = "Reset failed: \(error)"
+                message = "Reset failed. Restart the app and try again."
             }
         }
     }
 
-    private func describe(_ error: Error) -> String {
-        if let error = error as? DeviceLinkError {
-            switch error {
-            case .notConfigured: return "No relay configured. Scan a code from a linked device or the relay's Setup page."
-            case .pairing(let reason): return reason
-            case .relay(let status, _) where status == 403: return "The relay refused this device."
-            default: return error.description
-            }
+    /// `client.unregister()` raced against `limit`; on timeout it is cancelled (it still clears local links).
+    private static func unregister(_ client: DeviceLinkClient, within limit: Duration) async -> Bool {
+        await withTaskGroup(of: Bool?.self) { group in
+            group.addTask { await client.unregister() }
+            group.addTask { try? await Task.sleep(for: limit); return nil }
+            let first: Bool?? = await group.next()
+            group.cancelAll()
+            return (first ?? nil) ?? false
         }
-        if error is URLError { return "The relay could not be reached. Check the internet connection." }
-        return error.localizedDescription
     }
+
+    private func describe(_ error: Error) -> String { SendMessages.describe(error) }
 }

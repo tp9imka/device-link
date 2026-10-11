@@ -4,16 +4,21 @@
 #
 #   scripts/interop_e2e.sh
 #
-# Overrides: PYTHON (relay interpreter), SWIFT_CLI (command running the `devicelink` executable),
+# Overrides: PYTHON (relay interpreter; default server/.venv/bin/python when present, else python3), SWIFT_CLI (command running the `devicelink` executable),
 # KOTLIN_TEST (command running sdk/core's InteropPeerTest), RELAY_PORT.
 set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 work="$(mktemp -d)"
 port="${RELAY_PORT:-8790}"
 token="interop-$(date +%s)"
-PYTHON="${PYTHON:-python3}"
+if [ -z "${PYTHON:-}" ]; then
+  if [ -x "$root/server/.venv/bin/python" ]; then PYTHON="$root/server/.venv/bin/python"; else PYTHON=python3; fi
+fi
+# A relative interpreter path must survive the cd into server/ below.
+case "$PYTHON" in /*|"${PYTHON##*/}") ;; *) PYTHON="$PWD/$PYTHON" ;; esac
 SWIFT_CLI="${SWIFT_CLI:-swift run --package-path $root/ios/DeviceLinkKit devicelink}"
-KOTLIN_TEST="${KOTLIN_TEST:-$root/gradlew -p $root :sdk:core:test --tests dev.devicelink.sdk.core.InteropPeerTest --no-daemon -q}"
+# --rerun: the interop env vars are not task inputs, so an up-to-date test task would skip the peer.
+KOTLIN_TEST="${KOTLIN_TEST:-$root/gradlew -p $root :sdk:core:test --tests dev.devicelink.sdk.core.InteropPeerTest --rerun --no-daemon -q}"
 fail() { echo "FAILED: $*"; for f in received.jsonl kotlin.log relay.log; do [ -f "$work/$f" ] && { echo "--- $f"; tail -40 "$work/$f"; }; done; exit 1; }
 cleanup() { kill "${relay_pid:-}" "${kotlin_pid:-}" 2>/dev/null || true; rm -rf "$work"; }
 trap cleanup EXIT
@@ -31,7 +36,8 @@ for _ in $(seq 600); do [ -s "$work/invite.txt" ] && break; sleep 0.5; done
 
 cli() { $SWIFT_CLI --state "$work/swift" --insecure --name "Swift CLI" "$@"; }
 echo "Swift joins the Kotlin code (no setup, no token)"
-cli join "$(cat "$work/invite.txt")" --timeout 90
+cli join "$(cat "$work/invite.txt")" --timeout 90 > "$work/join.jsonl" || fail "Swift could not join"
+grep -Eq '"code":"[0-9]{6}"' "$work/join.jsonl" || fail "join printed no confirmation code"
 cli send "hello from swift"
 cli receive --count 2 --timeout 90 > "$work/received.jsonl" || fail "Swift did not receive two items"
 grep -q '"text":"hello from kotlin ✓"' "$work/received.jsonl" || fail "text mismatch"
@@ -39,7 +45,7 @@ grep -q "\"sha256\":\"$(cat "$work/image.sha256")\"" "$work/received.jsonl" || f
 for _ in $(seq 120); do [ -f "$work/phase1.done" ] && break; sleep 0.5; done
 
 echo "Kotlin joins the Swift code"
-cli invite > "$work/swift-invite.txt" &
+cli invite --print-uri > "$work/swift-invite.txt" &
 invite_pid=$!
 wait "$invite_pid"
 cli receive --count 1 --timeout 60 > "$work/received.jsonl" || fail "Swift did not receive from the second device"

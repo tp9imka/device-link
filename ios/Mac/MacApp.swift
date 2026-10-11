@@ -23,20 +23,32 @@ struct DeviceLinkMacApp: App {
 /// Keys live in the login keychain; links and settings in Application Support.
 enum MacKeys {
     private static let service = "dev.devicelink.mac"
+    static let accounts = ["identity", "encryption"]
 
-    static func load(_ account: String, create: () -> Data) throws -> Data {
+    /// Linked peers pinned these keys. A new one is created only when the item does not exist and no
+    /// device is linked; otherwise this throws `KeysLost` and writes nothing (see the iOS KeyPolicy).
+    static func load(_ account: String, hasLinks: Bool, create: () -> Data) throws -> Data {
         let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
                                     kSecAttrAccount as String: account, kSecReturnData as String: true]
         var result: AnyObject?
-        if SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess, let data = result as? Data { return data }
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        if status == errSecSuccess, let data = result as? Data { return data }
+        guard status == errSecItemNotFound, !hasLinks else { throw KeysLost() }
         let data = create()
         let item: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
                                    kSecAttrAccount as String: account, kSecValueData as String: data,
                                    kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly]
-        let status = SecItemAdd(item as CFDictionary, nil)
-        guard status == errSecSuccess else { throw DeviceLinkError.invalid("keychain \(status)") }
+        let added = SecItemAdd(item as CFDictionary, nil)
+        guard added == errSecSuccess else { throw DeviceLinkError.invalid("keychain \(added)") }
         return data
     }
+
+    static func delete(_ account: String) {
+        SecItemDelete([kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
+                       kSecAttrAccount as String: account] as CFDictionary)
+    }
+
+    struct KeysLost: Error {}
 }
 
 @MainActor
@@ -52,22 +64,50 @@ final class MacModel: ObservableObject {
     private var watcher: Timer?
     private var lastChange = NSPasteboard.general.changeCount
 
-    init() {
+    /// Keys missing or unreadable while devices are linked; Reset is the way out.
+    @Published var keysLost = false
+    private static let linksURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        .appendingPathComponent("DeviceLink/links.json")
+
+    init() { connect() }
+
+    private func connect() {
         do {
-            let identity = try SoftwareIdentity(rawRepresentation: try MacKeys.load("identity") { SoftwareIdentity().privateKey.rawRepresentation })
-            let encryption = try EncryptionKeyPair(rawRepresentation: try MacKeys.load("encryption") { EncryptionKeyPair().privateKey.rawRepresentation })
-            let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("DeviceLink")
+            // An existing but unreadable link file counts as linked: no key may be replaced then.
+            let url = Self.linksURL
+            let hasLinks = FileManager.default.fileExists(atPath: url.path)
+                && ((try? Data(contentsOf: url)) == nil || !FileLinkStore(url: url).load().peers.isEmpty)
+            let identity = try SoftwareIdentity(rawRepresentation: try MacKeys.load("identity", hasLinks: hasLinks) { SoftwareIdentity().privateKey.rawRepresentation })
+            let encryption = try EncryptionKeyPair(rawRepresentation: try MacKeys.load("encryption", hasLinks: hasLinks) { EncryptionKeyPair().privateKey.rawRepresentation })
             let host = Bundle.main.object(forInfoDictionaryKey: "DLRelayHost") as? String ?? ""
             let scheme = (Bundle.main.object(forInfoDictionaryKey: "DLRelayScheme") as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "https"
             client = try DeviceLinkClient(identity: identity, encryption: encryption,
-                                          store: FileLinkStore(url: support.appendingPathComponent("links.json")),
+                                          store: FileLinkStore(url: url),
                                           config: LinkConfig(deviceName: Host.current().localizedName ?? "Mac", platform: "desktop", model: "macOS",
-                                                             appVersion: "2.0.0", allowInsecureRelay: scheme == "http",
+                                                             appVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "",
+                                                             allowInsecureRelay: scheme == "http",
                                                              defaultRelayURL: host.isEmpty || host.hasPrefix("$(") ? "" : "\(scheme)://\(host)",
                                                              defaultEnrollmentToken: Bundle.main.object(forInfoDictionaryKey: "DLEnrollmentToken") as? String ?? ""))
+            keysLost = false
             Task { await refresh(); start() }
+        } catch is MacKeys.KeysLost {
+            keysLost = true
+            message = "This device's keys could not be read. Reset and link again."
         } catch {
-            message = "Could not create device keys: \(error)"
+            message = "Could not create device keys. Restart DeviceLink; if this repeats, check Keychain Access."
+        }
+    }
+
+    /// Only offered while the keys are lost: there is no client, so the relay cannot be told. Deletes the
+    /// keys and links and starts with a new identity; linked devices may still list this Mac.
+    func reset() {
+        stop()
+        MacKeys.accounts.forEach(MacKeys.delete)
+        try? FileManager.default.removeItem(at: Self.linksURL)
+        peers = []
+        connect()
+        if !keysLost, client != nil {
+            message = "Device reset. Unlink this Mac on your other devices, then show or paste a code to link again."
         }
     }
 
@@ -149,7 +189,7 @@ final class MacModel: ObservableObject {
                 await refresh(); start()
             } catch {
                 pairingURI = nil
-                message = "\(error)"
+                message = SendMessages.describe(error)
             }
         }
     }
@@ -162,7 +202,7 @@ final class MacModel: ObservableObject {
                 let peer = try await client.join(link)
                 message = "Linked with \(peer.name) · code \(peer.pairingCode ?? "")"
                 await refresh(); start()
-            } catch { message = "\(error)" }
+            } catch { message = SendMessages.describe(error) }
         }
     }
 
@@ -210,6 +250,7 @@ struct MenuContent: View {
                 ForEach(model.recent, id: \.self) { Text($0).lineLimit(1).font(.caption) }
             }
             if let message = model.message { Text(message).font(.caption).foregroundStyle(.secondary) }
+            if model.keysLost { Button("Reset device", role: .destructive) { model.reset() } }
             Divider()
             HStack {
                 Text(model.relay.isEmpty ? "No relay" : model.relay).font(.caption2).foregroundStyle(.secondary)

@@ -3,11 +3,14 @@ package dev.devicelink.receiver
 import android.Manifest
 import android.app.Activity
 import android.app.AlertDialog
+import android.app.NotificationManager
 import android.content.ClipboardManager
+import android.content.pm.ActivityInfo
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import android.view.Gravity
 import android.view.LayoutInflater
 import android.view.View
@@ -22,6 +25,7 @@ import dev.devicelink.sdk.ClipRecord
 import dev.devicelink.sdk.DeviceLink
 import dev.devicelink.sdk.DeviceLinkInstance
 import dev.devicelink.sdk.DeviceLinkPairing
+import dev.devicelink.sdk.KeyState
 import dev.devicelink.sdk.core.LinkedPeer
 import dev.devicelink.sdk.core.ReceiverStatus
 import kotlinx.coroutines.CoroutineScope
@@ -37,7 +41,11 @@ class MainActivity : Activity() {
     private lateinit var link: DeviceLinkInstance
     private lateinit var adapter: ClipAdapter
     private lateinit var header: View
+    private lateinit var footer: View
     private lateinit var receive: Switch
+    private lateinit var undo: Button
+    private val prefs by lazy { getSharedPreferences("receiver_ui", MODE_PRIVATE) }
+    private val hideUndo = Runnable { if (::undo.isInitialized) undo.visibility = View.GONE }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -53,14 +61,17 @@ class MainActivity : Activity() {
         val list = findViewById<ListView>(R.id.clips)
         header = LayoutInflater.from(this).inflate(R.layout.header, list, false)
         list.addHeaderView(header, null, false)
-        list.addFooterView(LayoutInflater.from(this).inflate(R.layout.footer, list, false), null, false)
+        footer = LayoutInflater.from(this).inflate(R.layout.footer, list, false)
+        list.addFooterView(footer, null, false)
         adapter = ClipAdapter(this)
         list.adapter = adapter
         list.setOnItemClickListener { _, _, position, _ -> recopy(adapter.getItem(position - list.headerViewsCount)) }
         list.setOnItemLongClickListener { _, view, position, _ -> menu(view, adapter.getItem(position - list.headerViewsCount)); true }
 
-        receive = findViewById(R.id.receive)
-        receive.setOnCheckedChangeListener { _, checked -> if (checked != link.receiverEnabled) link.receiverEnabled = checked }
+        receive = header.findViewById(R.id.receive)
+        undo = header.findViewById(R.id.receive_undo)
+        receive.setOnCheckedChangeListener { _, checked -> if (checked != link.receiverEnabled) setReceiving(checked, offerUndo = !checked) }
+        undo.setOnClickListener { setReceiving(true, offerUndo = false) }
         header.findViewById<Button>(R.id.show_code).setOnClickListener { DeviceLinkPairing.showCode(this) }
         header.findViewById<Button>(R.id.link_more).setOnClickListener { DeviceLinkPairing.showCode(this) }
         header.findViewById<Button>(R.id.scan_code).setOnClickListener { DeviceLinkPairing.startScan(this) }
@@ -71,6 +82,7 @@ class MainActivity : Activity() {
         }
         header.findViewById<Button>(R.id.clear).setOnClickListener { link.clearHistory() }
         findViewById<Button>(R.id.diagnostics).setOnClickListener { showDiagnostics() }
+        header.findViewById<Button>(R.id.keys_lost_reset).setOnClickListener { confirmReset() }
 
         scope.launch { combine(link.peers, link.status) { peers, status -> peers to status }.collect { (peers, status) -> render(peers, status) } }
         scope.launch { link.history.collect { records ->
@@ -79,8 +91,8 @@ class MainActivity : Activity() {
             header.findViewById<View>(R.id.clear).visibility = if (records.isEmpty()) View.GONE else View.VISIBLE
         } }
 
-        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), NOTIFICATIONS)
+        header.findViewById<Button>(R.id.notify_settings).setOnClickListener {
+            startActivity(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, packageName))
         }
         DeviceLinkPairing.handleIntent(this, intent)
     }
@@ -90,14 +102,68 @@ class MainActivity : Activity() {
         DeviceLinkPairing.handleIntent(this, intent)
     }
 
+    override fun onResume() {
+        super.onResume()
+        // Receive can also be turned off from the notification while this screen is in the background.
+        render(link.peers.value, link.status.value)
+    }
+
+    /**
+     * Fires once every dialog is gone, so this runs after the "Linked with" confirmation is closed.
+     * Notifications are asked for once, after the first link and with a reason; never at launch.
+     */
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) askForNotificationsOnce()
+    }
+
+    private fun askForNotificationsOnce() {
+        if (Build.VERSION.SDK_INT < 33 || link.peers.value.isEmpty() || link.keyState == KeyState.LOST || prefs.getBoolean(ASKED_NOTIFICATIONS, false)) return
+        if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) return
+        prefs.edit().putBoolean(ASKED_NOTIFICATIONS, true).apply()
+        AlertDialog.Builder(this).setTitle(R.string.notify_ask_title).setMessage(R.string.notify_ask_body)
+            .setPositiveButton(R.string.notify_ask_continue) { _, _ -> requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), NOTIFICATIONS) }
+            .setNegativeButton(R.string.notify_ask_later, null)
+            .setOnDismissListener { render(link.peers.value, link.status.value) }
+            .show()
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == NOTIFICATIONS) render(link.peers.value, link.status.value)
+    }
+
+    /** Blocked notifications get a persistent hint, but only once the user was asked (or can't be, below API 33). */
+    private fun notificationsHintVisible(peers: List<LinkedPeer>) = peers.isNotEmpty() &&
+        !getSystemService(NotificationManager::class.java).areNotificationsEnabled() &&
+        (Build.VERSION.SDK_INT < 33 || prefs.getBoolean(ASKED_NOTIFICATIONS, false))
+
+    /** User toggles only. Turning off offers Undo for a few seconds, since every clip stops arriving. */
+    private fun setReceiving(on: Boolean, offerUndo: Boolean) {
+        link.receiverEnabled = on
+        undo.removeCallbacks(hideUndo)
+        undo.visibility = if (offerUndo) View.VISIBLE else View.GONE
+        if (offerUndo) undo.postDelayed(hideUndo, UNDO_MILLIS)
+        render(link.peers.value, link.status.value)
+    }
+
     private fun render(peers: List<LinkedPeer>, status: ReceiverStatus) {
-        header.findViewById<View>(R.id.empty).visibility = if (peers.isEmpty()) View.VISIBLE else View.GONE
+        // With unreadable keys the SDK refuses to link or receive; offer the one way out instead.
+        val keysLost = link.keyState == KeyState.LOST
+        header.findViewById<View>(R.id.keys_lost).visibility = if (keysLost) View.VISIBLE else View.GONE
+        header.findViewById<View>(R.id.empty).visibility = if (peers.isEmpty() && !keysLost) View.VISIBLE else View.GONE
         header.findViewById<View>(R.id.linked).visibility = if (peers.isEmpty()) View.GONE else View.VISIBLE
-        receive.visibility = if (peers.isEmpty()) View.GONE else View.VISIBLE
+        // Sending tips only make sense once something is linked; the first screen is about linking.
+        footer.visibility = if (peers.isEmpty()) View.GONE else View.VISIBLE
+        header.findViewById<View>(R.id.receive_card).visibility = if (peers.isEmpty() || keysLost) View.GONE else View.VISIBLE
         receive.isChecked = link.receiverEnabled
+        header.findViewById<TextView>(R.id.receive_state).setText(if (link.receiverEnabled) R.string.receive_on else R.string.receive_off)
+        if (link.receiverEnabled) { undo.removeCallbacks(hideUndo); undo.visibility = View.GONE }
+        header.findViewById<View>(R.id.notify_hint).visibility = if (notificationsHintVisible(peers)) View.VISIBLE else View.GONE
         val targets = link.sendTargets
-        findViewById<TextView>(R.id.status).text = if (targets.isNotEmpty() && peers.size > 1)
+        findViewById<TextView>(R.id.status).text = if (!keysLost && targets.isNotEmpty() && peers.size > 1)
             getString(R.string.sending_to, peers.filter { it.id in targets }.joinToString { it.name }) else getString(when {
+            keysLost -> R.string.status_keys_lost
             peers.isEmpty() -> if (link.client.isConfigured) R.string.status_idle else R.string.status_setup
             !link.receiverEnabled -> R.string.status_off
             status == ReceiverStatus.ONLINE -> R.string.status_online
@@ -141,9 +207,14 @@ class MainActivity : Activity() {
         }.show()
     }
 
-    /** Relay, registration, last poll/receive/send and last error, plus a test clip and a full reset. */
+    /**
+     * Relay, registration, last poll/receive/send and last error, plus a test clip. Reset is apart
+     * from those harmless actions (below the report, in the danger colour) and always confirms.
+     */
     private fun showDiagnostics() {
-        AlertDialog.Builder(this).setTitle(R.string.diagnostics_title).setMessage(link.diagnosticsReport())
+        val content = LayoutInflater.from(this).inflate(R.layout.diagnostics, null)
+        content.findViewById<TextView>(R.id.diagnostics_report).text = link.diagnosticsReport()
+        val dialog = AlertDialog.Builder(this).setTitle(R.string.diagnostics_title).setView(content)
             .setPositiveButton(R.string.diagnostics_copy) { _, _ ->
                 getSystemService(ClipboardManager::class.java).setPrimaryClip(android.content.ClipData.newPlainText("DeviceLink diagnostics", link.diagnosticsReport()))
                 Toast.makeText(this, R.string.diagnostics_copied, Toast.LENGTH_SHORT).show()
@@ -151,26 +222,34 @@ class MainActivity : Activity() {
             .setNeutralButton(R.string.diagnostics_test) { _, _ ->
                 scope.launch {
                     val stamp = java.text.DateFormat.getTimeInstance().format(java.util.Date())
-                    val outcomes = runCatching { link.sendText(getString(R.string.test_clip, stamp)) }.getOrDefault(emptyList())
-                    Toast.makeText(this@MainActivity, if (outcomes.isNotEmpty() && outcomes.all { it.accepted })
-                        getString(dev.devicelink.sdk.R.string.dl_send_ok, link.peers.value.joinToString { it.name })
-                        else getString(dev.devicelink.sdk.R.string.dl_send_failed), Toast.LENGTH_SHORT).show()
+                    val result = runCatching { link.sendText(getString(R.string.test_clip, stamp)) }
+                    Toast.makeText(this@MainActivity, link.sendResultMessage(result), Toast.LENGTH_LONG).show()
                 }
             }
-            .setNegativeButton(R.string.diagnostics_reset) { _, _ -> confirmReset() }
+            .setNegativeButton(R.string.diagnostics_close, null)
             .show()
+        content.findViewById<Button>(R.id.diagnostics_reset).setOnClickListener { dialog.dismiss(); confirmReset() }
     }
 
+    /** Deletes the identity and unlinks every device: the user confirms in plain words first. */
     private fun confirmReset() {
         AlertDialog.Builder(this).setTitle(R.string.reset_title).setMessage(R.string.reset_body)
-            .setPositiveButton(R.string.diagnostics_reset) { _, _ ->
+            .setPositiveButton(R.string.reset_confirm) { _, _ ->
+                // Reset suspends for up to a few seconds while it tells the relay. A non-cancelable dialog
+                // blocks repeat taps and Back; the locked orientation keeps a rotation from destroying the
+                // activity (and cancelling this scope) mid-reset. The SDK finishes the local wipe regardless.
+                val progress = AlertDialog.Builder(this).setMessage(R.string.reset_progress).setCancelable(false).show()
+                requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LOCKED
                 scope.launch {
-                    link.resetDevice()
-                    Toast.makeText(this@MainActivity, R.string.reset_done, Toast.LENGTH_LONG).show()
+                    val removed = link.resetDevice()
+                    progress.dismiss()
+                    requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+                    Toast.makeText(this@MainActivity, if (removed) R.string.reset_done else R.string.reset_done_offline, Toast.LENGTH_LONG).show()
                     recreate()
                 }
             }
             .setNegativeButton(android.R.string.cancel, null).show()
+            .getButton(AlertDialog.BUTTON_POSITIVE).setTextColor(getColor(R.color.danger))
     }
 
     private fun platformGlyph(platform: String) = when (platform) { "ios" -> "📱"; "android" -> "🤖"; else -> "💻" }
@@ -194,8 +273,14 @@ class MainActivity : Activity() {
 
     private fun menu(anchor: View, record: ClipRecord) {
         PopupMenu(this, anchor).apply {
-            menu.add(0, 1, 0, R.string.copy); menu.add(0, 2, 1, R.string.share); menu.add(0, 3, 2, R.string.remove)
-            setOnMenuItemClickListener { when (it.itemId) { 1 -> recopy(record); 2 -> share(record); else -> link.forget(record) }; true }
+            val save = link.saveIntent(record)
+            menu.add(0, 1, 0, R.string.copy); menu.add(0, 2, 1, R.string.share)
+            if (save != null) menu.add(0, 4, 2, R.string.save)
+            menu.add(0, 3, 3, R.string.remove)
+            setOnMenuItemClickListener {
+                when (it.itemId) { 1 -> recopy(record); 2 -> share(record); 4 -> save?.let(::startActivity); else -> link.forget(record) }
+                true
+            }
         }.show()
     }
 
@@ -203,11 +288,10 @@ class MainActivity : Activity() {
     private fun pasteAndSend() {
         val clip = getSystemService(ClipboardManager::class.java).primaryClip
         if (clip == null || clip.itemCount == 0) { Toast.makeText(this, R.string.clipboard_empty, Toast.LENGTH_SHORT).show(); return }
+        if (clip.getItemAt(0).uri != null) Toast.makeText(this, dev.devicelink.sdk.R.string.dl_sending, Toast.LENGTH_SHORT).show()
         scope.launch {
-            val outcomes = runCatching { link.sendClip(clip) }.getOrDefault(emptyList())
-            Toast.makeText(this@MainActivity, if (outcomes.isNotEmpty() && outcomes.all { it.accepted })
-                getString(dev.devicelink.sdk.R.string.dl_send_ok, link.peers.value.joinToString { it.name })
-                else getString(dev.devicelink.sdk.R.string.dl_send_failed), Toast.LENGTH_SHORT).show()
+            val result = runCatching { link.sendClip(clip) }
+            Toast.makeText(this@MainActivity, link.sendResultMessage(result), Toast.LENGTH_LONG).show()
         }
     }
 
@@ -227,14 +311,21 @@ class MainActivity : Activity() {
         super.onActivityResult(requestCode, resultCode, data)
         if (DeviceLinkPairing.onActivityResult(this, requestCode, resultCode, data)) return
         val uri = data?.data
-        if (requestCode == PICK_FILE && resultCode == RESULT_OK && uri != null) scope.launch {
-            val result = runCatching { link.sendUri(uri) }
-            Toast.makeText(this@MainActivity, result.exceptionOrNull()?.message
-                ?: getString(dev.devicelink.sdk.R.string.dl_send_ok, link.peers.value.joinToString { it.name }), Toast.LENGTH_SHORT).show()
+        if (requestCode == PICK_FILE && resultCode == RESULT_OK && uri != null) {
+            Toast.makeText(this, dev.devicelink.sdk.R.string.dl_sending, Toast.LENGTH_SHORT).show()
+            scope.launch {
+                val result = runCatching { link.sendUri(uri) }
+                Toast.makeText(this@MainActivity, link.sendResultMessage(result), Toast.LENGTH_LONG).show()
+            }
         }
     }
 
-    override fun onDestroy() { scope.cancel(); super.onDestroy() }
+    override fun onDestroy() { undo.removeCallbacks(hideUndo); scope.cancel(); super.onDestroy() }
 
-    private companion object { const val PICK_FILE = 41; const val NOTIFICATIONS = 42 }
+    private companion object {
+        const val PICK_FILE = 41
+        const val NOTIFICATIONS = 42
+        const val UNDO_MILLIS = 8_000L
+        const val ASKED_NOTIFICATIONS = "asked_notifications"
+    }
 }

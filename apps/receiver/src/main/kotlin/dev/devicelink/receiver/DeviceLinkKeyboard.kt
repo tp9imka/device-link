@@ -1,5 +1,6 @@
 package dev.devicelink.receiver
 
+import android.app.AlertDialog
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.inputmethodservice.InputMethodService
@@ -8,11 +9,14 @@ import android.os.SystemClock
 import android.view.KeyEvent
 import android.view.View
 import android.view.WindowInsets
+import android.view.WindowManager
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
 import android.widget.TextView
 import android.widget.Toast
 import dev.devicelink.receiver.keyboard.Action
+import dev.devicelink.receiver.keyboard.AutoSendSetting
+import dev.devicelink.receiver.keyboard.AutoSendToggle
 import dev.devicelink.receiver.keyboard.Key
 import dev.devicelink.receiver.keyboard.KeyLabels
 import dev.devicelink.receiver.keyboard.KeyboardView
@@ -35,14 +39,17 @@ import kotlinx.coroutines.launch
  *
  * The current input method is the one ordinary app Android lets see clipboard changes from other
  * apps, so while this is your keyboard and auto-send is on, every copy is forwarded (clips marked
- * sensitive, e.g. from password managers, are not). The bar above the keys pastes the last received
- * clip and sends the clipboard on demand. Nothing typed is stored or sent: there is no dictionary.
+ * sensitive, e.g. from password managers, are not). Auto-send is off until the user turns it on from
+ * the bar and accepts a one-time disclosure; while off, the clipboard is not read at all. The bar
+ * also pastes the last received clip and sends the clipboard on demand. Nothing typed is stored or sent: there is no dictionary.
  */
 class DeviceLinkKeyboard : InputMethodService(), KeyboardView.Listener {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val clipboard by lazy { getSystemService(ClipboardManager::class.java) }
     private val prefs by lazy { getSharedPreferences("keyboard", MODE_PRIVATE) }
     private val link by lazy { DeviceLink.get(this) }
+    private val autoSend by lazy { AutoSendSetting({ prefs.getBoolean(it, false) }, { key, on -> prefs.edit().putBoolean(key, on).apply() }) }
+    private var disclosure: AlertDialog? = null
     private var lastSent: String? = null
 
     private var keys: KeyboardView? = null
@@ -55,7 +62,7 @@ class DeviceLinkKeyboard : InputMethodService(), KeyboardView.Listener {
     private var lastSpaceAt = 0L
 
     private val listener = ClipboardManager.OnPrimaryClipChangedListener {
-        if (!prefs.getBoolean(AUTO, true)) return@OnPrimaryClipChangedListener
+        if (!autoSend.isOn) return@OnPrimaryClipChangedListener
         val clip = runCatching { clipboard.primaryClip }.getOrNull() ?: return@OnPrimaryClipChangedListener
         if (link.peers.value.isEmpty() || link.isOwnClip(clip) || clip.isSensitive()) return@OnPrimaryClipChangedListener
         val item = clip.takeIf { it.itemCount > 0 }?.getItemAt(0) ?: return@OnPrimaryClipChangedListener
@@ -72,6 +79,7 @@ class DeviceLinkKeyboard : InputMethodService(), KeyboardView.Listener {
     }
 
     override fun onDestroy() {
+        disclosure?.dismiss()
         clipboard.removePrimaryClipChangedListener(listener)
         scope.cancel()
         super.onDestroy()
@@ -83,8 +91,8 @@ class DeviceLinkKeyboard : InputMethodService(), KeyboardView.Listener {
         val root = layoutInflater.inflate(R.layout.keyboard, null)
         keys = root.findViewById<KeyboardView>(R.id.kb_keys).also { it.listener = this }
         status = root.findViewById<TextView>(R.id.kb_status).apply {
-            setOnClickListener {
-                prefs.edit().putBoolean(AUTO, !prefs.getBoolean(AUTO, true)).apply()
+            setOnClickListener { view ->
+                if (autoSend.toggle() == AutoSendToggle.NEEDS_DISCLOSURE) showDisclosure(view)
                 refreshBar()
             }
         }
@@ -110,7 +118,7 @@ class DeviceLinkKeyboard : InputMethodService(), KeyboardView.Listener {
 
     private fun refreshBar() {
         val linked = link.peers.value.isNotEmpty()
-        val auto = prefs.getBoolean(AUTO, true)
+        val auto = autoSend.isOn
         status?.text = getString(when { !linked -> R.string.kb_not_linked; auto -> R.string.kb_auto_on; else -> R.string.kb_auto_off })
         status?.isActivated = linked && auto
         val last = link.history.value.firstOrNull { it.direction == ClipDirection.RECEIVED && it.text != null }
@@ -134,6 +142,7 @@ class DeviceLinkKeyboard : InputMethodService(), KeyboardView.Listener {
 
     override fun onFinishInputView(finishingInput: Boolean) {
         keys?.cancelTouches()
+        disclosure?.dismiss()
         super.onFinishInputView(finishingInput)
     }
 
@@ -261,6 +270,34 @@ class DeviceLinkKeyboard : InputMethodService(), KeyboardView.Listener {
 
     // ----- DeviceLink --------------------------------------------------------------------------
 
+    /**
+     * One-time consent before auto-send first turns on: what is sent, to whom, what is skipped and
+     * how to stop. An input method shows dialogs attached to its own window (as AOSP LatinIME does).
+     */
+    private fun showDisclosure(anchor: View) {
+        val token = anchor.windowToken ?: return
+        val names = link.peers.value.joinToString { it.name }
+        val body = if (names.isEmpty()) getString(R.string.kb_disclosure_body_unlinked) else getString(R.string.kb_disclosure_body, names)
+        disclosure?.dismiss()
+        disclosure = AlertDialog.Builder(this, R.style.Theme_Receiver_Dialog)
+            .setTitle(R.string.kb_disclosure_title)
+            .setMessage(body)
+            .setPositiveButton(R.string.kb_disclosure_accept) { _, _ -> autoSend.accept(); refreshBar() }
+            .setNegativeButton(R.string.kb_disclosure_decline) { _, _ -> autoSend.decline(); refreshBar() }
+            .setOnCancelListener { autoSend.decline(); refreshBar() }
+            .create().apply {
+                window?.let { window ->
+                    window.attributes = window.attributes.also {
+                        it.token = token
+                        it.type = WindowManager.LayoutParams.TYPE_APPLICATION_ATTACHED_DIALOG
+                    }
+                    window.addFlags(WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM)
+                }
+                setOnDismissListener { if (disclosure === this) disclosure = null }
+                show()
+            }
+    }
+
     private fun pasteLastClip() {
         val text = link.history.value.firstOrNull { it.direction == ClipDirection.RECEIVED && it.text != null }?.text
         if (text == null) toast(getString(R.string.kb_nothing_received)) else currentInputConnection?.commitText(text, 1)
@@ -268,10 +305,9 @@ class DeviceLinkKeyboard : InputMethodService(), KeyboardView.Listener {
 
     private fun send(clip: ClipData, quiet: Boolean) {
         scope.launch {
-            val outcomes = runCatching { link.sendClip(clip) }.getOrDefault(emptyList())
-            val ok = outcomes.isNotEmpty() && outcomes.all { it.accepted }
-            if (ok) toast(getString(dev.devicelink.sdk.R.string.dl_send_ok, link.peers.value.joinToString { it.name }))
-            else if (!quiet || outcomes.isNotEmpty()) toast(getString(dev.devicelink.sdk.R.string.dl_send_failed))
+            val result = runCatching { link.sendClip(clip) }
+            // Auto-send stays silent when there was nothing to send; any real outcome is reported.
+            if (!quiet || result.getOrNull()?.isNotEmpty() != false) toast(link.sendResultMessage(result))
         }
     }
 
@@ -281,7 +317,6 @@ class DeviceLinkKeyboard : InputMethodService(), KeyboardView.Listener {
     private fun toast(text: String) = Toast.makeText(this, text, Toast.LENGTH_SHORT).show()
 
     private companion object {
-        const val AUTO = "auto"
         const val DOUBLE_SPACE_MILLIS = 1000L
         // ClipDescription.EXTRA_IS_SENSITIVE (API 33); password managers set it on older versions too.
         const val EXTRA_IS_SENSITIVE = "android.content.extra.IS_SENSITIVE"

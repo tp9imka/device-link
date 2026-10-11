@@ -8,5 +8,6 @@
 - [[Internet-Link|Internet Link]]
 - [[Architecture]]
 - [[Security]]
+- [[Privacy|Privacy policy]]
 - [[Battery]]
 - [[Development]]

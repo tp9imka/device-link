@@ -12,6 +12,7 @@ import android.view.View
 import android.widget.Button
 import android.widget.ImageView
 import android.widget.LinearLayout
+import android.widget.Switch
 import android.widget.TextView
 import android.widget.Toast
 import dev.devicelink.sdk.ClipDirection
@@ -46,12 +47,14 @@ class MainActivity : Activity() {
             copy(ClipData(ClipDescription(getString(R.string.image_heading), arrayOf("image/png")), ClipData.Item(imageUri)))
         }
         findViewById<Button>(R.id.send_file).setOnClickListener {
+            Toast.makeText(this, dev.devicelink.sdk.R.string.dl_sending, Toast.LENGTH_SHORT).show()
             scope.launch {
                 val uri = Uri.parse("android.resource://$packageName/${R.raw.sample_notes}")
                 val result = runCatching { link.sendUri(uri, "text/plain") }
-                Toast.makeText(this@MainActivity, result.exceptionOrNull()?.message ?: getString(R.string.copied_sent, peerNames()), Toast.LENGTH_SHORT).show()
+                Toast.makeText(this@MainActivity, link.sendResultMessage(result), Toast.LENGTH_LONG).show()
             }
         }
+        setUpHostMode()
         addSamples()
         scope.launch { link.peers.collect { peers ->
             findViewById<TextView>(R.id.link_state).text = if (peers.isEmpty()) getString(R.string.not_linked)
@@ -70,6 +73,30 @@ class MainActivity : Activity() {
                 "• $what — $state"
             }
         } }
+    }
+
+    /** The switch shows the saved choice; the text says what the running SDK does, and when a restart is due. */
+    private fun setUpHostMode() {
+        val switch = findViewById<Switch>(R.id.host_mode)
+        val state = findViewById<TextView>(R.id.host_mode_state)
+        val restart = findViewById<Button>(R.id.host_mode_restart)
+        fun render() {
+            val active = !link.options.autoCopy
+            val pending = SampleApp.hostMode(this) != active
+            state.text = getString(if (active) R.string.host_mode_on else R.string.host_mode_off) +
+                if (pending) "\n" + getString(R.string.host_mode_restart) else ""
+            restart.visibility = if (pending) View.VISIBLE else View.GONE
+        }
+        switch.isChecked = SampleApp.hostMode(this)
+        switch.setOnCheckedChangeListener { _, checked -> SampleApp.setHostMode(this, checked); render() }
+        restart.setOnClickListener {
+            // DeviceLink.init reads options once per process, so start a fresh one.
+            packageManager.getLaunchIntentForPackage(packageName)?.let {
+                startActivity(it.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK))
+            }
+            Runtime.getRuntime().exit(0)
+        }
+        render()
     }
 
     private fun addSamples() {

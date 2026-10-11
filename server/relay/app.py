@@ -99,8 +99,10 @@ class Runtime:
 
     def __init__(self):
         self.started = time.time()
-        self.polling = set()
-        self.counters = {"auth_failures": 0, "rate_limited": 0, "requests": 0, "push_sent": 0, "push_failed": 0}
+        # Identity -> token of its one live long poll.
+        self.polling = {}
+        self.counters = {"auth_failures": 0, "rate_limited": 0, "body_timeouts": 0, "body_too_large": 0,
+                         "requests": 0, "push_sent": 0, "push_failed": 0}
         # Monotonic times of recent rejections, for dashboard alerts (bounded).
         self.rejections = collections.deque(maxlen=1000)
 
@@ -158,22 +160,49 @@ def create_app(settings=None, clock=None, push_transport=None):
         if exc.status == 429:
             runtime.counters["rate_limited"] += 1
             runtime.rejections.append(time.monotonic())
+        # Failed uploads: counts only, no device or size, so the operator sees cut-off transfers.
+        if exc.code == "body_timeout":
+            runtime.counters["body_timeouts"] += 1
+        if exc.code == "body_too_large":
+            runtime.counters["body_too_large"] += 1
         return JSONResponse({"error": exc.code}, status_code=exc.status,
                             headers={"Retry-After": "60"} if exc.status == 429 else None)
 
-    async def signed(request, registration=False):
-        maximum = settings.body_limit if request.method == "POST" and request.url.path == "/v1/messages" else 32 * 1024
-        async with uploads:
-            body = bytearray()
+    async def read_body(request, maximum, expected):
+        """Reads the body within a size-scaled deadline and an idle limit (408 body_timeout otherwise).
+
+        A fixed total cut off large uploads on slow links; a size-scaled deadline still bounds a slow drip,
+        and the idle limit frees the slot quickly when a client stops sending.
+        """
+        loop = asyncio.get_running_loop()
+        budget = settings.body_grace_ms / 1000 + expected / max(1, settings.body_min_rate)
+        deadline = loop.time() + budget
+        idle = settings.body_idle_ms / 1000
+        chunks = request.stream().__aiter__()
+        body = bytearray()
+        while True:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                raise RelayError(408, "body_timeout")
             try:
-                async with asyncio.timeout(30):
-                    async for chunk in request.stream():
-                        if len(body) + len(chunk) > maximum:
-                            raise RelayError(413, "body_too_large")
-                        body.extend(chunk)
+                chunk = await asyncio.wait_for(anext(chunks), min(idle, remaining))
+            except StopAsyncIteration:
+                return bytes(body)
             except TimeoutError:
                 raise RelayError(408, "body_timeout") from None
-            body = bytes(body)
+            if len(body) + len(chunk) > maximum:
+                raise RelayError(413, "body_too_large")
+            body.extend(chunk)
+
+    async def signed(request, registration=False, unknown_ok=False):
+        maximum = settings.body_limit if request.method == "POST" and request.url.path == "/v1/messages" else 32 * 1024
+        declared = request.headers.get("content-length", "")
+        expected = int(declared) if declared.isdigit() else maximum
+        if expected > maximum:
+            # Refused before taking an upload slot or reading a byte.
+            raise RelayError(413, "body_too_large")
+        async with uploads:
+            body = await read_body(request, maximum, expected)
             try:
                 target = request.scope["raw_path"].decode("ascii")
                 if request.scope["query_string"]:
@@ -182,17 +211,20 @@ def create_app(settings=None, clock=None, push_transport=None):
                 raise RelayError(400, "invalid_target") from None
             now = clock()
             identity = await run_in_threadpool(authenticate, request.headers, request.method, target, body, now, settings.skew_ms)
+            enrolled = not settings.enrollment_token
             if registration and settings.enrollment_token:
                 supplied = request.headers.getlist("x-enrollment-token")
                 pairing = request.headers.getlist("x-pairing-id")
                 token_ok = len(supplied) == 1 and hmac.compare_digest(supplied[0].encode(), settings.enrollment_token.encode())
-                # Scanning a valid QR code is enough to enroll: the inviter is already trusted.
-                pairing_ok = (len(pairing) == 1 and PAIRING_ID.fullmatch(pairing[0])
-                              and await run_in_threadpool(store.open_pairing, pairing[0], now))
-                if not (token_ok or pairing_ok):
+                # Scanning a valid QR code is enough to enroll one device: the inviter is already trusted.
+                # The token is checked first so a token holder never spends a pairing's single admission.
+                pairing_ok = (not token_ok and len(pairing) == 1 and PAIRING_ID.fullmatch(pairing[0])
+                              and await run_in_threadpool(store.admit_pairing, pairing[0], identity.id, now))
+                enrolled = bool(token_ok or pairing_ok)
+                if not enrolled and not await run_in_threadpool(store.is_registered, identity):
                     raise RelayError(403, "enrollment_required")
-            await run_in_threadpool(store.authorize, identity, now, registration)
-            return identity, body
+            await run_in_threadpool(store.authorize, identity, now, registration or unknown_ok)
+            return (identity, body, enrolled) if registration else (identity, body)
 
     def empty_body(body):
         if strict_json(body) != {}:
@@ -228,9 +260,9 @@ def create_app(settings=None, clock=None, push_transport=None):
 
     @app.post("/v1/register")
     async def register(request: Request):
-        identity, body = await signed(request, registration=True)
+        identity, body, enrolled = await signed(request, registration=True)
         metadata = validate_metadata(body)
-        await run_in_threadpool(store.register, identity, clock(), metadata)
+        await run_in_threadpool(store.register, identity, clock(), metadata, enrolled=enrolled)
         return {"deviceId": identity.id}
 
     @app.put("/v1/peers/{sender}")
@@ -248,6 +280,15 @@ def create_app(settings=None, clock=None, push_transport=None):
         if not identifier(sender):
             raise RelayError(400, "invalid_peer")
         await run_in_threadpool(store.peer, identity.id, sender, clock(), True)
+        return Response(status_code=204)
+
+    @app.delete("/v1/devices/self")
+    async def unregister(request: Request):
+        # Idempotent: an identity the relay does not know (already unregistered or removed, a retry after a
+        # lost response) also gets 204, since it has nothing left here. A blocked device gets 403 device_blocked.
+        identity, _ = await signed(request, unknown_ok=True)
+        await run_in_threadpool(store.remove_device, identity.id, clock(), "device_unregistered")
+        await notify()
         return Response(status_code=204)
 
     @app.post("/v1/pairings")
@@ -343,18 +384,29 @@ def create_app(settings=None, clock=None, push_transport=None):
                 raise ValueError()
         except ValueError:
             raise RelayError(400, "invalid_wait") from None
-        if identity.id in runtime.polling:
-            raise RelayError(429, "poll_already_active")
-        runtime.polling.add(identity.id)
+        # At most one live poll per identity. A new poll supersedes the previous one (a reconnect
+        # after a network blip or service restart), which then answers [] promptly. Abuse is bounded
+        # by the per-device request rate limit, since every poll is a signed, nonce-consuming request.
+        token = object()
+        superseded = runtime.polling.get(identity.id) is not None
+        runtime.polling[identity.id] = token
+        if superseded:
+            await notify()
         try:
             async def available():
+                if runtime.polling.get(identity.id) is not token:
+                    return []
                 items = await run_in_threadpool(store.mailbox, identity.id, clock(), excluded, limit)
+                if runtime.polling.get(identity.id) is not token:
+                    return []
                 return items or None
 
             items = await wait_for(available, wait) or []
             return Response(b"[" + b",".join(items) + b"]", media_type="application/json")
         finally:
-            runtime.polling.discard(identity.id)
+            # Only the live poll clears the entry, so APNs suppression keeps meaning "a poll is open".
+            if runtime.polling.get(identity.id) is token:
+                del runtime.polling[identity.id]
 
     @app.get("/v1/messages/{message}")
     async def fetch_one(message: str, request: Request):

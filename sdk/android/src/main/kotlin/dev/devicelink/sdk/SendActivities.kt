@@ -12,15 +12,14 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-/** Shared toast wording for every "send" entry point. */
-internal fun Activity.reportSend(outcomes: List<SendOutcome>, peers: List<String>) {
-    val message = when {
-        peers.isEmpty() -> getString(R.string.dl_send_no_devices)
-        outcomes.isEmpty() -> getString(R.string.dl_send_nothing)
-        outcomes.all { it.accepted } -> getString(R.string.dl_send_ok, peers.joinToString())
-        else -> getString(R.string.dl_send_failed)
-    }
-    Toast.makeText(applicationContext, message, Toast.LENGTH_SHORT).show()
+/** Shared toast wording for every "send" entry point: success, or the reason the user can act on. */
+internal fun Activity.reportSend(result: Result<List<SendOutcome>>, link: DeviceLinkInstance) {
+    Toast.makeText(applicationContext, link.sendResultMessage(result), Toast.LENGTH_LONG).show()
+}
+
+/** Files and images can take a while to seal and upload: say so at once instead of staying silent. */
+internal fun Activity.reportSending() {
+    Toast.makeText(applicationContext, R.string.dl_sending, Toast.LENGTH_SHORT).show()
 }
 
 /**
@@ -40,9 +39,10 @@ class SendClipboardActivity : Activity() {
             Toast.makeText(applicationContext, R.string.dl_send_nothing, Toast.LENGTH_SHORT).show()
             finish(); return
         }
+        if (clip.itemCount > 0 && clip.getItemAt(0).uri != null) reportSending()
         link.scope.launch {
-            val outcomes = runCatching { link.sendClip(clip) }.getOrDefault(emptyList())
-            withContext(Dispatchers.Main) { reportSend(outcomes, link.peers.value.map { it.name }); finish() }
+            val result = runCatching { link.sendClip(clip) }
+            withContext(Dispatchers.Main) { reportSend(result, link); finish() }
         }
     }
 }
@@ -56,9 +56,10 @@ class ShareToDeviceActivity : Activity() {
         super.onCreate(savedInstanceState)
         val link = DeviceLink.get(this)
         val intent = intent
+        if (intent.action == Intent.ACTION_SEND_MULTIPLE || (intent.action == Intent.ACTION_SEND && intent.hasExtra(Intent.EXTRA_STREAM))) reportSending()
         link.scope.launch {
-            val outcomes = runCatching { send(link, intent) }.getOrDefault(emptyList())
-            withContext(Dispatchers.Main) { reportSend(outcomes, link.peers.value.map { it.name }); finish() }
+            val result = runCatching { send(link, intent) }
+            withContext(Dispatchers.Main) { reportSend(result, link); finish() }
         }
     }
 

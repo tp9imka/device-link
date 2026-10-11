@@ -41,11 +41,58 @@ def test_qr_pairing_rendezvous_links_both_directions(relay):
     status = request(client, inviter, now[0], "GET", f"/v1/pairings/{pairing_id()}?wait=5").json()
     assert status == {"state": "joined", "joinerId": joiner.id, "sealed": SEALED}
     assert request(client, inviter, now[0], "POST", f"/v1/pairings/{pairing_id()}/confirm", {"sealed": SEALED}).status_code == 204
-    assert request(client, joiner, now[0], "GET", f"/v1/pairings/{pairing_id()}").json()["state"] == "confirmed"
-    # Finished rendezvous is removed once the joiner has read the confirmation.
-    assert request(client, joiner, now[0], "GET", f"/v1/pairings/{pairing_id()}").status_code == 404
+    confirmed = {"state": "confirmed", "joinerId": joiner.id, "sealed": SEALED}
+    assert request(client, joiner, now[0], "GET", f"/v1/pairings/{pairing_id()}").json() == confirmed
+    # A lost response is not fatal: the joiner's retry reads the same confirmation.
+    assert request(client, joiner, now[0], "GET", f"/v1/pairings/{pairing_id()}?wait=1").json() == confirmed
     # Confirmation authorized the joiner to write into the inviter's sandbox.
     assert request(client, joiner, now[0], "POST", "/v1/messages", envelope(joiner, inviter, now[0], version=2)).status_code == 201
+
+
+def confirmed_pairing(client, now, inviter, joiner, pid):
+    create(client, inviter, now, pid=pid, ttl=60_000)
+    request(client, joiner, now, "POST", f"/v1/pairings/{pid}/join", {"sealed": SEALED})
+    assert request(client, inviter, now, "POST", f"/v1/pairings/{pid}/confirm", {"sealed": SEALED}).status_code == 204
+
+
+def test_confirmed_pairing_stays_readable_by_both_sides_until_it_expires(relay):
+    _, now, client = relay
+    inviter, joiner = Device(), Device()
+    for device in (inviter, joiner):
+        register(client, device, now[0])
+    confirmed_pairing(client, now[0], inviter, joiner, pairing_id(1))
+    # The inviter's confirm response is lost; meanwhile the joiner reads "confirmed" and allows the inviter.
+    assert request(client, joiner, now[0], "GET", f"/v1/pairings/{pairing_id(1)}").json()["state"] == "confirmed"
+    assert request(client, joiner, now[0], "PUT", f"/v1/peers/{inviter.id}", {}).status_code == 204
+    # The inviter's re-read still sees the committed confirmation, and so does the joiner's.
+    assert request(client, inviter, now[0], "GET", f"/v1/pairings/{pairing_id(1)}").json() == \
+        {"state": "confirmed", "joinerId": joiner.id, "sealed": SEALED}
+    assert request(client, joiner, now[0], "GET", f"/v1/pairings/{pairing_id(1)}").json() == \
+        {"state": "confirmed", "joinerId": joiner.id, "sealed": SEALED}
+    now[0] += 59_999
+    assert request(client, inviter, now[0], "GET", f"/v1/pairings/{pairing_id(1)}").json()["state"] == "confirmed"
+    now[0] += 1
+    assert request(client, inviter, now[0], "GET", f"/v1/pairings/{pairing_id(1)}").status_code == 404
+    assert request(client, joiner, now[0], "GET", f"/v1/pairings/{pairing_id(1)}").status_code == 404
+
+
+def test_a_resent_confirm_is_idempotent(relay):
+    _, now, client = relay
+    inviter, joiner = Device(), Device()
+    for device in (inviter, joiner):
+        register(client, device, now[0])
+    confirmed_pairing(client, now[0], inviter, joiner, pairing_id(1))
+    request(client, joiner, now[0], "PUT", f"/v1/peers/{inviter.id}", {})
+    # The same creator resending the same sealed confirm (its first response was lost) succeeds again.
+    assert request(client, inviter, now[0], "POST", f"/v1/pairings/{pairing_id(1)}/confirm", {"sealed": SEALED}).status_code == 204
+    # A different confirmation cannot replace the one the joiner may already have read.
+    other = base64.b64encode(b"m" * 12 + b"another sealed bundle" + b"u" * 16).decode()
+    assert request(client, inviter, now[0], "POST", f"/v1/pairings/{pairing_id(1)}/confirm", {"sealed": other}).status_code == 409
+    assert request(client, joiner, now[0], "POST", f"/v1/pairings/{pairing_id(1)}/confirm", {"sealed": SEALED}).status_code == 404
+    assert request(client, joiner, now[0], "GET", f"/v1/pairings/{pairing_id(1)}").json()["sealed"] == SEALED
+    login(client)
+    kinds = [event["kind"] for event in client.get("/admin/api/events").json()]
+    assert kinds.count("linked") == 1
 
 
 def test_pairing_is_single_use_private_and_bounded(relay):
@@ -88,6 +135,60 @@ def test_scanning_a_qr_enrolls_without_the_token(tmp_path):
         assert request(client, joiner, NOW, "POST", f"/v1/pairings/{pairing_id()}/join", {"sealed": SEALED}).status_code == 204
         # A used code no longer admits new devices.
         assert request(client, stranger, NOW, "POST", "/v1/register", {}, headers={"X-Pairing-Id": pairing_id()}).status_code == 403
+
+
+
+@pytest.mark.parametrize("removal", ["admin", "self"])
+def test_qr_enrolled_device_refreshes_metadata_without_token(tmp_path, removal):
+    settings = Settings(database=tmp_path / "relay.sqlite3", enrollment_token="private-token",
+                        admin_password_hash=hash_password("correct horse", iterations=1000))
+    inviter, joiner = Device(), Device()
+    with TestClient(create_app(settings, lambda: NOW)) as client:
+        assert request(client, inviter, NOW, "POST", "/v1/register", {},
+                       headers={"X-Enrollment-Token": "private-token"}).status_code == 200
+        create(client, inviter, NOW)
+        assert request(client, joiner, NOW, "POST", "/v1/register", {"appVersion": "1.0"},
+                       headers={"X-Pairing-Id": pairing_id()}).status_code == 200
+        assert request(client, joiner, NOW, "POST", f"/v1/pairings/{pairing_id()}/join", {"sealed": SEALED}).status_code == 204
+        assert request(client, inviter, NOW, "DELETE", f"/v1/pairings/{pairing_id()}").status_code == 204
+        metadata = {"platform": "ios", "model": "iPhone", "appVersion": "2.0.0"}
+        assert request(client, joiner, NOW, "POST", "/v1/register", metadata).status_code == 200
+        login(client)
+        row = next(row for row in client.get("/admin/api/devices").json() if row["id"] == joiner.id)
+        assert {field: row[field] for field in metadata} == metadata
+        headers = {"X-CSRF-Token": csrf(client)}
+        assert client.post(f"/admin/api/devices/{joiner.id}/block", json={"blocked": True}, headers=headers).status_code == 200
+        blocked = request(client, joiner, NOW, "POST", "/v1/register", metadata)
+        assert blocked.status_code == 403
+        assert blocked.json() == {"error": "device_blocked"}
+        assert client.post(f"/admin/api/devices/{joiner.id}/block", json={"blocked": False}, headers=headers).status_code == 200
+        if removal == "admin":
+            assert client.delete(f"/admin/api/devices/{joiner.id}", headers=headers).status_code == 200
+        else:
+            assert request(client, joiner, NOW, "DELETE", "/v1/devices/self").status_code == 204
+        removed = request(client, joiner, NOW, "POST", "/v1/register", metadata)
+        assert removed.status_code == 403
+        assert removed.json() == {"error": "enrollment_required"}
+
+
+def test_one_qr_admits_exactly_one_new_device(tmp_path):
+    settings = Settings(database=tmp_path / "relay.sqlite3", enrollment_token="private-token")
+    inviter, joiner, second, third = Device(), Device(), Device(), Device()
+    pid = {"X-Pairing-Id": pairing_id()}
+    with TestClient(create_app(settings, lambda: NOW)) as client:
+        assert request(client, inviter, NOW, "POST", "/v1/register", {}, headers={"X-Enrollment-Token": "private-token"}).status_code == 200
+        create(client, inviter, NOW)
+        assert request(client, joiner, NOW, "POST", "/v1/register", {}, headers=pid).status_code == 200
+        # The pairing is still open (nobody joined yet), but its one admission is spent.
+        assert request(client, second, NOW, "POST", "/v1/register", {}, headers=pid).status_code == 403
+        # The admitted device may retry its own registration (lost response, app restart).
+        assert request(client, joiner, NOW, "POST", "/v1/register", {"platform": "ios"}, headers=pid).status_code == 200
+        assert request(client, joiner, NOW, "POST", f"/v1/pairings/{pairing_id()}/join", {"sealed": SEALED}).status_code == 204
+        # The enrollment token does not spend a pairing's admission.
+        create(client, inviter, NOW, pid=pairing_id(2))
+        both = {"X-Pairing-Id": pairing_id(2), "X-Enrollment-Token": "private-token"}
+        assert request(client, second, NOW, "POST", "/v1/register", {}, headers=both).status_code == 200
+        assert request(client, third, NOW, "POST", "/v1/register", {}, headers={"X-Pairing-Id": pairing_id(2)}).status_code == 200
 
 
 def test_pairing_long_poll_wakes_on_join(relay):
@@ -155,6 +256,11 @@ def login(client, password="correct horse"):
                        headers={"Content-Type": "application/x-www-form-urlencoded"}, follow_redirects=False)
 
 
+def login_from(client, password="correct horse", **headers):
+    return client.post("/admin/login", content=f"username=admin&password={password}", follow_redirects=False,
+                       headers={"Content-Type": "application/x-www-form-urlencoded", **headers})
+
+
 def csrf(client):
     page = client.get("/admin").text
     return page.split('data-csrf="')[1].split('"')[0]
@@ -189,6 +295,53 @@ def test_admin_login_is_throttled(relay):
     for _ in range(10):
         login(client, "wrong")
     assert login(client).headers["location"] == "/admin?error=1"
+
+
+def test_admin_throttle_ignores_proxy_headers_unless_trusted(relay):
+    _, _, client = relay
+    for n in range(10):
+        login_from(client, "wrong", **{"CF-Connecting-IP": f"198.51.100.{n}"})
+    # Untrusted headers are client-controlled, so the default limit stays global.
+    assert login_from(client, **{"CF-Connecting-IP": "203.0.113.7"}).headers["location"] == "/admin?error=1"
+
+
+def test_trusted_proxy_throttles_per_client_ip(tmp_path):
+    settings = Settings(database=tmp_path / "relay.sqlite3", admin_password_hash=hash_password("correct horse", iterations=1000),
+                        trust_proxy_headers=True)
+    with TestClient(create_app(settings, lambda: NOW)) as client:
+        for _ in range(10):
+            login_from(client, "wrong", **{"CF-Connecting-IP": "198.51.100.1"})
+        assert login_from(client, **{"CF-Connecting-IP": "198.51.100.1"}).headers["location"] == "/admin?error=1"
+        # The operator on another address is not locked out by someone else's guesses.
+        assert login_from(client, **{"CF-Connecting-IP": "203.0.113.7"}).headers["location"] == "/admin"
+        client.cookies.clear()
+        # Without CF-Connecting-IP the address the nearest proxy appended (rightmost) is the key;
+        # a forged leftmost entry does not buy fresh attempts.
+        for n in range(10):
+            login_from(client, "wrong", **{"X-Forwarded-For": f"10.0.0.{n}, 192.0.2.5"})
+        assert login_from(client, **{"X-Forwarded-For": "10.0.0.99, 192.0.2.5"}).headers["location"] == "/admin?error=1"
+        assert login_from(client, **{"X-Forwarded-For": "192.0.2.6"}).headers["location"] == "/admin"
+
+
+def test_trusted_proxy_keeps_a_global_backstop(tmp_path):
+    settings = Settings(database=tmp_path / "relay.sqlite3", admin_password_hash=hash_password("correct horse", iterations=1000),
+                        trust_proxy_headers=True)
+    with TestClient(create_app(settings, lambda: NOW)) as client:
+        for n in range(100):
+            login_from(client, "wrong", **{"CF-Connecting-IP": f"198.51.{n // 250}.{n % 250}"})
+        assert login_from(client, **{"CF-Connecting-IP": "203.0.113.7"}).headers["location"] == "/admin?error=1"
+
+
+def test_unset_session_secret_warns_without_leaking(tmp_path, caplog):
+    password = hash_password("correct horse", iterations=1000)
+    with caplog.at_level("WARNING", logger="relay"):
+        create_app(Settings(database=tmp_path / "a.sqlite3", admin_password_hash=password))
+    assert any("session_secret" in record.getMessage() for record in caplog.records)
+    caplog.clear()
+    with caplog.at_level("WARNING", logger="relay"):
+        create_app(Settings(database=tmp_path / "b.sqlite3", admin_password_hash=password, session_secret="s3cret-value"))
+    assert not any("session_secret" in record.getMessage() for record in caplog.records)
+    assert "s3cret-value" not in caplog.text
 
 
 def test_admin_sees_devices_sandboxes_and_activity_but_no_content(relay):
@@ -269,6 +422,8 @@ def test_settings_from_toml_and_environment(tmp_path):
     path.write_text('admin_username = "ops"\nadmin_password = "from-file"\nmax_ttl_ms = 300000\n')
     settings = Settings.environment({"RELAY_CONFIG": str(path), "RELAY_ADMIN_PASSWORD": "from-env"})
     assert (settings.admin_username, settings.admin_password, settings.max_ttl_ms) == ("ops", "from-env", 300000)
+    assert not settings.trust_proxy_headers
+    assert Settings.environment({"RELAY_TRUST_PROXY_HEADERS": "true"}).trust_proxy_headers is True
     path.write_text('unknown_key = 1\n')
     with pytest.raises(ValueError):
         Settings.environment({"RELAY_CONFIG": str(path)})
@@ -347,3 +502,100 @@ def test_backup_is_consistent_and_prunes(tmp_path, monkeypatch):
     with sqlite3.connect(copies[-1]) as db:
         assert db.execute("SELECT id FROM devices").fetchone()[0] == device.id
     assert oct(copies[-1].stat().st_mode & 0o777) == "0o600"
+
+
+
+PUSH = {"provider": "apns", "token": "ab" * 32, "environment": "sandbox", "topic": "dev.devicelink.app"}
+
+
+def test_device_unregister_erases_it_like_an_admin_removal(relay):
+    _, now, client = relay
+    phone, laptop, tablet, stranger = Device(), Device(), Device(), Device()
+    for device in (phone, laptop, tablet):
+        register(client, device, now[0])
+    for recipient, sender in ((phone, laptop), (laptop, phone), (laptop, tablet), (tablet, laptop)):
+        assert request(client, recipient, now[0], "PUT", f"/v1/peers/{sender.id}", {}).status_code == 204
+    assert request(client, phone, now[0], "PUT", "/v1/push", PUSH).status_code == 204
+    assert request(client, laptop, now[0], "POST", "/v1/messages", envelope(laptop, phone, now[0], version=2)).status_code == 201
+    assert request(client, phone, now[0], "POST", "/v1/messages", envelope(phone, laptop, now[0], version=2)).status_code == 201
+    create(client, phone, now[0], pid=pairing_id(1))
+    create(client, laptop, now[0], pid=pairing_id(2))
+    assert request(client, phone, now[0], "POST", f"/v1/pairings/{pairing_id(2)}/join", {"sealed": SEALED}).status_code == 204
+
+    assert request(client, phone, now[0], "DELETE", "/v1/devices/self").status_code == 204
+
+    # The identity is now unknown to the relay, exactly like one that never registered.
+    unknown = request(client, stranger, now[0], "GET", "/v1/messages")
+    gone = request(client, phone, now[0], "GET", "/v1/messages")
+    assert (gone.status_code, gone.json()) == (unknown.status_code, unknown.json()) == (403, {"error": "registration_required"})
+    # A former peer gets the same answer as when sending to a device the admin removed.
+    login(client)
+    assert client.delete(f"/admin/api/devices/{tablet.id}", headers={"X-CSRF-Token": csrf(client)}).status_code == 200
+    to_removed = request(client, laptop, now[0], "POST", "/v1/messages", envelope(laptop, tablet, now[0], version=2))
+    to_unregistered = request(client, laptop, now[0], "POST", "/v1/messages", envelope(laptop, phone, now[0], version=2))
+    assert (to_unregistered.status_code, to_unregistered.json()) == (to_removed.status_code, to_removed.json()) == \
+        (403, {"error": "recipient_not_authorized"})
+    # Items waiting for it, its allowances, pairings and push token went with it. What it already sent
+    # (its unlink notices) stays until delivered or expired.
+    assert [item["senderId"] for item in request(client, laptop, now[0], "GET", "/v1/messages").json()] == [phone.id]
+    assert client.app.state.store.mailbox(phone.id, now[0]) == []
+    assert client.app.state.store.push_target(phone.id) is None
+    assert request(client, laptop, now[0], "GET", f"/v1/pairings/{pairing_id(2)}").status_code == 404
+    assert client.get("/admin/api/pairings").json() == []
+    devices = {item["id"]: item for item in client.get("/admin/api/devices").json()}
+    assert set(devices) == {laptop.id} and devices[laptop.id]["allows"] == []
+    kinds = {(event["kind"], event["device"]) for event in client.get("/admin/api/events").json()}
+    assert ("device_unregistered", phone.id) in kinds and ("device_removed", tablet.id) in kinds
+    assert ("device_removed", phone.id) not in kinds
+
+    # A retry after a lost response is still a success; registering again starts from nothing.
+    assert request(client, phone, now[0], "DELETE", "/v1/devices/self").status_code == 204
+    register(client, phone, now[0])
+    assert request(client, laptop, now[0], "POST", "/v1/messages", envelope(laptop, phone, now[0], version=2)).status_code == 403
+
+
+def test_unlink_notice_sent_before_unregister_reaches_an_offline_peer(relay):
+    _, now, client = relay
+    phone, laptop = Device(), Device()
+    for device in (phone, laptop):
+        register(client, device, now[0])
+    for recipient, sender in ((phone, laptop), (laptop, phone)):
+        request(client, recipient, now[0], "PUT", f"/v1/peers/{sender.id}", {})
+    notice = envelope(phone, laptop, now[0], version=2)
+    assert request(client, phone, now[0], "POST", "/v1/messages", notice).status_code == 201
+    assert request(client, phone, now[0], "DELETE", "/v1/devices/self").status_code == 204
+    # The laptop was offline; it polls later and still learns the link is gone, then acknowledges it.
+    now[0] += 30_000
+    assert [item["id"] for item in request(client, laptop, now[0], "GET", "/v1/messages").json()] == [notice["id"]]
+    assert request(client, laptop, now[0], "DELETE", f"/v1/messages/{notice['id']}").status_code == 204
+    assert request(client, laptop, now[0], "GET", "/v1/messages").json() == []
+    # It still expires on its own if never fetched.
+    notice = envelope(phone, laptop, now[0], version=2)
+    register(client, phone, now[0])
+    request(client, laptop, now[0], "PUT", f"/v1/peers/{phone.id}", {})
+    request(client, phone, now[0], "POST", "/v1/messages", notice)
+    request(client, phone, now[0], "DELETE", "/v1/devices/self")
+    now[0] += 60_000
+    assert request(client, laptop, now[0], "GET", "/v1/messages").json() == []
+
+
+def test_admin_removal_still_deletes_what_the_device_sent(relay):
+    _, now, client = relay
+    phone, laptop = Device(), Device()
+    for device in (phone, laptop):
+        register(client, device, now[0])
+    request(client, laptop, now[0], "PUT", f"/v1/peers/{phone.id}", {})
+    request(client, phone, now[0], "POST", "/v1/messages", envelope(phone, laptop, now[0], version=2))
+    login(client)
+    assert client.delete(f"/admin/api/devices/{phone.id}", headers={"X-CSRF-Token": csrf(client)}).status_code == 200
+    assert request(client, laptop, now[0], "GET", "/v1/messages").json() == []
+
+
+def test_blocked_device_cannot_unregister_itself(relay):
+    _, now, client = relay
+    device = Device()
+    register(client, device, now[0])
+    login(client)
+    client.post(f"/admin/api/devices/{device.id}/block", json={"blocked": True}, headers={"X-CSRF-Token": csrf(client)})
+    assert request(client, device, now[0], "DELETE", "/v1/devices/self").status_code == 403
+    assert {item["id"] for item in client.get("/admin/api/devices").json()} == {device.id}

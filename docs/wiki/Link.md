@@ -58,7 +58,9 @@ copy in any app is sent to your linked devices: copy and forget.
   bar to move the cursor; hold the comma for emoji; **?123** for numbers and symbols, **=\<** for more.
 - Enter shows the app's action (Go, Search, Send, Next, Done). Number and phone fields open a number pad.
 - 🌐 (or holding space) switches to another keyboard.
-- Clips that apps mark as sensitive (password managers) are never sent automatically.
+- Auto-send skips a clip only when the copying app marks it sensitive
+  (`ClipDescription.EXTRA_IS_SENSITIVE`, which some password managers set). A password copied from an
+  app that does not set the flag is sent like any other copy. **Send ↑** always sends.
 - Nothing you type is stored or sent: there is no dictionary, prediction or learning. If you want
   autocorrect, keep your usual keyboard and switch to DeviceLink's when copying between devices.
 

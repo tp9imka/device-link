@@ -34,8 +34,10 @@ class ReceiverService : Service() {
             shutdown()
             return START_NOT_STICKY
         }
-        if (!link.receiverEnabled || link.peers.value.isEmpty()) { shutdown(); return START_NOT_STICKY }
-        val notification = Notifications.service(this, getString(R.string.dl_service_title), getString(R.string.dl_status_connecting))
+        if (!link.canReceive) { shutdown(); return START_NOT_STICKY }
+        // Every start (re-pair, toggle, PeerLinked) re-posts the notification, so post the current
+        // status: the collector below only fires on a change and would leave a stale "Connecting…".
+        val notification = notification(link.status.value, link.peers.value.map { it.name })
         if (Build.VERSION.SDK_INT >= 34) {
             startForeground(Notifications.SERVICE_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_REMOTE_MESSAGING)
         } else {
@@ -46,19 +48,20 @@ class ReceiverService : Service() {
             scope.launch {
                 combine(link.status, link.peers) { status, peers -> status to peers.map { it.name } }.distinctUntilChanged().collect { (status, names) ->
                     if (names.isEmpty()) { shutdown(); return@collect }
-                    val text = when (status) {
-                        ReceiverStatus.ONLINE -> getString(R.string.dl_status_online, names.joinToString())
-                        ReceiverStatus.OFFLINE -> getString(R.string.dl_status_offline)
-                        ReceiverStatus.REJECTED -> getString(R.string.dl_status_rejected)
-                        else -> getString(R.string.dl_status_connecting)
-                    }
-                    getSystemService(android.app.NotificationManager::class.java)
-                        .notify(Notifications.SERVICE_ID, Notifications.service(this@ReceiverService, getString(R.string.dl_service_title), text))
+                    getSystemService(android.app.NotificationManager::class.java).notify(Notifications.SERVICE_ID, notification(status, names))
                 }
             }
         }
         return START_STICKY
     }
+
+    private fun notification(status: ReceiverStatus, names: List<String>) = Notifications.service(this, getString(R.string.dl_service_title),
+        when (status) {
+            ReceiverStatus.ONLINE -> getString(R.string.dl_status_online, names.joinToString())
+            ReceiverStatus.OFFLINE -> getString(R.string.dl_status_offline)
+            ReceiverStatus.REJECTED -> getString(R.string.dl_status_rejected)
+            else -> getString(R.string.dl_status_connecting)
+        })
 
     private fun shutdown() {
         receiving?.cancel(); receiving = null
@@ -84,6 +87,6 @@ class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != Intent.ACTION_BOOT_COMPLETED && intent.action != Intent.ACTION_MY_PACKAGE_REPLACED) return
         val link = DeviceLink.get(context)
-        if (link.receiverEnabled && link.peers.value.isNotEmpty()) ReceiverService.start(context)
+        if (link.canReceive) ReceiverService.start(context)
     }
 }

@@ -35,7 +35,10 @@ cloudflared tunnel --no-autoupdate run --token "$TUNNEL_TOKEN"
 # or: cp .env.example .env (fill in) && docker compose --profile tunnel up -d
 ```
 
-Notes: Cloudflare closes idle requests after 100 s, so keep `max_poll_wait` ≤ 50 (default). Do not
+Notes: Cloudflare closes idle requests after 100 s, so keep `max_poll_wait` ≤ 50 (default).
+Large uploads on slow links are bounded by `body_grace_ms`, `body_min_rate` and `body_idle_ms` (a body
+gets the grace plus its size at the minimum rate, and may pause at most the idle limit; else
+`408 body_timeout`); defaults in [server/README.md](../../server/README.md). Do not
 enable Cloudflare caching or HTML rewriting for the relay host. The relay never needs inbound ports.
 
 ## 3. Admin dashboard

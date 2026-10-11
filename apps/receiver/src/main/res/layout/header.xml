@@ -2,6 +2,16 @@
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android" android:layout_width="match_parent"
  android:layout_height="wrap_content" android:orientation="vertical">
 
+ <!-- Keys unreadable (KeyState.LOST): nothing can be received or linked until this phone is reset. -->
+ <LinearLayout android:id="@+id/keys_lost" style="@style/Card" android:layout_width="match_parent" android:layout_height="wrap_content"
+  android:orientation="vertical" android:layout_marginTop="8dp" android:visibility="gone">
+  <TextView style="@style/Heading" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="@string/keys_lost_title" />
+  <TextView style="@style/Body" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="6dp"
+   android:text="@string/keys_lost_body" />
+  <Button android:id="@+id/keys_lost_reset" style="@style/DangerButton" android:layout_width="wrap_content" android:layout_height="wrap_content"
+   android:text="@string/diagnostics_reset" />
+ </LinearLayout>
+
  <LinearLayout android:id="@+id/empty" style="@style/Card" android:layout_width="match_parent" android:layout_height="wrap_content"
   android:orientation="vertical" android:layout_marginTop="8dp">
   <TextView style="@style/Heading" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="@string/empty_title" />
@@ -34,6 +44,28 @@
    <Button android:id="@+id/send_file" style="@style/SecondaryButton" android:layout_width="0dp" android:layout_weight="1"
     android:layout_height="wrap_content" android:text="@string/send_file" />
   </LinearLayout>
+ </LinearLayout>
+
+ <!-- Receive has its own card, away from every other tap target: turning it off by mistake stops all clips. -->
+ <LinearLayout android:id="@+id/receive_card" style="@style/Card" android:layout_width="match_parent" android:layout_height="wrap_content"
+  android:orientation="vertical" android:layout_marginTop="8dp">
+  <Switch android:id="@+id/receive" android:layout_width="match_parent" android:layout_height="wrap_content" android:minHeight="48dp"
+   android:text="@string/receive" android:textColor="@color/on_surface" android:textSize="16sp" android:textStyle="bold"
+   android:switchPadding="16dp" />
+  <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="center_vertical">
+   <TextView android:id="@+id/receive_state" style="@style/Body" android:layout_width="0dp" android:layout_weight="1"
+    android:layout_height="wrap_content" android:accessibilityLiveRegion="polite" />
+   <Button android:id="@+id/receive_undo" style="@style/SecondaryButton" android:layout_width="wrap_content"
+    android:layout_height="wrap_content" android:layout_marginStart="16dp" android:text="@string/receive_undo" android:visibility="gone" />
+  </LinearLayout>
+ </LinearLayout>
+
+ <!-- Shown while notifications are blocked: clips still arrive, but nothing says so. -->
+ <LinearLayout android:id="@+id/notify_hint" style="@style/Card" android:layout_width="match_parent" android:layout_height="wrap_content"
+  android:orientation="vertical" android:layout_marginTop="8dp" android:visibility="gone">
+  <TextView style="@style/Body" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="@string/notify_hint" />
+  <Button android:id="@+id/notify_settings" style="@style/SecondaryButton" android:layout_width="wrap_content" android:layout_height="wrap_content"
+   android:text="@string/notify_settings" />
  </LinearLayout>
 
  <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="center_vertical"

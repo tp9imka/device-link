@@ -109,6 +109,53 @@ def test_registration_enrollment_and_unknown_key(tmp_path):
         assert request(client, device, now, "POST", "/v1/register", {}, headers={"X-Enrollment-Token": "test-enrollment-only"}).status_code == 200
 
 
+
+def test_unenrolled_registration_does_not_spend_request_budget(tmp_path, monkeypatch):
+    now = 1_800_000_000_000
+    settings = Settings(database=tmp_path / "relay.sqlite3", enrollment_token="test-enrollment-only",
+                        global_requests_per_minute=1)
+    with TestClient(create_app(settings, lambda: now)) as client:
+        store = client.app.state.store
+        authorize = store.authorize
+        def unexpected_authorize(*args, **kwargs):
+            pytest.fail("unenrolled identity reached authorize")
+        monkeypatch.setattr(store, "authorize", unexpected_authorize)
+        for _ in range(3):
+            response = request(client, Device(), now, "POST", "/v1/register", {})
+            assert response.status_code == 403
+            assert response.json() == {"error": "enrollment_required"}
+        with store.transaction() as db:
+            assert db.execute("SELECT count(*) FROM nonces").fetchone()[0] == 0
+        monkeypatch.setattr(store, "authorize", authorize)
+        assert request(client, Device(), now, "POST", "/v1/register", {},
+                       headers={"X-Enrollment-Token": "test-enrollment-only"}).status_code == 200
+
+
+@pytest.mark.parametrize("change,code", [("remove", "enrollment_required"), ("block", "device_blocked")])
+def test_registration_rechecks_device_in_write_transaction(tmp_path, monkeypatch, change, code):
+    device, now = Device(), 1_800_000_000_000
+    settings = Settings(database=tmp_path / "relay.sqlite3", enrollment_token="test-enrollment-only")
+    with TestClient(create_app(settings, lambda: now)) as client:
+        assert request(client, device, now, "POST", "/v1/register", {},
+                       headers={"X-Enrollment-Token": "test-enrollment-only"}).status_code == 200
+        store = client.app.state.store
+        register_device = store.register
+        def changed_before_write(identity, at, metadata, *, enrolled):
+            if change == "remove":
+                store.remove_device(device.id, now, "device_removed")
+            else:
+                with store.transaction() as db:
+                    db.execute("UPDATE devices SET blocked=1 WHERE id=?", (device.id,))
+            return register_device(identity, at, metadata, enrolled=enrolled)
+        monkeypatch.setattr(store, "register", changed_before_write)
+        response = request(client, device, now, "POST", "/v1/register", {"appVersion": "2.0.0"})
+        assert response.status_code == 403
+        assert response.json() == {"error": code}
+        with store.transaction() as db:
+            row = db.execute("SELECT app_version FROM devices WHERE id=?", (device.id,)).fetchone()
+            assert row == (None if change == "remove" else ("",))
+
+
 def test_recipient_allowlist_and_sender_binding(setup):
     _, now, client = setup
     sender, recipient, stranger = Device(), Device(), Device()
@@ -266,6 +313,59 @@ def test_excluded_offer_does_not_redeliver_or_spin_and_sequence_order(setup):
     assert request(client, recipient, now[0], "GET", f'/v1/messages?limit=1&exclude={later["id"]}').json() == [earlier]
 
 
+def test_exclude_with_limit_returns_every_remaining_item_including_newer_ones(setup):
+    """Contract the engine relies on while it holds un-acked chunks and keeps polling.
+
+    Exclusion is applied before the limit; the remainder comes back grouped by sender, newest
+    sequence first; items uploaded after the held ones are never hidden behind them.
+    """
+    _, now, client = setup
+    first, recipient = paired(client, now[0])
+    second = Device()
+    register(client, second, now[0])
+    assert request(client, recipient, now[0], "PUT", f"/v1/peers/{second.id}", {}).status_code == 204
+    chunks = [envelope(first, recipient, now[0], version=2, sequence=index + 1) for index in range(12)]
+    for item in chunks:
+        assert request(client, first, now[0], "POST", "/v1/messages", item).status_code == 201
+    held = [item["id"] for item in chunks[:8]]
+    newer = envelope(first, recipient, now[0], version=2, sequence=13)
+    other = [envelope(second, recipient, now[0], version=2, sequence=index + 1) for index in range(2)]
+    for sender, item in [(first, newer), *((second, item) for item in other)]:
+        assert request(client, sender, now[0], "POST", "/v1/messages", item).status_code == 201
+    from_first = [newer, *reversed(chunks[8:])]
+    from_second = list(reversed(other))
+    expected = from_first + from_second if first.id < second.id else from_second + from_first
+    path = "/v1/messages?exclude=" + ",".join(held)
+    assert request(client, recipient, now[0], "GET", path).json() == expected
+    # A small limit walks the same order; acknowledging advances it.
+    seen = []
+    for _ in expected:
+        page = request(client, recipient, now[0], "GET", path + "&limit=1").json()
+        assert len(page) == 1
+        seen.append(page[0])
+        request(client, recipient, now[0], "DELETE", f'/v1/messages/{page[0]["id"]}')
+    assert seen == expected
+    assert request(client, recipient, now[0], "GET", path).json() == []
+    # The held items were never touched by exclusion.
+    assert [item["id"] for item in request(client, recipient, now[0], "GET", "/v1/messages").json()] == list(reversed(held))
+
+
+def test_twenty_held_items_fill_the_mailbox(setup):
+    """With the default mailbox_count (20) a client holding 20 un-acked ids blocks new uploads."""
+    _, now, client = setup
+    sender, recipient = paired(client, now[0])
+    items = [envelope(sender, recipient, now[0], version=2, sequence=index + 1) for index in range(20)]
+    for item in items:
+        assert request(client, sender, now[0], "POST", "/v1/messages", item).status_code == 201
+    path = "/v1/messages?exclude=" + ",".join(item["id"] for item in items)
+    assert request(client, recipient, now[0], "GET", path).json() == []
+    assert request(client, sender, now[0], "POST", "/v1/messages", envelope(sender, recipient, now[0], version=2, sequence=21)).json() == {"error": "mailbox_full"}
+    request(client, recipient, now[0], "DELETE", f'/v1/messages/{items[0]["id"]}')
+    later = envelope(sender, recipient, now[0], version=2, sequence=21)
+    assert request(client, sender, now[0], "POST", "/v1/messages", later).status_code == 201
+    assert request(client, recipient, now[0], "GET", path).json() == [later]
+
+
 def test_duplicate_auth_headers_and_malformed_key_fail_closed(setup):
     _, now, client = setup
     device = Device()
@@ -298,16 +398,46 @@ def test_concurrent_enqueue_is_atomic_for_final_mailbox_slot(tmp_path):
         assert len(request(client, recipient, now, "GET", "/v1/messages").json()) == 1
 
 
-def test_only_one_pending_poll_per_recipient(setup):
-    _, now, client = setup
-    device = Device()
-    register(client, device, now[0])
-    thread = threading.Thread(target=lambda: request(client, device, now[0], "GET", "/v1/messages?wait=1"))
-    thread.start()
-    time.sleep(0.1)
-    response = request(client, device, now[0], "GET", "/v1/messages?wait=1")
-    thread.join(timeout=2)
-    assert response.status_code == 429
+def test_reconnecting_poll_supersedes_the_stale_one(tmp_path):
+    """A phone back from a network blip must not collide with its own dead long poll."""
+    pushes = []
+
+    async def transport(url, headers, payload):
+        pushes.append(payload["m"])
+        return 200, ""
+
+    now = 1_800_000_000_000
+    with TestClient(create_app(Settings(database=tmp_path / "relay.sqlite3"), lambda: now, push_transport=transport)) as client:
+        sender, recipient = paired(client, now)
+        assert request(client, recipient, now, "PUT", "/v1/push", {"provider": "apns", "token": "ab" * 32,
+                                                                    "environment": "sandbox", "topic": "dev.devicelink.ios"}).status_code == 204
+        stale, fresh = [], []
+        stale_poll = threading.Thread(target=lambda: stale.append((request(client, recipient, now, "GET", "/v1/messages?wait=10"), time.monotonic())))
+        stale_poll.start()
+        time.sleep(0.2)
+        fresh_poll = threading.Thread(target=lambda: fresh.append(request(client, recipient, now, "GET", "/v1/messages?wait=10")))
+        superseded_at = time.monotonic()
+        fresh_poll.start()
+        stale_poll.join(timeout=3)
+        assert not stale_poll.is_alive(), "the stale poll must end promptly once superseded"
+        response, ended = stale[0]
+        assert response.status_code == 200 and response.json() == []
+        assert ended - superseded_at < 2
+        # The fresh poll is still the live one: it gets the item, and APNs stays quiet while it is open.
+        item = envelope(sender, recipient, now, version=2)
+        assert request(client, sender, now, "POST", "/v1/messages", item).status_code == 201
+        fresh_poll.join(timeout=3)
+        assert not fresh_poll.is_alive()
+        assert fresh[0].json() == [item]
+        time.sleep(0.1)
+        assert pushes == []
+        # With no poll open, the next item wakes the phone.
+        later = envelope(sender, recipient, now, version=2, sequence=2)
+        assert request(client, sender, now, "POST", "/v1/messages", later).status_code == 201
+        deadline = time.monotonic() + 2
+        while not pushes and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert pushes == [later["id"]]
 
 
 def test_ciphertext_size_limit(tmp_path):

@@ -25,20 +25,26 @@ struct DeviceLinkSampleApp: App {
 @MainActor
 final class AutoShare: ObservableObject {
     private var observer: NSObjectProtocol?
+    /// One send per copy: iOS can post the notification more than once for the same change.
+    private var filter = CopyFilter()
 
     func attach(_ model: LinkModel) {
         guard observer == nil else { return }
-        observer = NotificationCenter.default.addObserver(forName: UIPasteboard.changedNotification, object: nil, queue: .main) { _ in
-            MainActor.assumeIsolated {
-                let pasteboard = UIPasteboard.general
-                // Skip what DeviceLink itself just wrote (received clips), so nothing echoes back.
-                guard pasteboard.changeCount != Pasteboard.ownChangeCount, !model.peers.isEmpty else { return }
-                if let image = pasteboard.image, let data = image.pngData() {
-                    model.sendData(data, name: "copied.png", mime: "image/png")
-                } else if let text = pasteboard.string, !text.isEmpty {
-                    model.sendText(text)
-                }
-            }
+        observer = NotificationCenter.default.addObserver(forName: UIPasteboard.changedNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.copied(model) }
+        }
+    }
+
+    private func copied(_ model: LinkModel) {
+        let pasteboard = UIPasteboard.general
+        guard !model.peers.isEmpty else { return }
+        // ownChangeCount: what DeviceLink itself just wrote (received clips), so nothing echoes back.
+        if let image = pasteboard.image, let data = image.pngData() {
+            guard filter.shouldSend(changeCount: pasteboard.changeCount, ownChangeCount: Pasteboard.ownChangeCount, content: data) else { return }
+            model.sendData(data, name: "copied.png", mime: "image/png")
+        } else if let text = pasteboard.string, !text.isEmpty {
+            guard filter.shouldSend(changeCount: pasteboard.changeCount, ownChangeCount: Pasteboard.ownChangeCount, content: Data(text.utf8)) else { return }
+            model.sendText(text)
         }
     }
 }
@@ -62,7 +68,8 @@ struct SampleView: View {
     var body: some View {
         NavigationStack {
             List {
-                Section {
+                if model.keysLost != nil { KeysLostSection(model: model) }
+                else { Section {
                     if model.peers.isEmpty {
                         Text("No device linked yet").font(.headline)
                     } else {
@@ -72,7 +79,7 @@ struct SampleView: View {
                         Button("Show code") { showingCode = true }.buttonStyle(.borderedProminent)
                         Button("Scan code") { scanning = true }.buttonStyle(.bordered)
                     }
-                } footer: { Text("Every copy made in this app is sent automatically: the other device can paste it right away.") }
+                } footer: { Text("Every copy made in this app is sent automatically: the other device can paste it right away.") } }
 
                 Section("Copy something") {
                     TextField("Type here, select, Copy", text: $scratch, axis: .vertical).lineLimit(3...6)

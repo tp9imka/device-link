@@ -90,15 +90,13 @@ final class ContractTests: XCTestCase {
 }
 
 final class ChunkTests: XCTestCase {
-    func testChunkedFileReassemblesInAnyOrderAndRejectsOversize() throws {
+    /// Reassembly (parts arrive newest-first from the relay) is covered end to end in `EngineTests`.
+    func testChunkedFileSplitsIntoValidPartsAndRejectsOversize() throws {
         let bytes = Data((0..<(Limits.maxContentBytes + 5_000_000)).map { UInt8(truncatingIfNeeded: $0 &* 31) })
         let parts = try Payload.chunks(kind: .file, name: "big.bin", mime: "application/octet-stream", bytes: bytes, now: 1)
         XCTAssertEqual(parts.count, 4)
         try parts.forEach { try $0.validate() }
-        var assembler = ChunkAssembler()
-        var result: Data?
-        for part in parts.reversed() { result = assembler.add(peerId: "p", payload: part, expiresAt: 10, now: 1) ?? result }
-        XCTAssertEqual(result, bytes)
+        XCTAssertEqual(parts.reduce(into: Data()) { $0.append(try! $1.dataBytes()!) }, bytes)
         XCTAssertThrowsError(try Payload.chunks(kind: .file, name: "x", mime: "a/b", bytes: Data(count: Limits.maxFileBytes + 1), now: 1))
     }
 }

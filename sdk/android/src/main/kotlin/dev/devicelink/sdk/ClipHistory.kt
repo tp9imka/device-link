@@ -11,7 +11,7 @@ import org.json.JSONObject
 enum class ClipDirection { RECEIVED, SENT }
 enum class ClipState { PENDING, COPIED, DELIVERED, SHARE_NEEDED, FAILED }
 
-/** One entry of the local clip list shown by apps. Stored privately, pruned after 24 hours. */
+/** One entry of the local clip list shown by apps. Stored in [PrivateStorage] (never backed up), pruned after 24 hours. */
 data class ClipRecord(
     val id: String,
     val direction: ClipDirection,
@@ -29,7 +29,7 @@ data class ClipRecord(
 )
 
 internal class ClipHistory(context: Context, private val limit: Int = 50) {
-    private val file = File(context.filesDir, "devicelink/history.json")
+    private val file = File(PrivateStorage.root(context).also { PrivateStorage.migrate(context) }, "history.json")
     private val mutable = MutableStateFlow(load())
     val records: StateFlow<List<ClipRecord>> = mutable.asStateFlow()
 

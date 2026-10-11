@@ -12,6 +12,10 @@
  <string name="dl_action_share">Share…</string>
  <string name="dl_action_open">Open</string>
  <string name="dl_action_copy">Copy</string>
+ <string name="dl_action_save">Save…</string>
+ <string name="dl_save_done">Saved</string>
+ <string name="dl_save_failed">Could not save the file. Try again or use Share…</string>
+ <string name="dl_save_gone">This file is no longer here. Received files are kept for 24 hours.</string>
  <string name="dl_copied_from">Copied from %1$s · ready to paste</string>
  <string name="dl_received_from">From %1$s</string>
  <string name="dl_share_title">Share from %1$s</string>
@@ -20,8 +24,16 @@
  <string name="dl_file">File</string>
  <string name="dl_share_label">Send to device</string>
  <string name="dl_send_ok">Sent to %1$s</string>
+ <string name="dl_sending">Sending…</string>
  <string name="dl_send_failed">Could not send. Check the connection and try again.</string>
  <string name="dl_send_nothing">Nothing to send</string>
+ <string name="dl_send_too_large">Too big to send. Files can be up to %1$d MB, text up to %2$d KB.</string>
+ <string name="dl_send_unreadable">Could not read this item. Try sharing it again from the app it came from.</string>
+ <string name="dl_send_mailbox_full">The other device has too many items waiting. Open DeviceLink there, then try again.</string>
+ <string name="dl_send_storage_full">The relay is out of space. Try again later.</string>
+ <string name="dl_send_rate_limited">Too many sends in a short time. Wait a minute and try again.</string>
+ <string name="dl_send_not_authorized">The other device no longer accepts items from this one. Link them again.</string>
+ <string name="dl_send_rejected">The relay refused this device. Open DeviceLink.</string>
  <string name="dl_send_no_devices">No linked device yet. Open DeviceLink to link one.</string>
  <string name="dl_pair_show_title">Link another device</string>
  <string name="dl_pair_creating">Creating a one-time code…</string>
@@ -31,10 +43,12 @@
  <string name="dl_pair_joining">Linking…</string>
  <string name="dl_pair_linked">Linked with %1$s</string>
  <string name="dl_pair_failed">Could not link</string>
+ <string name="dl_pair_code_used">This code has expired or was already used. Show a new code on the other device.</string>
  <string name="dl_pair_not_a_code">This is not a DeviceLink code.</string>
  <string name="dl_setup_applied">Relay configured. You can now show a code to link devices.</string>
  <string name="dl_error_network">The relay could not be reached. Check the internet connection.</string>
+ <string name="dl_keys_lost">This device\'s keys could not be read. Reset and link again.</string>
  <string name="dl_error_generic">Something went wrong. Try again.</string>
- <string name="dl_pair_code_body">Confirmation code %1$s should match the other screen. This is only shown once: from now on clips just go through.</string>
- <string name="dl_pair_code_mismatch">Codes differ: unlink</string>
+ <string name="dl_pair_code_body">The other screen should show the same code: %1$s. If it differs, unlink.</string>
+ <string name="dl_pair_code_mismatch">Unlink</string>
 </resources>

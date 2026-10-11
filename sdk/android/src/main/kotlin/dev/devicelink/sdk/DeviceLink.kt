@@ -25,12 +25,14 @@ import java.io.ByteArrayOutputStream
 import java.io.File
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * SDK options. By default the relay comes from the host app's manifest meta-data
@@ -63,6 +65,12 @@ data class DeviceLinkOptions(
     }
 }
 
+/** Health of this device's stored keys; see [DeviceLinkInstance.keyState]. */
+enum class KeyState { OK, LOST }
+
+/** Pairing refused because [DeviceLinkInstance.keyState] is [KeyState.LOST]. The message is user-facing. */
+class KeysLostException(message: String) : IllegalStateException(message)
+
 /** Entry point: `DeviceLink.init(context)` once (for example in Application.onCreate), then `DeviceLink.get(context)`. */
 object DeviceLink {
     @Volatile private var instance: DeviceLinkInstance? = null
@@ -89,11 +97,21 @@ class DeviceLinkInstance internal constructor(private val context: Context, val 
             .ifBlank { "Android" }
     }
 
+    private val store = FileLinkStore(File(context.noBackupFilesDir, "devicelink/links.json"))
+    private val encryptionKey = WrappedEncryptionKey.load(context, hasLinks = store.load().peers.isNotEmpty())
+
+    /**
+     * [KeyState.LOST] when this device's encryption key could not be read back while devices are linked.
+     * Nothing sent to this device can be decrypted then, so pairing and receiving are refused until
+     * [resetDevice]. Show [R.string.dl_keys_lost] with a reset action.
+     */
+    val keyState: KeyState = if (encryptionKey.lost) KeyState.LOST else KeyState.OK
+
     /** Platform-neutral engine; identity and encryption keys are created on first use. */
     val client = DeviceLinkClient(
         KeystoreIdentity(),
-        WrappedEncryptionKey.load(context),
-        FileLinkStore(File(context.noBackupFilesDir, "devicelink/links.json")),
+        encryptionKey.pair,
+        store,
         LinkConfig(deviceName, "android", model = Build.MODEL, appVersion = options.appVersion,
             allowInsecureRelay = options.allowInsecureRelay, defaultRelayUrl = options.relayUrl,
             defaultEnrollmentToken = options.enrollmentToken),
@@ -115,7 +133,7 @@ class DeviceLinkInstance internal constructor(private val context: Context, val 
                         ReceiptStatus.DELIVERED -> ClipState.DELIVERED
                         ReceiptStatus.FAILED -> ClipState.FAILED
                     })
-                    is LinkEvent.PeerLinked -> if (receiverEnabled) ReceiverService.start(context)
+                    is LinkEvent.PeerLinked -> if (canReceive) ReceiverService.start(context)
                     is LinkEvent.PeerUnlinked -> if (client.peers.value.isEmpty()) ReceiverService.stop(context)
                 }
             }
@@ -125,10 +143,15 @@ class DeviceLinkInstance internal constructor(private val context: Context, val 
     // ----- pairing -------------------------------------------------------------------------------
 
     /** Shows-a-code side. Works on a brand-new install when a relay is built in. */
-    suspend fun invite(): DeviceLinkClient.PairingSession = client.invite()
+    suspend fun invite(): DeviceLinkClient.PairingSession { requireKeys(); return client.invite() }
 
     /** Scans-a-code side. Accepts the https QR link or the devicelink:// form. */
-    suspend fun join(link: String): LinkedPeer = client.join(link).also { receiverEnabled = true }
+    suspend fun join(link: String): LinkedPeer { requireKeys(); return client.join(link).also { receiverEnabled = true } }
+
+    /** A new peer would pin the throwaway key, which is gone after the next start. */
+    private fun requireKeys() {
+        if (keyState == KeyState.LOST) throw KeysLostException(context.getString(R.string.dl_keys_lost))
+    }
 
     suspend fun unlink(peerId: String) = client.unlink(peerId)
 
@@ -148,14 +171,20 @@ class DeviceLinkInstance internal constructor(private val context: Context, val 
 
     /** [html] is an optional rich-text alternative; [sensitive] hides previews on the other device. */
     @JvmOverloads
-    suspend fun sendText(text: String, html: String? = null, sensitive: Boolean = false): List<SendOutcome> =
+    suspend fun sendText(text: String, html: String? = null, sensitive: Boolean = false): List<SendOutcome> = withContext(Dispatchers.Default) {
+        if (text.toByteArray(Charsets.UTF_8).size > Limits.MAX_TEXT_BYTES) throw ContentTooLargeException(Limits.MAX_TEXT_BYTES)
         record(client.send(OutgoingContent.Text(text, html, sensitive), targets()), "text", text = text, sensitive = sensitive)
+    }
 
     /** Sends a content/file URI: images go to the other clipboard, other files arrive as a share prompt. */
     suspend fun sendUri(uri: Uri, mimeHint: String? = null): List<SendOutcome> {
         val (name, mime, bytes) = withContext(Dispatchers.IO) { readUri(uri, mimeHint) }
         val content = if (mime in Limits.IMAGE_MIMES) OutgoingContent.Image(name, mime, bytes) else OutgoingContent.File(name, mime, bytes)
-        return record(client.send(content, targets()), if (content is OutgoingContent.Image) "image" else "file", name = name, mime = mime, uri = uri.toString())
+        // Base64, validation, HPKE sealing of up to 10 MiB and the Keystore signature are CPU work:
+        // keep them off the caller's (often the main) thread. The engine hops to IO for HTTP itself.
+        return withContext(Dispatchers.Default) {
+            record(client.send(content, targets()), if (content is OutgoingContent.Image) "image" else "file", name = name, mime = mime, uri = uri.toString())
+        }
     }
 
     /** Sends whatever a ClipData holds: first text item, otherwise its first URI. */
@@ -167,6 +196,23 @@ class DeviceLinkInstance internal constructor(private val context: Context, val 
         val sensitive = android.os.Build.VERSION.SDK_INT >= 33 &&
             clip.description.extras?.getBoolean(android.content.ClipDescription.EXTRA_IS_SENSITIVE) == true
         return if (text.isBlank()) emptyList() else sendText(text, item.htmlText?.takeIf { it.isNotBlank() }, sensitive)
+    }
+
+    /**
+     * User-facing text for the result of a `send*` call wrapped in `runCatching`: "Sent to …" naming
+     * only the devices that accepted it when every target did, otherwise the reason the user can act on.
+     * `send*` reports relay failures in [SendOutcome] instead of throwing, so never infer success from
+     * the absence of an exception.
+     */
+    fun sendResultMessage(result: Result<List<SendOutcome>>): String {
+        val peers = client.peers.value
+        return when (val problem = SendProblem.of(result, peers.isNotEmpty())) {
+            // Only the devices this went to: sendTargets may limit it to some of them.
+            null -> context.getString(R.string.dl_send_ok, result.getOrThrow()
+                .mapNotNull { outcome -> peers.firstOrNull { it.id == outcome.peerId }?.name }.joinToString())
+            SendProblem.TOO_LARGE -> context.getString(problem.message, Limits.MAX_FILE_BYTES / (1024 * 1024), Limits.MAX_TEXT_BYTES / 1024)
+            else -> context.getString(problem.message)
+        }
     }
 
     private fun record(outcomes: List<SendOutcome>, kind: String, text: String? = null, name: String? = null,
@@ -190,13 +236,13 @@ class DeviceLinkInstance internal constructor(private val context: Context, val 
             .ifBlank { "file" }.let { if (it == "." || it == "..") "file" else it }
         val mime = resolver.getType(uri) ?: mimeHint ?: Mime.forName(name)
         if ('.' !in name && mime != "application/octet-stream") name = "$name.${Mime.extension(mime)}"
-        val bytes = requireNotNull(resolver.openInputStream(uri)).use { input ->
+        val bytes = (resolver.openInputStream(uri) ?: throw java.io.FileNotFoundException("No content")).use { input ->
             val output = ByteArrayOutputStream()
             val buffer = ByteArray(64 * 1024)
             while (true) {
                 val count = input.read(buffer)
                 if (count < 0) break
-                require(output.size() + count <= Limits.MAX_FILE_BYTES) { "File is larger than ${Limits.MAX_FILE_BYTES / (1024 * 1024)} MB" }
+                if (output.size() + count > Limits.MAX_FILE_BYTES) throw ContentTooLargeException(Limits.MAX_FILE_BYTES)
                 output.write(buffer, 0, count)
             }
             output.toByteArray()
@@ -211,8 +257,14 @@ class DeviceLinkInstance internal constructor(private val context: Context, val 
         get() = prefs.getBoolean("receiver", true)
         set(value) {
             prefs.edit().putBoolean("receiver", value).apply()
-            if (value && client.peers.value.isNotEmpty()) ReceiverService.start(context) else if (!value) ReceiverService.stop(context)
+            if (canReceive) ReceiverService.start(context) else if (!value) ReceiverService.stop(context)
         }
+
+    /**
+     * The receiver may run: switched on, a device linked, and keys readable. With lost keys every item
+     * would fail to decrypt, so nothing is fetched and the items expire on the relay instead.
+     */
+    internal val canReceive: Boolean get() = receiverEnabled && client.peers.value.isNotEmpty() && keyState == KeyState.OK
 
     fun startReceiver() { receiverEnabled = true }
     fun stopReceiver() { receiverEnabled = false }
@@ -257,6 +309,14 @@ class DeviceLinkInstance internal constructor(private val context: Context, val 
     }
 
     fun shareIntent(record: ClipRecord) = Notifications.shareIntent(context, record)
+
+    /**
+     * Opens the system "save as" picker for a received image or file and copies it there, so it
+     * outlives the 24-hour private retention. Null when the record carries no file. Start it with
+     * `startActivity`; the SDK shows the result.
+     */
+    fun saveIntent(record: ClipRecord): android.content.Intent? =
+        if (record.direction == ClipDirection.RECEIVED) SaveFileActivity.intent(context, record) else null
     fun forget(record: ClipRecord) = clipHistory.remove(record.id)
     fun clearHistory() { clipHistory.clear(); scope.launch(Dispatchers.IO) { ReceivedFiles.clear(context) } }
 
@@ -285,29 +345,54 @@ class DeviceLinkInstance internal constructor(private val context: Context, val 
         return buildString {
             appendLine("DeviceLink ${options.appVersion} on Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT}), ${Build.MANUFACTURER} ${Build.MODEL}")
             appendLine("Device ID: ${d.deviceId.take(16)}…")
+            appendLine("Keys: ${if (keyState == KeyState.LOST) "LOST (encryption key unreadable; reset and link again)" else "ok"}")
             appendLine("Relay: ${d.relayUrl.ifEmpty { "not configured" }} · registered: ${d.registered}")
             appendLine("Linked devices: ${d.peers} · receiver on: $receiverEnabled · status: ${client.status.value}")
             appendLine("Last poll: ${at(d.lastPollAt)} · last receive: ${at(d.lastReceiveAt)} · last send: ${at(d.lastSendAt)}")
-            appendLine("Received: ${d.received} · sent: ${d.sent} (since app start)")
+            appendLine("Received: ${d.received} · sent: ${d.sent} · undecryptable: ${d.undecryptable} (since app start)")
             append("Last error: ${d.lastError ?: "none"}${d.lastErrorAt?.let { " at " + at(it) } ?: ""}")
         }
     }
 
     /**
-     * Unlinks every device (telling each one), deletes this device's keys and history, and starts
-     * over with a fresh identity. Use when a phone is handed on or keys may be compromised.
+     * Tells every linked device, removes this device from the relay, deletes this device's keys and
+     * history, and starts over with a fresh identity. Use when a phone is handed on or keys may be
+     * compromised. Takes up to [RESET_UNREGISTER_TIMEOUT_MILLIS] plus local cleanup; call it off the
+     * main thread's blocking path (from a coroutine) and show progress.
+     *
+     * The relay step is best effort and bounded, so reset also works offline; the local wipe always
+     * runs, even when the caller is cancelled. Also works with [KeyState.LOST]: only the identity key
+     * (Keystore) signs the relay request, and notices are sealed to the peers' keys.
+     *
+     * @return true when the relay confirmed this device is gone; false when it was reset locally only
+     *   (offline, relay unreachable, timed out, or no relay configured).
      */
-    suspend fun resetDevice() {
-        runCatching { client.unlinkAll() }
+    suspend fun resetDevice(): Boolean {
+        // Stop polling first: a poll after the delete would register this device again.
         stopReceiver()
-        clearHistory()
-        withContext(Dispatchers.IO) {
-            KeystoreIdentity.delete()
-            WrappedEncryptionKey.delete(context)
-            java.io.File(context.noBackupFilesDir, "devicelink/links.json").delete()
-            prefs.edit().clear().apply()
+        var removed = false
+        try {
+            removed = withTimeoutOrNull(RESET_UNREGISTER_TIMEOUT_MILLIS) { client.unregister() } == true
+        } finally {
+            withContext(NonCancellable) {
+                clipHistory.clear()
+                withContext(Dispatchers.IO) {
+                    // Inline, not clearHistory(): that launches on [scope], which is cancelled just below.
+                    ReceivedFiles.clear(context)
+                    KeystoreIdentity.delete()
+                    WrappedEncryptionKey.delete(context)
+                    java.io.File(context.noBackupFilesDir, "devicelink/links.json").delete()
+                    prefs.edit().clear().apply()
+                }
+                scope.cancel()
+                DeviceLink.forget(this@DeviceLinkInstance)
+            }
         }
-        scope.cancel()
-        DeviceLink.forget(this)
+        return removed
+    }
+
+    companion object {
+        /** Upper bound for telling peers and the relay during [resetDevice]; the local wipe follows regardless. */
+        const val RESET_UNREGISTER_TIMEOUT_MILLIS = 5_000L
     }
 }

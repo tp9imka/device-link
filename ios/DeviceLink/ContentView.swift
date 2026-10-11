@@ -17,8 +17,11 @@ struct ContentView: View {
     var body: some View {
         NavigationStack {
             List {
-                statusSection
-                if model.peers.isEmpty { linkSection } else { devicesSection; sendSection }
+                if model.keysLost != nil { KeysLostSection(model: model) }
+                else {
+                    statusSection
+                    if model.peers.isEmpty { linkSection } else { devicesSection; sendSection }
+                }
                 clipsSection
                 Section {
                     EmptyView()
@@ -48,7 +51,12 @@ struct ContentView: View {
             .fileImporter(isPresented: $importing, allowedContentTypes: [.item]) { result in
                 guard let url = try? result.get(), url.startAccessingSecurityScopedResource() else { return }
                 defer { url.stopAccessingSecurityScopedResource() }
-                if let data = try? Data(contentsOf: url) {
+                // Size first: reading a large video whole only to have the SDK reject it wastes memory.
+                if let bytes = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize, !SendMessages.fits(bytes: bytes) {
+                    model.message = SendMessages.tooLarge
+                    return
+                }
+                if let data = try? Data(contentsOf: url, options: .mappedIfSafe) {
                     model.sendData(data, name: url.lastPathComponent, mime: UTType(filenameExtension: url.pathExtension)?.preferredMIMEType ?? "application/octet-stream")
                 }
             }
@@ -65,7 +73,12 @@ struct ContentView: View {
             .alert(model.message ?? "", isPresented: Binding(get: { model.message != nil }, set: { if !$0 { model.message = nil } })) {
                 Button("OK", role: .cancel) {}
             }
-            .overlay { if model.busy { ProgressView("Linking…").padding().background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12)) } }
+            .overlay {
+                if model.busy || model.resetting {
+                    ProgressView(model.resetting ? "Resetting…" : "Linking…").padding().background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+                }
+            }
+            .disabled(model.resetting)
         }
     }
 
@@ -98,10 +111,16 @@ struct ContentView: View {
     }
 
     private var linkSection: some View {
-        Section("Link your first device") {
+        Section {
             Button { showingCode = true } label: { Label("Show my code", systemImage: "qrcode") }.disabled(!model.relayConfigured)
             Button { scanning = true } label: { Label("Scan a code", systemImage: "qrcode.viewfinder") }
+            // PasteButton renders only "Paste"; the footer says what it pastes.
             PasteButton(payloadType: String.self) { strings in if let link = strings.first { model.open(link) } }
+                .accessibilityLabel("Paste a pairing link")
+        } header: {
+            Text("Link your first device")
+        } footer: {
+            Text("Paste: link with a pairing link copied from your other device.")
         }
     }
 
@@ -131,6 +150,7 @@ struct ContentView: View {
         Section("Send") {
             // PasteButton reads the clipboard without the "Allow Paste" prompt.
             PasteButton(payloadType: String.self) { strings in if let text = strings.first { model.sendText(text) } }
+                .accessibilityLabel("Paste and send clipboard text")
             PhotosPicker(selection: $photo, matching: .images) { Label("Send a photo", systemImage: "photo") }
             Button { importing = true } label: { Label("Send a file", systemImage: "doc") }
         }

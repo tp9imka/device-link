@@ -1,4 +1,5 @@
 import CoreImage.CIFilterBuiltins
+import DeviceLinkKit
 import SwiftUI
 import VisionKit
 
@@ -124,12 +125,42 @@ struct LinkedConfirmation: ViewModifier {
         content.alert(model.linkedConfirmation.map { "Linked with \($0.name)" } ?? "",
                       isPresented: Binding(get: { model.linkedConfirmation != nil }, set: { if !$0 { model.linkedConfirmation = nil } }),
                       presenting: model.linkedConfirmation) { peer in
-            Button("OK", role: .cancel) {}
+            Button("OK", role: .cancel) { model.confirmLink() }
             Button("Codes differ: unlink", role: .destructive) { model.unlink(peer) }
         } message: { peer in
-            if let code = peer.pairingCode {
-                Text("Confirmation code \(code.prefix(3)) \(code.suffix(3)) should match the other screen. This is only shown once: from now on clips just go through.")
-            }
+            Text(message(peer))
+        }
+    }
+
+    private func message(_ peer: LinkedPeer) -> String {
+        var lines: [String] = []
+        if let code = peer.pairingCode {
+            lines.append("Confirmation code \(code.prefix(3)) \(code.suffix(3)) should match the other screen. This is only shown once: from now on clips just go through.")
+        }
+        if model.asksForNotifications {
+            lines.append("Next, DeviceLink asks to notify you, so a clip sent while the app is closed can be copied from the notification.")
+        }
+        return lines.joined(separator: "\n\n")
+    }
+}
+
+/// Shown instead of the linking controls while `model.keysLost` is set: nothing can be sent or received
+/// with the old links, so the one action offered is Reset.
+struct KeysLostSection: View {
+    @ObservedObject var model: LinkModel
+    @State private var confirmReset = false
+
+    var body: some View {
+        Section {
+            Label(KeysLostError.message, systemImage: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+            Button("Reset device", role: .destructive) { confirmReset = true }
+                .disabled(model.resetting)
+        }
+        .confirmationDialog("Reset this device?", isPresented: $confirmReset, titleVisibility: .visible) {
+            Button("Reset device", role: .destructive) { model.resetDevice() }
+        } message: {
+            Text("Deletes this device's keys, links and clip history and creates a new identity. Unlink this device on your other devices, then link again.")
         }
     }
 }

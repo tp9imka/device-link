@@ -46,20 +46,33 @@ internal class KeystoreIdentity : DeviceIdentity {
 
 /**
  * The X25519 HPKE key cannot live inside Keystore on API 26, so it is stored wrapped with a
- * Keystore AES-256-GCM key. Android backups are disabled for the files directory content.
+ * Keystore AES-256-GCM key in `noBackupFilesDir`, which Android never includes in cloud backups or
+ * device-to-device transfers (the wrapping key cannot leave this device anyway).
+ *
+ * Linked peers pinned this key's public half. If it cannot be read back, a replacement would make
+ * every later item from them undecryptable while both sides still look linked, so a fresh key is
+ * only created on a device without links. Otherwise the result is [Loaded.lost]: the caller gets a
+ * throwaway key that is never saved, the unreadable file is left in place (a transient Keystore
+ * failure recovers on the next start), and the user is asked to reset and link again.
  */
 internal object WrappedEncryptionKey {
     private const val ALIAS = "devicelink.v2.wrap"
 
-    fun load(context: Context): EncryptionKeyPair {
-        val file = File(context.noBackupFilesDir, "devicelink/encryption.key")
-        if (file.isFile) runCatching { return EncryptionKeyPair(unwrap(file.readBytes())) }
+    class Loaded(val pair: EncryptionKeyPair, val lost: Boolean)
+
+    fun load(context: Context, hasLinks: Boolean): Loaded =
+        load(File(context.noBackupFilesDir, "devicelink/encryption.key"), hasLinks, ::wrap, ::unwrap)
+
+    internal fun load(file: File, hasLinks: Boolean, wrap: (ByteArray) -> ByteArray, unwrap: (ByteArray) -> ByteArray): Loaded {
+        if (file.isFile) runCatching { return Loaded(EncryptionKeyPair(unwrap(file.readBytes())), false) }
+        // No peer has pinned anything yet, so a new key breaks nothing; with links it would.
+        if (hasLinks) return Loaded(EncryptionKeyPair.generate(), lost = true)
         val pair = EncryptionKeyPair.generate()
         file.parentFile?.mkdirs()
         val temporary = File(file.parentFile, "encryption.key.tmp")
         temporary.writeBytes(wrap(pair.privateKeyBytes()))
         check(temporary.renameTo(file)) { "Cannot store encryption key" }
-        return pair
+        return Loaded(pair, false)
     }
 
     fun delete(context: Context) {

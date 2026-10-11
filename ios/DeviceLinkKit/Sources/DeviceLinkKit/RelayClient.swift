@@ -20,7 +20,10 @@ public final class URLSessionTransport: HTTPTransport, @unchecked Sendable {
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
         configuration.urlCache = nil
         configuration.httpCookieStorage = nil
-        configuration.timeoutIntervalForResource = 120
+        // Total time per request. A 10 MiB file is one ~18 MB envelope: ~75 s at 250 KB/s, longer on a slow
+        // uplink, so the cap must be far above that. Stalls are caught by each request's idle timeout
+        // (`timeoutInterval`: 30 s for uploads, wait + 20 s for long polls), not by this.
+        configuration.timeoutIntervalForResource = 15 * 60
         session = URLSession(configuration: configuration)
     }
 
@@ -34,6 +37,10 @@ public final class URLSessionTransport: HTTPTransport, @unchecked Sendable {
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<HTTPResponse, Error>) in
                 let task = session.dataTask(with: request) { data, response, error in
+                    // Our own cancellation surfaces as CancellationError, like every other suspension point.
+                    if let error = error as? URLError, error.code == .cancelled, box.cancelled {
+                        continuation.resume(throwing: CancellationError()); return
+                    }
                     if let error { continuation.resume(throwing: error); return }
                     continuation.resume(returning: HTTPResponse(status: (response as? HTTPURLResponse)?.statusCode ?? 0, body: data ?? Data()))
                 }
@@ -41,12 +48,26 @@ public final class URLSessionTransport: HTTPTransport, @unchecked Sendable {
                 task.resume()
             }
         } onCancel: {
-            box.task?.cancel()
+            box.cancel()
         }
     }
 
     private final class TaskBox: @unchecked Sendable {
-        var task: URLSessionDataTask?
+        private let lock = NSLock()
+        private var _task: URLSessionDataTask?
+        private var _cancelled = false
+        var task: URLSessionDataTask? {
+            get { lock.lock(); defer { lock.unlock() }; return _task }
+            set {
+                lock.lock(); _task = newValue; let cancelled = _cancelled; lock.unlock()
+                if cancelled { newValue?.cancel() }
+            }
+        }
+        var cancelled: Bool { lock.lock(); defer { lock.unlock() }; return _cancelled }
+        func cancel() {
+            lock.lock(); _cancelled = true; let task = _task; lock.unlock()
+            task?.cancel()
+        }
     }
 }
 
@@ -58,7 +79,7 @@ public struct RelayInfo: Codable, Sendable {
     public var push: [String]?
 }
 
-public struct DeviceMetadata: Codable, Sendable {
+public struct DeviceMetadata: Codable, Equatable, Sendable {
     public var platform: String
     public var model: String
     public var appVersion: String
@@ -111,13 +132,21 @@ public struct RelayClient: Sendable {
     public func cancelPairing(_ id: String) async throws { _ = try await call("DELETE", "/v1/pairings/\(id)") }
 
     public func upload(_ envelope: Envelope) async throws { _ = try await call("POST", "/v1/messages", body: try envelope.encode()) }
-    public func poll(wait: Int, limit: Int = 1) async throws -> [Envelope] {
-        try Envelope.decodeList(try await call("GET", "/v1/messages?wait=\(wait)&limit=\(limit)", timeout: TimeInterval(wait + 20)))
+    /// `exclude`: up to 20 envelope IDs the relay must skip (for example ones already processed this round).
+    public func poll(wait: Int, limit: Int = 1, exclude: [String] = []) async throws -> [Envelope] {
+        guard exclude.count <= 20, exclude.allSatisfy({ UUID(uuidString: $0)?.uuidString.lowercased() == $0 }) else {
+            throw DeviceLinkError.invalid("exclude")
+        }
+        let skip = exclude.isEmpty ? "" : "&exclude=" + exclude.joined(separator: ",")
+        return try Envelope.decodeList(try await call("GET", "/v1/messages?wait=\(wait)&limit=\(limit)\(skip)", timeout: TimeInterval(wait + 20)))
     }
     /// One waiting envelope by ID (notification previews). Does not acknowledge it.
     public func fetch(_ id: String) async throws -> Envelope { try Envelope.decode(try await call("GET", "/v1/messages/\(id)")) }
 
     public func acknowledge(_ id: String) async throws { _ = try await call("DELETE", "/v1/messages/\(id)") }
+
+    /// Deletes this device and everything the relay holds for it (links, messages, pairings, push token).
+    public func unregister() async throws { _ = try await call("DELETE", "/v1/devices/self") }
 
     public func registerPush(token: String, environment: String, topic: String) async throws {
         _ = try await call("PUT", "/v1/push", body: Data("{\"provider\":\"apns\",\"token\":\"\(token)\",\"environment\":\"\(environment)\",\"topic\":\"\(topic)\"}".utf8))

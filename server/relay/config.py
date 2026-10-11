@@ -17,6 +17,12 @@ class Settings:
     enrollment_token: str = ""
     body_limit: int = 24 * 1024 * 1024
     ciphertext_limit: int = 16 * 1024 * 1024
+    # Request body read limits. A body may take body_grace_ms plus its size (Content-Length, else the
+    # route maximum) at body_min_rate bytes per second, and may pause at most body_idle_ms between
+    # chunks; otherwise 408 body_timeout. This bounds how long a slow client holds an upload slot.
+    body_grace_ms: int = 10_000
+    body_min_rate: int = 32 * 1024
+    body_idle_ms: int = 20_000
     mailbox_count: int = 20
     mailbox_bytes: int = 64 * 1024 * 1024
     global_bytes: int = 256 * 1024 * 1024
@@ -40,6 +46,9 @@ class Settings:
     admin_password_hash: str = ""
     session_secret: str = ""
     session_hours: int = 12
+    # Key the admin login throttle by client IP from CF-Connecting-IP / X-Forwarded-For.
+    # Enable only when every request reaches the relay through a proxy that sets these headers.
+    trust_proxy_headers: bool = False
     # Bearer token for GET /metrics (Prometheus text). Unset: only a signed-in admin can read it.
     metrics_token: str = ""
     # Optional Apple Push Notification service (token auth, .p8 key).
