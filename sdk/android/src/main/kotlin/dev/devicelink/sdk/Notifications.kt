@@ -106,12 +106,16 @@ internal object Notifications {
         notify(context, record.id, builder.build())
     }
 
-    /** Platform share sheet for a received record; also used by apps' history screens. */
+    /**
+     * Platform share sheet for a record; also used by apps' history screens. Null when there is nothing
+     * to share, or the file can no longer be read (a sent file's grant from the app it came from ends).
+     */
     fun shareIntent(context: Context, record: ClipRecord): Intent? {
         val send = Intent(Intent.ACTION_SEND)
         when {
             record.uri != null -> {
                 val uri = Uri.parse(record.uri)
+                if (!isReadable(context, uri)) return null
                 send.setType(record.mime ?: "application/octet-stream").putExtra(Intent.EXTRA_STREAM, uri)
                     .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                 send.clipData = ClipData.newRawUri(record.name ?: "", uri)
@@ -122,6 +126,10 @@ internal object Notifications {
         return Intent.createChooser(send, context.getString(R.string.dl_share_title, record.peerName))
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION)
     }
+
+    /** Opening the file is the only reliable test: a lapsed grant shows up as a SecurityException. */
+    fun isReadable(context: Context, uri: Uri): Boolean =
+        runCatching { context.contentResolver.openAssetFileDescriptor(uri, "r")?.use { true } ?: false }.getOrDefault(false)
 
     fun cancel(context: Context, id: String) = context.getSystemService(NotificationManager::class.java).cancel(id, 0)
 

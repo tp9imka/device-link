@@ -286,13 +286,25 @@ class MainActivity : Activity() {
     private fun recopy(record: ClipRecord) {
         scope.launch(Dispatchers.Default) {
             val copied = link.copyToClipboard(record)
+            val intent = if (copied) null else link.shareIntent(record)
             launch(Dispatchers.Main) {
-                if (copied) Toast.makeText(this@MainActivity, R.string.copied_again, Toast.LENGTH_SHORT).show() else share(record)
+                if (copied) Toast.makeText(this@MainActivity, R.string.copied_again, Toast.LENGTH_SHORT).show() else openShare(intent)
             }
         }
     }
 
-    private fun share(record: ClipRecord) { link.shareIntent(record)?.let(::startActivity) }
+    /** Off the main thread: checking that a file is still readable opens it. */
+    private fun share(record: ClipRecord) {
+        scope.launch(Dispatchers.Default) {
+            val intent = link.shareIntent(record)
+            launch(Dispatchers.Main) { openShare(intent) }
+        }
+    }
+
+    private fun openShare(intent: android.content.Intent?) {
+        val opened = intent != null && runCatching { startActivity(intent) }.isSuccess
+        if (!opened) Toast.makeText(this, R.string.item_unavailable, Toast.LENGTH_SHORT).show()
+    }
 
     private fun menu(anchor: View, record: ClipRecord) {
         PopupMenu(this, anchor).apply {

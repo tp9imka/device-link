@@ -46,6 +46,7 @@
  <string name="from">From %1$s</string>
  <string name="to">To %1$s</string>
  <string name="copied_again">Copied</string>
+ <string name="item_unavailable">This item is no longer available on this phone</string>
  <string name="copy">Copy</string>
  <string name="share">Share…</string>
  <string name="save">Save…</string>

@@ -310,7 +310,8 @@ class DeviceLinkInstance internal constructor(private val context: Context, val 
     fun copyToClipboard(record: ClipRecord): Boolean {
         val copied = when {
             record.text != null -> clipboard.writeText(record.text, record.html, record.sensitive)
-            record.uri != null && record.mime != null -> clipboard.writeUri(Uri.parse(record.uri), record.mime)
+            record.uri != null && record.mime != null ->
+                Uri.parse(record.uri).let { Notifications.isReadable(context, it) && clipboard.writeUri(it, record.mime) }
             else -> false
         }
         if (copied && record.direction == ClipDirection.RECEIVED) clipHistory.update(record.id, ClipState.COPIED)
