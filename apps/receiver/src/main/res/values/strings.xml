@@ -38,6 +38,7 @@
  <string name="unlink">Unlink</string>
  <string name="state_copied_in">Copied to clipboard</string>
  <string name="state_share">Tap to copy · hold to share</string>
+ <string name="state_share_or_save">Tap to copy · hold to share or save</string>
  <string name="state_pending_out">Sending…</string>
  <string name="state_copied_out">Copied on %1$s</string>
  <string name="state_delivered_out">Delivered to %1$s</string>
@@ -45,6 +46,7 @@
  <string name="from">From %1$s</string>
  <string name="to">To %1$s</string>
  <string name="copied_again">Copied</string>
+ <string name="item_unavailable">This item is no longer available on this phone</string>
  <string name="copy">Copy</string>
  <string name="share">Share…</string>
  <string name="save">Save…</string>

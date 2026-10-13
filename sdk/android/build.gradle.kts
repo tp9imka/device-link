@@ -10,5 +10,7 @@ dependencies {
  implementation(libs.coroutines.android)
  implementation(libs.zxing)
  implementation(libs.qr.scanner)
+ // The scanner calls androidx.core at runtime but does not declare it.
+ implementation(libs.androidx.core)
  testImplementation(libs.junit)
 }

@@ -19,7 +19,10 @@ object Limits {
     const val MAX_NAME_CHARS = 48
     const val MAX_FILE_NAME_CHARS = 120
     const val MAX_HTML_BYTES = 256 * 1024
-    /** Files above [MAX_CONTENT_BYTES] are split into chunks of this size (one envelope each). */
+    /**
+     * Senders split any image or file above this size into chunks of this size (one envelope each), so each
+     * envelope is sealed just before its upload. Single envelopes up to [MAX_CONTENT_BYTES] are still accepted.
+     */
     const val CHUNK_BYTES = 4 * 1024 * 1024
     const val MAX_PARTS = 10
     const val MAX_FILE_BYTES = CHUNK_BYTES * MAX_PARTS
@@ -222,13 +225,19 @@ data class Payload(
         fun chunks(kind: PayloadKind, name: String, mime: String, bytes: ByteArray, now: Long, group: String = UUID.randomUUID().toString()): List<Payload> {
             require(kind == PayloadKind.IMAGE || kind == PayloadKind.FILE)
             require(bytes.size in 1..Limits.MAX_FILE_BYTES) { "File is larger than ${Limits.MAX_FILE_BYTES / (1024 * 1024)} MB" }
-            val parts = (bytes.size + Limits.CHUNK_BYTES - 1) / Limits.CHUNK_BYTES
+            val parts = partsFor(bytes.size.toLong())
             return List(parts) { index ->
                 val slice = bytes.copyOfRange(index * Limits.CHUNK_BYTES, minOf(bytes.size, (index + 1) * Limits.CHUNK_BYTES))
-                Payload(kind, name = name, mime = mime, data = Encoding.b64(slice), sentAt = now, group = group,
-                    part = index, parts = parts, size = bytes.size.toLong())
+                chunk(kind, name, mime, slice, index, parts, bytes.size.toLong(), now, group)
             }
         }
+
+        /** Number of chunks a file of [size] bytes is split into. */
+        fun partsFor(size: Long): Int = ((size + Limits.CHUNK_BYTES - 1) / Limits.CHUNK_BYTES).toInt()
+
+        /** One chunk of a file of [size] bytes, so a sender can build chunks one at a time. */
+        fun chunk(kind: PayloadKind, name: String, mime: String, slice: ByteArray, part: Int, parts: Int, size: Long, now: Long, group: String) =
+            Payload(kind, name = name, mime = mime, data = Encoding.b64(slice), sentAt = now, group = group, part = part, parts = parts, size = size)
         fun image(name: String, mime: String, bytes: ByteArray, now: Long) =
             Payload(PayloadKind.IMAGE, name = name, mime = mime, data = Encoding.b64(bytes), sentAt = now)
         fun file(name: String, mime: String, bytes: ByteArray, now: Long) =

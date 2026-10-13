@@ -10,6 +10,8 @@ public enum Limits {
     public static let maxNameUTF16 = 48
     public static let maxFileNameUTF16 = 120
     public static let maxHTMLBytes = 256 * 1024
+    /// Senders split any image or file above this size into chunks of this size, so each envelope is sealed just
+    /// before its upload. Single envelopes up to `maxContentBytes` are still accepted.
     public static let chunkBytes = 4 * 1024 * 1024
     public static let maxParts = 10
     public static let maxFileBytes = chunkBytes * maxParts
@@ -223,13 +225,20 @@ public struct Payload: Codable, Equatable, Sendable {
         guard kind == .image || kind == .file, (1...Limits.maxFileBytes).contains(bytes.count) else {
             throw DeviceLinkError.invalid("File is larger than \(Limits.maxFileBytes / (1024 * 1024)) MB")
         }
-        let parts = (bytes.count + Limits.chunkBytes - 1) / Limits.chunkBytes
+        let parts = partsFor(size: Int64(bytes.count))
         return (0..<parts).map { index in
             let start = bytes.startIndex + index * Limits.chunkBytes
             let slice = bytes[start..<min(bytes.endIndex, start + Limits.chunkBytes)]
-            return Payload(kind: kind, name: name, mime: mime, data: Encoding.b64(Data(slice)), sentAt: now, group: group,
-                           part: index, parts: parts, size: Int64(bytes.count))
+            return chunk(kind: kind, name: name, mime: mime, slice: Data(slice), part: index, parts: parts,
+                         size: Int64(bytes.count), now: now, group: group)
         }
+    }
+    /// Number of chunks a file of `size` bytes is split into.
+    public static func partsFor(size: Int64) -> Int { Int((size + Int64(Limits.chunkBytes) - 1) / Int64(Limits.chunkBytes)) }
+    /// One chunk of a file of `size` bytes, so a sender can build chunks one at a time.
+    public static func chunk(kind: PayloadKind, name: String, mime: String, slice: Data, part: Int, parts: Int, size: Int64,
+                             now: Int64, group: String) -> Payload {
+        Payload(kind: kind, name: name, mime: mime, data: Encoding.b64(slice), sentAt: now, group: group, part: part, parts: parts, size: size)
     }
     public static func image(name: String, mime: String, bytes: Data, now: Int64) -> Payload {
         Payload(kind: .image, name: name, mime: mime, data: Encoding.b64(bytes), sentAt: now)

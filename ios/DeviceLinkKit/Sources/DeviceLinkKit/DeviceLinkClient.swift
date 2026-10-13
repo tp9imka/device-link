@@ -28,7 +28,39 @@ public enum OutgoingContent: Sendable {
     case styledText(String, html: String?, sensitive: Bool)
     case image(name: String, mime: String, data: Data)
     case file(name: String, mime: String, data: Data)
+    /// An image or file read while it is sent, one chunk at a time, so a large file is never whole in memory.
+    case stream(OutgoingSource)
 }
+
+/// Content for `OutgoingContent.stream`. `size` must be exact: it is checked against the limits before anything is
+/// sent, and a stream that yields a different length fails the send. `open` is called once per send.
+public struct OutgoingSource: Sendable {
+    public let kind: PayloadKind
+    public let name: String
+    public let mime: String
+    public let size: Int64
+    public let open: @Sendable () throws -> InputStream
+
+    public init(kind: PayloadKind, name: String, mime: String, size: Int64, open: @escaping @Sendable () throws -> InputStream) {
+        precondition(kind == .image || kind == .file)
+        self.kind = kind; self.name = name; self.mime = mime; self.size = size; self.open = open
+    }
+
+    /// A file on disk; its size is read now.
+    public init(kind: PayloadKind, name: String, mime: String, fileURL: URL) throws {
+        let size = (try FileManager.default.attributesOfItem(atPath: fileURL.path)[.size] as? NSNumber)?.int64Value ?? 0
+        self.init(kind: kind, name: name, mime: mime, size: size) {
+            guard let stream = InputStream(url: fileURL) else { throw SourceReadError() }
+            return stream
+        }
+    }
+}
+
+/// The content of an `OutgoingSource` could not be read; reported as `SendOutcome.sendFailed`.
+struct SourceReadError: Error {}
+
+/// Writes a chunked file part by part to a sink.
+typealias ChunkWriter = @Sendable (_ sink: (Data) throws -> Void) throws -> Void
 
 /// A decrypted item from a linked peer, handed to the app to apply.
 public struct IncomingItem: Sendable, Identifiable {
@@ -38,11 +70,11 @@ public struct IncomingItem: Sendable, Identifiable {
     public let expiresAt: Int64
     /// A newer clip from the same peer was already applied; list it, do not overwrite the clipboard.
     public let stale: Bool
-    /// Reassembled content of a chunked file; nil for single-envelope items.
-    let assembled: Data?
+    /// Reads a chunked file part by part from the receive spool; nil for single-envelope items.
+    let chunked: ChunkWriter?
 
-    init(id: String, peer: LinkedPeer, payload: Payload, expiresAt: Int64, stale: Bool, assembled: Data? = nil) {
-        self.id = id; self.peer = peer; self.payload = payload; self.expiresAt = expiresAt; self.stale = stale; self.assembled = assembled
+    init(id: String, peer: LinkedPeer, payload: Payload, expiresAt: Int64, stale: Bool, chunked: ChunkWriter? = nil) {
+        self.id = id; self.peer = peer; self.payload = payload; self.expiresAt = expiresAt; self.stale = stale; self.chunked = chunked
     }
 
     public var kind: PayloadKind { payload.kind }
@@ -51,7 +83,21 @@ public struct IncomingItem: Sendable, Identifiable {
     public var sensitive: Bool { payload.sensitive == true }
     public var fileName: String? { payload.name }
     public var mime: String { payload.mime ?? "text/plain" }
-    public func bytes() -> Data? { assembled ?? (try? payload.dataBytes()) }
+    /// Whole content in memory. Prefer `write(to:)` for files: a chunked file can be 40 MB.
+    public func bytes() -> Data? {
+        guard let chunked else { return try? payload.dataBytes() }
+        var whole = Data()
+        do { try chunked { whole.append($0) } } catch { return nil }
+        return whole
+    }
+
+    /// Streams an image or file to `sink`, holding at most one chunk at a time. A chunked file is read from the
+    /// receive spool, so call this (or `bytes()`) inside the receive handler; the spool is cleared after it.
+    public func write(to sink: (Data) throws -> Void) throws {
+        if let chunked { try chunked(sink); return }
+        guard let data = try payload.dataBytes() else { throw DeviceLinkError.invalid("content") }
+        try sink(data)
+    }
 }
 
 /// Snapshot for debug screens. Never contains content.
@@ -101,6 +147,8 @@ public struct SendOutcome: Sendable {
 
 /// Pauses before the 2nd, 3rd and 4th upload attempt of one envelope (4 attempts, about 7 s in total).
 let uploadRetryDelaysMillis: [UInt64] = [1_000, 2_000, 4_000]
+/// How long one envelope waits for a full mailbox to drain, counted from the first `mailbox_full` answer.
+let mailboxFullWaitMillis: Int64 = 90_000
 
 /// URL errors a retry cannot fix (cancellation, bad URL, certificate and ATS failures).
 private let permanentURLErrors: Set<URLError.Code> = [
@@ -513,44 +561,124 @@ public actor DeviceLinkClient {
     /// Encrypts separately for each target peer (all linked peers by default).
     public func send(_ content: OutgoingContent, to peerIds: Set<String>? = nil) async throws -> [SendOutcome] {
         let now = clock()
-        let payloads: [Payload]
+        let source: OutgoingSource?
         switch content {
-        case .text(let text): payloads = [.text(text, now: now)]
-        case .styledText(let text, let html, let sensitive): payloads = [.text(text, now: now, html: html, sensitive: sensitive)]
+        case .text, .styledText: source = nil
         case .image(let name, let mime, let data):
-            payloads = data.count <= Limits.maxContentBytes ? [.image(name: name, mime: mime, bytes: data, now: now)]
-                : try Payload.chunks(kind: .image, name: name, mime: mime, bytes: data, now: now)
+            source = OutgoingSource(kind: .image, name: name, mime: mime, size: Int64(data.count)) { InputStream(data: data) }
         case .file(let name, let mime, let data):
-            payloads = data.count <= Limits.maxContentBytes ? [.file(name: name, mime: mime, bytes: data, now: now)]
-                : try Payload.chunks(kind: .file, name: name, mime: mime, bytes: data, now: now)
+            source = OutgoingSource(kind: .file, name: name, mime: mime, size: Int64(data.count)) { InputStream(data: data) }
+        case .stream(let stream): source = stream
         }
-        for payload in payloads { try payload.validate() }
-        var outcomes: [SendOutcome] = []
-        for peer in peers where peerIds?.contains(peer.id) ?? true {
+        if let source, source.size > Int64(Limits.maxFileBytes) {
+            throw DeviceLinkError.invalid("File is larger than \(Limits.maxFileBytes / (1024 * 1024)) MB")
+        }
+        let targets = peers.filter { peerIds?.contains($0.id) ?? true }
+        if let source, source.size > Int64(Limits.chunkBytes) { return try await sendChunked(source, to: targets, now: now) }
+        let payload: Payload
+        switch content {
+        case .text(let text): payload = .text(text, now: now)
+        case .styledText(let text, let html, let sensitive): payload = .text(text, now: now, html: html, sensitive: sensitive)
+        case .image(let name, let mime, let data): payload = .image(name: name, mime: mime, bytes: data, now: now)
+        case .file(let name, let mime, let data): payload = .file(name: name, mime: mime, bytes: data, now: now)
+        case .stream(let source):
             do {
-                var id = ""
-                for payload in payloads { id = try await deliver(payload, to: peer) }
-                note { $0.lastSendAt = clock(); $0.sent += 1 }
-                outcomes.append(SendOutcome(peerId: peer.id, itemId: payloads[0].group ?? id, error: nil))
-            } catch is CancellationError {
-                throw CancellationError()
-            } catch {
-                noteFailure(error)
-                outcomes.append(SendOutcome(peerId: peer.id, itemId: nil, error: SendOutcome.code(for: error)))
+                let stream = try Self.open(source)
+                defer { stream.close() }
+                let data = try Self.read(stream, count: Int(source.size))
+                try Self.expectEnd(stream)
+                payload = Payload(kind: source.kind, name: source.name, mime: source.mime, data: Encoding.b64(data), sentAt: now)
+            } catch let error as SourceReadError {
+                return outcomes(targets, failures: Dictionary(uniqueKeysWithValues: targets.map { ($0.id, error as Error) })) { _ in nil }
             }
         }
-        return outcomes
+        try payload.validate()
+        var failures: [String: Error] = [:]
+        var ids: [String: String] = [:]
+        for peer in targets {
+            do { ids[peer.id] = try await deliver(payload, to: peer) } catch is CancellationError { throw CancellationError() } catch { failures[peer.id] = error }
+        }
+        return outcomes(targets, failures: failures) { ids[$0] }
+    }
+
+    /// Sends a chunked file holding at most one chunk (its bytes, payload and envelope) at a time: each chunk is
+    /// read from the source once, then sealed and uploaded to every target in turn. A peer whose chunk failed
+    /// gets no further chunks; the others continue. A chunked file is one item for receipts and UI: its group ID.
+    private func sendChunked(_ source: OutgoingSource, to targets: [LinkedPeer], now: Int64) async throws -> [SendOutcome] {
+        let parts = Payload.partsFor(size: source.size)
+        let group = UUID().uuidString.lowercased()
+        var failures: [String: Error] = [:]
+        do {
+            let stream = try Self.open(source)
+            defer { stream.close() }
+            for part in 0..<parts {
+                let active = targets.filter { failures[$0.id] == nil }
+                if active.isEmpty { break }
+                let length = Int(min(Int64(Limits.chunkBytes), source.size - Int64(part) * Int64(Limits.chunkBytes)))
+                let slice = try Self.read(stream, count: length)
+                if part == parts - 1 { try Self.expectEnd(stream) }
+                let payload = Payload.chunk(kind: source.kind, name: source.name, mime: source.mime, slice: slice, part: part,
+                                            parts: parts, size: source.size, now: now, group: group)
+                try payload.validate()
+                for peer in active {
+                    do { _ = try await deliver(payload, to: peer) } catch is CancellationError { throw CancellationError() } catch { failures[peer.id] = error }
+                }
+            }
+        } catch let error as SourceReadError {
+            for peer in targets where failures[peer.id] == nil { failures[peer.id] = error }
+        }
+        return outcomes(targets, failures: failures) { _ in group }
+    }
+
+    private func outcomes(_ targets: [LinkedPeer], failures: [String: Error], itemId: (String) -> String?) -> [SendOutcome] {
+        targets.map { peer in
+            if let error = failures[peer.id] {
+                noteFailure(error)
+                return SendOutcome(peerId: peer.id, itemId: nil, error: SendOutcome.code(for: error))
+            }
+            note { $0.lastSendAt = self.clock(); $0.sent += 1 }
+            return SendOutcome(peerId: peer.id, itemId: itemId(peer.id), error: nil)
+        }
+    }
+
+    private static func open(_ source: OutgoingSource) throws -> InputStream {
+        let stream: InputStream
+        do { stream = try source.open() } catch { throw SourceReadError() }
+        stream.open()
+        if stream.streamStatus == .error { throw SourceReadError() }
+        return stream
+    }
+
+    private static func read(_ stream: InputStream, count: Int) throws -> Data {
+        var data = Data(count: count)
+        var offset = 0
+        while offset < count {
+            let read = data.withUnsafeMutableBytes { raw in
+                stream.read(raw.baseAddress!.assumingMemoryBound(to: UInt8.self) + offset, maxLength: count - offset)
+            }
+            // 0 before `count` bytes: the content is shorter than its size.
+            guard read > 0 else { throw SourceReadError() }
+            offset += read
+        }
+        return data
+    }
+
+    private static func expectEnd(_ stream: InputStream) throws {
+        var byte: UInt8 = 0
+        if stream.read(&byte, maxLength: 1) != 0 { throw SourceReadError() }
     }
 
     /// Seals `payload` once and uploads it. Each envelope is retried on its own, so a failure on chunk 7 of 8
     /// resends only chunk 7: transient failures (`isTransientUploadFailure`) up to `uploadRetryDelaysMillis`
-    /// more times, `429 mailbox_full` every 2 s for up to 90 s while the receiver drains. `retry: false` makes
+    /// more times, `429 mailbox_full` every 2 s for up to `mailboxFullWaitMillis` after the first such answer while
+    /// the receiver drains. Each attempt waits `uploadTimeout` for the answer. `retry: false` makes
     /// one attempt (best-effort notices that must not hold up the caller).
     private func deliver(_ payload: Payload, to peer: LinkedPeer, retry: Bool = true) async throws -> String {
         let sequence = try update { $0.sequence += 1 }.sequence
         let envelope = try crypto.seal(payload, to: peer.bundle, now: clock(), sequence: sequence, lifetimeMillis: config.lifetimeMillis)
         var attempt = 0
-        let deadline = clock() + 90_000
+        // Counted from the first full answer: a slow upload before it must not use up the wait.
+        var fullSince: Int64?
         while true {
             do {
                 // Retries resend the exact same envelope: the relay treats it as idempotent.
@@ -558,7 +686,8 @@ public actor DeviceLinkClient {
                 return envelope.id
             } catch {
                 if error is CancellationError || !retry { throw error }
-                if case DeviceLinkError.relay(_, "mailbox_full") = error, clock() < deadline {
+                if case DeviceLinkError.relay(_, "mailbox_full") = error, clock() - (fullSince ?? clock()) < mailboxFullWaitMillis {
+                    if fullSince == nil { fullSince = clock() }
                     // The receiver drains its mailbox as it acknowledges; large chunked files rely on this.
                     try await Task.sleep(nanoseconds: 2_000_000_000)
                     continue
@@ -599,13 +728,14 @@ public actor DeviceLinkClient {
                 if !(error is CancellationError) { noteFailure(error) }
                 throw error
             }
-            if envelopes.isEmpty { return DrainResult(applied: applied, complete: true) }
+            if envelopes.isEmpty { await failStalledGroups(); return DrainResult(applied: applied, complete: true) }
             for envelope in envelopes {
                 if try await process(envelope, handler: handler) { applied += 1 }
                 handled.append(envelope.id)
                 if handled.count > 20 { handled.removeFirst() }
             }
         }
+        await failStalledGroups()
         return DrainResult(applied: applied, complete: false)
     }
 
@@ -625,6 +755,7 @@ public actor DeviceLinkClient {
         }
         var delivered = resumed
         for envelope in envelopes where try await process(envelope, handler: handler) { delivered += 1 }
+        await failStalledGroups()
         if delivered > 0 { note { $0.lastReceiveAt = clock(); $0.received += delivered } }
         return delivered
     }
@@ -667,8 +798,9 @@ public actor DeviceLinkClient {
             if payload.isChunk, let group = payload.group, let part = payload.part, let parts = payload.parts {
                 // Stored (still encrypted) before the acknowledgement, so a restart resumes the file.
                 let key = ChunkSpoolKey.key(peerId: peer.id, group: group)
-                spool.purge(now: clock())
-                try spool.put(key, part: part, envelope: envelope)
+                let now = clock()
+                await failStalledGroups(now: now)
+                try spool.put(key, part: part, envelope: envelope, receivedAt: now)
                 await acknowledgeApplied(relay, envelope.id)
                 guard spool.count(key) >= parts else { return false }
                 return try await assemble(key, peer: peer, handler: handler)
@@ -701,43 +833,59 @@ public actor DeviceLinkClient {
 
     /// Applies a spooled chunked file once every part is present. Returns whether the handler ran.
     private func assemble(_ key: String, peer: LinkedPeer, handler: @Sendable (IncomingItem) async -> ReceiptStatus) async throws -> Bool {
-        let stored = spool.parts(key)
         let state = store.load()
-        // Applied and recorded before a crash, only the cleanup was missed.
-        if !stored.isEmpty, stored.allSatisfy({ state.seen[$0.id] != nil }) { spool.remove(key); return false }
-        let now = clock()
-        var opened: [(Envelope, Payload)] = []
-        for envelope in stored {
-            guard let payload = try? crypto.open(envelope, from: peer.bundle, now: now), payload.isChunk else { return await rejectFile(key, peer: peer) }
-            opened.append((envelope, payload))
+        // One part in memory at a time: authenticate it, keep only its metadata and data length. Each part is
+        // checked as of its arrival: a part of a slowly uploaded file may have expired since.
+        struct Part { let number: Int; let receivedAt: Int64; let envelope: Envelope; let payload: Payload?; let length: Int }
+        var stored: [Part] = []
+        for number in spool.partNumbers(key) {
+            guard var envelope = spool.part(key, number), let receivedAt = spool.receivedAt(key, number) else { continue }
+            var payload = try? crypto.open(envelope, from: peer.bundle, now: receivedAt)
+            let length = (try? payload?.dataBytes())??.count ?? 0
+            envelope.ciphertext = ""; envelope.signature = ""; payload?.data = nil
+            stored.append(Part(number: number, receivedAt: receivedAt, envelope: envelope, payload: payload, length: length))
         }
-        opened.sort { ($0.1.part ?? 0) < ($1.1.part ?? 0) }
-        guard let first = opened.first?.1, let parts = first.parts, let size = first.size else { return false }
-        let consistent = opened.map { $0.1.part ?? -1 } == Array(0..<parts) && opened.allSatisfy { _, p in
-            p.parts == parts && p.size == size && p.group == first.group && p.kind == first.kind
+        // Applied and recorded before a crash, only the cleanup was missed.
+        if !stored.isEmpty, stored.allSatisfy({ state.seen[$0.envelope.id] != nil }) { spool.remove(key); return false }
+        if stored.contains(where: { $0.payload?.isChunk != true }) { return await rejectFile(key, peer: peer) }
+        let opened = stored.sorted { ($0.payload?.part ?? 0) < ($1.payload?.part ?? 0) }
+        guard let first = opened.first?.payload, let parts = first.parts, let size = first.size else { return false }
+        let consistent = opened.map { $0.payload?.part ?? -1 } == Array(0..<parts) && opened.allSatisfy {
+            let p = $0.payload
+            return p?.parts == parts && p?.size == size && p?.group == first.group && p?.kind == first.kind
         }
         guard consistent else {
             // Fewer parts than announced: still arriving. As many or more and still inconsistent: never completes.
             return opened.count >= parts ? await rejectFile(key, peer: peer) : false
         }
-        var whole = Data(capacity: Int(size))
-        for (_, payload) in opened { whole.append(try payload.dataBytes() ?? Data()) }
-        guard Int64(whole.count) == size, let group = first.group else { return await rejectFile(key, peer: peer) }
-        let envelopes = opened.map(\.0)
+        guard opened.reduce(Int64(0), { $0 + Int64($1.length) }) == size, let group = first.group else { return await rejectFile(key, peer: peer) }
+        // The file is as fresh as its last part: older parts are recorded as seen until that part expires.
+        let expiresAt = opened.map(\.envelope.expiresAt).max() ?? 0
+        let envelopes = opened.map { part -> Envelope in var envelope = part.envelope; envelope.expiresAt = expiresAt; return envelope }
         let newest = envelopes.map(\.sequence).max() ?? 0
         let stale = first.kind != .file && newest <= (state.lastClip[peer.id] ?? 0)
         var meta = first
-        meta.data = nil; meta.part = nil; meta.parts = nil
-        let item = IncomingItem(id: group, peer: peer, payload: meta, expiresAt: envelopes.map(\.expiresAt).min() ?? 0,
-                                stale: stale, assembled: whole)
+        meta.part = nil; meta.parts = nil
+        // Second pass while the handler writes: each part is read and opened again, then released.
+        let numbers = opened.map { ($0.number, $0.receivedAt) }
+        let (spool, crypto, bundle) = (spool, crypto, peer.bundle)
+        let chunked: ChunkWriter = { sink in
+            for (index, (number, receivedAt)) in numbers.enumerated() {
+                guard let envelope = spool.part(key, number) else { throw DeviceLinkError.invalid("chunk") }
+                let payload = try crypto.open(envelope, from: bundle, now: receivedAt)
+                guard payload.part == index, payload.group == group, let data = try payload.dataBytes() else { throw DeviceLinkError.invalid("chunk") }
+                try sink(data)
+            }
+        }
+        let item = IncomingItem(id: group, peer: peer, payload: meta, expiresAt: expiresAt, stale: stale, chunked: chunked)
         let status = try await apply(item, envelopes: envelopes, handler: handler)
         spool.remove(key)
         _ = try? await deliver(.receipt(group, status), to: peer)
         return true
     }
 
-    /// Drops a chunked file that can never be assembled (a part does not open, parts disagree, or the total
-    /// does not match `size`) and tells the sender with a `failed` receipt for the group, so it does not wait
+    /// Drops a chunked file that can never be assembled (a part does not open, parts disagree, the total does
+    /// not match `size`, or no new part arrived for `ChunkSpoolKey.groupIdleMillis`) and tells the sender with a `failed` receipt for the group, so it does not wait
     /// for a receipt that never comes. Returns false: the handler did not run.
     private func rejectFile(_ key: String, peer: LinkedPeer) async -> Bool {
         spool.remove(key)
@@ -748,11 +896,20 @@ public actor DeviceLinkClient {
         return false
     }
 
+    /// Group idle expiry: a chunked file with no new part for `ChunkSpoolKey.groupIdleMillis` never completes, so
+    /// it is dropped and its sender gets a `failed` receipt instead of waiting forever. Runs on every receive.
+    private func failStalledGroups(now: Int64? = nil) async {
+        let peers = store.load().peers
+        for key in spool.purge(now: now ?? clock()) {
+            if let peer = peers.first(where: { $0.id == ChunkSpoolKey.peer(of: key) }) { _ = await rejectFile(key, peer: peer) }
+        }
+    }
+
     /// Completes files whose chunks were all stored by a previous process that stopped before applying.
     private func resumeSpooled(handler: @Sendable (IncomingItem) async -> ReceiptStatus) async throws -> Int {
         guard !spoolResumed else { return 0 }
         spoolResumed = true
-        spool.purge(now: clock())
+        await failStalledGroups()
         let peers = store.load().peers
         var applied = 0
         for key in spool.keys() {

@@ -144,16 +144,25 @@ final class MacModel: ObservableObject {
         if let text = item.text {
             copied = pasteboard.setString(text, forType: .string)
             if let html = item.html { pasteboard.setString(html, forType: .html) }
-        } else if item.kind == .image, let data = item.bytes(), let image = NSImage(data: data) {
+        } else if item.kind == .image, let data = Self.collect(item), let image = NSImage(data: data) {
+            // The pasteboard takes the decoded image, so an image is read whole; files are streamed below.
             copied = pasteboard.writeObjects([image])
-        } else if let data = item.bytes(), let name = item.fileName {
+        } else if item.kind == .image || item.kind == .file, let name = item.fileName {
             let url = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0].appendingPathComponent(name)
-            copied = (try? data.write(to: url, options: .withoutOverwriting)) != nil && pasteboard.writeObjects([url as NSURL])
+            copied = (try? ReceivedFiles.write(to: url, replacing: false) { try item.write(to: $0) }) != nil
+                && pasteboard.writeObjects([url as NSURL])
         }
         lastChange = pasteboard.changeCount
         recent.insert("↓ \(item.peer.name): \(item.sensitive ? "Sensitive content" : item.text?.prefix(60).description ?? item.fileName ?? "image")", at: 0)
         recent = Array(recent.prefix(8))
         return copied ? .copied : .delivered
+    }
+
+    /// The whole content via the streaming API; nil when it cannot be read.
+    private static func collect(_ item: IncomingItem) -> Data? {
+        var data = Data()
+        do { try item.write { data.append($0) } } catch { return nil }
+        return data
     }
 
     private func checkPasteboard() {

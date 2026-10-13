@@ -36,7 +36,8 @@ class UrlConnectionTransport(private val maxResponseBytes: Int = 25 * 1024 * 102
                         connection.instanceFollowRedirects = false
                         connection.useCaches = false
                         // No total request timeout: an 18 MB upload on a slow link may take minutes. The
-                        // read timeout is an idle timeout on the response; writes are not time-capped here.
+                        // read timeout starts once the body sits in the send buffer, so uploads pass a
+                        // size-scaled value (uploadTimeoutMillis); writes are not time-capped here.
                         connection.connectTimeout = 15_000
                         connection.readTimeout = timeoutMillis
                         headers.forEach(connection::setRequestProperty)
@@ -69,6 +70,22 @@ class UrlConnectionTransport(private val maxResponseBytes: Int = 25 * 1024 * 102
 
     fun cancelAll() { active.forEach(HttpURLConnection::disconnect) }
 }
+
+/** Wait for a relay answer once the request is sent (non-upload calls, and the margin after an upload body). */
+internal const val RESPONSE_TIMEOUT_MILLIS = 30_000
+/** Mirror the relay's body deadline: server/relay/config.py `body_grace_ms` and `body_min_rate` (bytes per second). */
+internal const val RELAY_BODY_GRACE_MILLIS = 10_000L
+internal const val RELAY_BODY_MIN_BYTES_PER_SECOND = 32 * 1024L
+
+/**
+ * How long to wait for the answer to an upload of [bodyBytes]. The write returns once the body is in the
+ * socket's send buffer, which can hold megabytes still in flight, so the response timer must cover the
+ * whole time the relay itself allows for reading that body (server/relay/app.py `read_body`), plus
+ * [RESPONSE_TIMEOUT_MILLIS] for storing and answering. Giving up earlier reports a failure for an upload
+ * the relay may still accept.
+ */
+internal fun uploadTimeoutMillis(bodyBytes: Int): Int =
+    (RELAY_BODY_GRACE_MILLIS + bodyBytes * 1000L / RELAY_BODY_MIN_BYTES_PER_SECOND + RESPONSE_TIMEOUT_MILLIS).toInt()
 
 class RelayException(val status: Int, val code: String) : Exception("Relay request failed: $status $code")
 
@@ -130,7 +147,10 @@ class RelayClient(
     suspend fun cancelPairing(pairingId: String) { call("DELETE", "/v1/pairings/$pairingId") }
 
     /** Returns 201/200 for new/idempotent retry; both mean the relay durably accepted the envelope. */
-    suspend fun upload(envelope: Envelope) { call("POST", "/v1/messages", envelope.encode()) }
+    suspend fun upload(envelope: Envelope) {
+        val body = envelope.encode()
+        call("POST", "/v1/messages", body, timeoutMillis = uploadTimeoutMillis(body.size))
+    }
 
     /** [exclude]: up to 20 envelope IDs the relay must skip (for example ones already processed this round). */
     suspend fun poll(waitSeconds: Int, limit: Int = 1, exclude: Collection<String> = emptyList()): List<Envelope> {
@@ -157,7 +177,7 @@ class RelayClient(
         body: ByteArray = ByteArray(0),
         extraHeaders: Map<String, String> = emptyMap(),
         signed: Boolean = true,
-        timeoutMillis: Int = 30_000,
+        timeoutMillis: Int = RESPONSE_TIMEOUT_MILLIS,
     ): ByteArray {
         val headers = LinkedHashMap<String, String>()
         if (body.isNotEmpty()) headers["Content-Type"] = "application/json"

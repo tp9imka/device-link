@@ -56,6 +56,8 @@ private class FakeRelay(private val clock: () -> Long) : HttpTransport {
 
     /** Empty mailbox polls wait out `wait` (virtual time under runTest), like the real long poll. */
     var longPoll = false
+    /** Expired envelopes are still served, so the receiver's own expiry check is what refuses them. */
+    var servesExpired = false
 
     override suspend fun execute(method: String, url: String, headers: Map<String, String>, body: ByteArray, timeoutMillis: Int): HttpResponse {
         if (down) throw java.net.ConnectException("connection refused")
@@ -147,7 +149,7 @@ private class FakeRelay(private val clock: () -> Long) : HttpTransport {
             path == listOf("v1", "messages") && method == "GET" -> {
                 polls += target
                 pollErrors.removeFirstOrNull()?.let { (status, code) -> return error(status, code) }
-                mailbox.removeAll { it.expiresAt <= clock() }
+                if (!servesExpired) mailbox.removeAll { it.expiresAt <= clock() }
                 val query = uri.rawQuery.split('&').associate { it.substringBefore('=') to it.substringAfter('=') }
                 val excluded = query["exclude"]?.split(',').orEmpty()
                 check(excluded.size <= 20) { "relay caps exclude at 20" }
@@ -391,13 +393,55 @@ class DeviceLinkClientTest {
         assertTrue(sent.accepted)
         assertEquals(4, relay.mailbox.size)
         val items = mutableListOf<IncomingItem>()
-        repeat(4) { iphone.receiveOnce { items += it; ReceiptStatus.DELIVERED } }
+        // A chunked file is read from the spool, so only inside the handler.
+        val contents = mutableListOf<ByteArray?>()
+        repeat(4) { iphone.receiveOnce { items += it; contents += it.bytes(); ReceiptStatus.DELIVERED } }
         assertEquals(sent.itemId, items.single().id)
-        assertTrue(file.contentEquals(items.single().bytes()!!))
+        assertTrue(file.contentEquals(contents.single()!!))
         val receipt = async(start = CoroutineStart.UNDISPATCHED) { android.events.first { it is LinkEvent.Receipt } }
         android.receiveOnce { error("no content") }
         assertEquals(sent.itemId, (withTimeout(1_000) { receipt.await() } as LinkEvent.Receipt).itemId)
         assertTrue(relay.mailbox.isEmpty())
+    }
+
+    @Test fun `an image one byte over a chunk goes as two chunks and arrives as one image`() = runBlocking {
+        linked()
+        val image = ByteArray(Limits.CHUNK_BYTES + 1) { (it * 7).toByte() }
+        val sent = android.send(OutgoingContent.Image("photo.jpg", "image/jpeg", image)).single()
+        assertTrue(sent.accepted)
+        assertEquals(2, relay.mailbox.size)
+        val items = mutableListOf<IncomingItem>()
+        val contents = mutableListOf<ByteArray?>()
+        repeat(2) { iphone.receiveOnce { items += it; contents += it.bytes(); ReceiptStatus.COPIED } }
+        val item = items.single()
+        assertEquals(sent.itemId, item.id)
+        assertEquals(PayloadKind.IMAGE, item.kind)
+        assertEquals("image/jpeg", item.mime)
+        assertEquals("photo.jpg", item.fileName)
+        assertTrue(image.contentEquals(contents.single()!!))
+    }
+
+    @Test fun `an image of exactly one chunk goes as one envelope`() = runBlocking {
+        linked()
+        val image = ByteArray(Limits.CHUNK_BYTES) { (it * 7).toByte() }
+        assertTrue(android.send(OutgoingContent.Image("photo.jpg", "image/jpeg", image)).single().accepted)
+        assertEquals(1, relay.mailbox.size)
+        val items = mutableListOf<IncomingItem>()
+        iphone.receiveOnce { items += it; ReceiptStatus.COPIED }
+        assertFalse(items.single().payload.isChunk)
+        assertTrue(image.contentEquals(items.single().bytes()!!))
+    }
+
+    @Test fun `a 10 MiB single envelope from an older sender is still accepted`() = runBlocking {
+        val identity = SoftwareIdentity(); val keys = EncryptionKeyPair.generate()
+        val sender = DeviceLinkClient(identity, keys, MemoryLinkStore(), LinkConfig("Pixel", "android"), relay) { now }
+        link(sender, iphone)
+        val image = ByteArray(Limits.MAX_CONTENT_BYTES) { (it * 7).toByte() }
+        relay.mailbox += EnvelopeCrypto(identity, keys).seal(Payload.image("old.png", "image/png", image, now), iphone.localBundle, now, 100L)
+        val items = mutableListOf<IncomingItem>()
+        assertEquals(1, iphone.receiveOnce { items += it; ReceiptStatus.COPIED })
+        assertEquals(PayloadKind.IMAGE, items.single().kind)
+        assertTrue(image.contentEquals(items.single().bytes()!!))
     }
 
     @Test fun `rich text and sensitive flag reach the receiver`() = runBlocking {
@@ -469,9 +513,11 @@ class DeviceLinkClientTest {
 
         val after = desk.start()
         val items = mutableListOf<IncomingItem>()
-        repeat(2) { after.receiveOnce { items += it; ReceiptStatus.DELIVERED } }
+        // A chunked file is read from the spool, so only inside the handler.
+        val contents = mutableListOf<ByteArray?>()
+        repeat(2) { after.receiveOnce { items += it; contents += it.bytes(); ReceiptStatus.DELIVERED } }
         assertEquals(sent.itemId, items.single().id)
-        assertTrue(file.contentEquals(items.single().bytes()!!))
+        assertTrue(file.contentEquals(contents.single()!!))
         val receipt = async(start = CoroutineStart.UNDISPATCHED) { android.events.first { it is LinkEvent.Receipt } }
         android.receiveOnce { error("no content") }
         assertEquals(sent.itemId, (withTimeout(1_000) { receipt.await() } as LinkEvent.Receipt).itemId)
@@ -489,8 +535,10 @@ class DeviceLinkClientTest {
         assertTrue(relay.mailbox.none { it.recipientId == before.deviceId })
 
         val items = mutableListOf<IncomingItem>()
-        desk.start().receiveOnce(waitSeconds = 0) { items += it; ReceiptStatus.DELIVERED }
-        assertTrue(file.contentEquals(items.single().bytes()!!))
+        // A chunked file is read from the spool, so only inside the handler.
+        val contents = mutableListOf<ByteArray?>()
+        desk.start().receiveOnce(waitSeconds = 0) { items += it; contents += it.bytes(); ReceiptStatus.DELIVERED }
+        assertTrue(file.contentEquals(contents.single()!!))
         assertEquals(0, desk.start().receiveOnce(waitSeconds = 0) { error("applied twice") })
     }
 
@@ -725,6 +773,87 @@ class DeviceLinkClientTest {
         assertEquals(LinkEvent.Receipt(parts.first().group!!, iphone.deviceId, ReceiptStatus.FAILED), withTimeout(1_000) { receipt.await() })
     }
 
+    /** A sender linked to [receiver] whose chunks are sealed by hand, each at the current virtual time. */
+    private inner class HandSender(receiver: DeviceLinkClient) {
+        private val identity = SoftwareIdentity()
+        private val keys = EncryptionKeyPair.generate()
+        private val recipient = receiver.localBundle
+        val client = DeviceLinkClient(identity, keys, MemoryLinkStore(), LinkConfig("Pixel", "android"), relay) { now }
+        init { link(client, receiver) }
+        fun upload(part: Payload) { relay.mailbox += EnvelopeCrypto(identity, keys).seal(part, recipient, now, 100L + part.part!!) }
+    }
+
+    /** An 8-part image of small chunks (the receiver only checks that the parts add up to `size`). */
+    private fun eightParts(): Pair<ByteArray, List<Payload>> {
+        val bytes = ByteArray(8 * 16) { (it * 13).toByte() }
+        val group = java.util.UUID.randomUUID().toString()
+        return bytes to List(8) { part ->
+            Payload.chunk(PayloadKind.IMAGE, "slow.png", "image/png", bytes.copyOfRange(part * 16, part * 16 + 16), part, 8, bytes.size.toLong(), now, group)
+        }
+    }
+
+    @Test fun `a file whose upload outlasts one lifetime assembles while each part follows within a lifetime`() = runBlocking {
+        val desk = Restartable()
+        for (receiver in listOf(iphone, desk.start())) {
+            val sender = HandSender(receiver)
+            // An earlier clip was copied: the file must still not be stale.
+            sender.client.send(OutgoingContent.Text("earlier"))
+            receiver.receiveOnce { ReceiptStatus.COPIED }
+            val (bytes, parts) = eightParts()
+            val start = now
+            val items = mutableListOf<IncomingItem>()
+            val contents = mutableListOf<ByteArray?>()
+            parts.forEachIndexed { index, part ->
+                if (index > 0) now += 60_000
+                sender.upload(part)
+                receiver.receiveOnce { items += it; contents += it.bytes(); ReceiptStatus.COPIED }
+            }
+            assertTrue("the first part's envelope expired before the last arrived", now - start > Limits.DEFAULT_LIFETIME_MILLIS)
+            val item = items.single()
+            assertEquals(parts.first().group, item.id)
+            assertTrue(bytes.contentEquals(contents.single()!!))
+            assertFalse(item.stale)
+            assertTrue(item.expiresAt > now)
+            val receipt = async(start = CoroutineStart.UNDISPATCHED) { sender.client.events.first { it is LinkEvent.Receipt && it.itemId == item.id } }
+            sender.client.drain { error("no content") }
+            assertEquals(LinkEvent.Receipt(item.id, receiver.deviceId, ReceiptStatus.COPIED), withTimeout(1_000) { receipt.await() })
+        }
+        assertTrue("spool is cleaned after apply", desk.spooled().isEmpty())
+    }
+
+    @Test fun `a file that stops making progress is dropped after one lifetime and its sender gets a failed receipt`() = runBlocking {
+        val desk = Restartable()
+        for (receiver in listOf(iphone, desk.start())) {
+            val sender = HandSender(receiver)
+            val (_, parts) = eightParts()
+            parts.take(3).forEachIndexed { index, part ->
+                if (index > 0) now += 60_000
+                sender.upload(part)
+                assertEquals(0, receiver.receiveOnce { error("an incomplete file must not be applied") })
+            }
+            val lastPart = now
+            now = lastPart + ChunkSpool.GROUP_IDLE_MILLIS - 1
+            receiver.receiveOnce { error("no content") }
+            assertTrue("kept while within a lifetime of its last part", relay.mailbox.none { it.recipientId == sender.client.deviceId })
+            now = lastPart + ChunkSpool.GROUP_IDLE_MILLIS
+            receiver.receiveOnce { error("no content") }
+            val receipt = async(start = CoroutineStart.UNDISPATCHED) { sender.client.events.first { it is LinkEvent.Receipt } }
+            sender.client.receiveOnce { error("no content") }
+            assertEquals(LinkEvent.Receipt(parts.first().group!!, receiver.deviceId, ReceiptStatus.FAILED), withTimeout(1_000) { receipt.await() })
+        }
+        assertTrue("the stalled file is gone from the spool", desk.spooled().isEmpty())
+    }
+
+    @Test fun `a single envelope past its expiry is refused by the receiver itself`() = runBlocking {
+        linked()
+        relay.servesExpired = true
+        android.send(OutgoingContent.Text("late"))
+        now += Limits.DEFAULT_LIFETIME_MILLIS
+        assertEquals(0, iphone.receiveOnce { error("must not deliver") })
+        assertEquals(1, iphone.diagnostics.value.undecryptable)
+        assertTrue(relay.mailbox.isEmpty())
+    }
+
     @Test fun `unregister tells peers, deletes the device on the relay and forgets every link`() = runBlocking {
         linked()
         val unlinked = async(start = CoroutineStart.UNDISPATCHED) { android.events.first { it is LinkEvent.PeerUnlinked } }
@@ -765,5 +894,112 @@ class DeviceLinkClientTest {
         linked()
         android.unlinkAll()
         assertTrue(android.peers.value.isEmpty())
+    }
+
+    /** Generated content read on demand; records how far it was read and how often it was opened. */
+    private class CountingSource(val size: Long) {
+        var opened = 0
+        var position = 0L
+        fun byteAt(index: Long) = (index * 31 % 251).toByte()
+        fun content() = OutgoingContent.Source(PayloadKind.FILE, "big.zip", "application/zip", size) {
+            opened++
+            object : java.io.InputStream() {
+                override fun read(): Int = if (position >= size) -1 else byteAt(position++).toInt() and 0xff
+                override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
+                    if (position >= size) return -1
+                    val count = minOf(length.toLong(), size - position).toInt()
+                    repeat(count) { buffer[offset + it] = byteAt(position++) }
+                    return count
+                }
+            }
+        }
+        fun sha256(): ByteArray = java.security.MessageDigest.getInstance("SHA-256").also { digest ->
+            val block = ByteArray(1 shl 16)
+            var index = 0L
+            while (index < size) {
+                val count = minOf(block.size.toLong(), size - index).toInt()
+                repeat(count) { block[it] = byteAt(index + it) }
+                digest.update(block, 0, count); index += count
+            }
+        }.digest()
+    }
+
+    private class Device(val identity: DeviceIdentity = SoftwareIdentity(), val keys: EncryptionKeyPair = EncryptionKeyPair.generate()) {
+        val crypto = EnvelopeCrypto(identity, keys)
+    }
+
+    @Test fun `an upload answered after 30 s but within the relay's allowance succeeds`() {
+        // The real stack starts the response timer once the body is in the send buffer; here the relay stores
+        // the chunk, then answers late. A 30 s timer reported such uploads as failed although they arrived.
+        val answerMillis = 90_000L
+        val timeouts = mutableListOf<Int>()
+        val slow = HttpTransport { method, url, headers, body, timeout ->
+            val response = relay.execute(method, url, headers, body, timeout)
+            if (method == "POST" && url.endsWith("/v1/messages")) {
+                timeouts += timeout
+                kotlinx.coroutines.delay(minOf(answerMillis, timeout.toLong()))
+                if (timeout < answerMillis) throw java.net.SocketTimeoutException("read timed out")
+            }
+            response
+        }
+        val sender = DeviceLinkClient(SoftwareIdentity(), EncryptionKeyPair.generate(), MemoryLinkStore(), LinkConfig("Pixel", "android"), slow) { now }
+        link(sender, iphone)
+        var outcome: SendOutcome? = null
+        runTest(timeout = kotlin.time.Duration.parse("2m")) { outcome = sender.send(OutgoingContent.File("big.bin", "application/octet-stream", bigFile())).single() }
+        assertTrue(outcome!!.accepted)
+        assertEquals("one attempt per chunk", 4, relay.uploads)
+        assertTrue(timeouts.all { it > answerMillis })
+    }
+
+    @Test fun `a 30 MB source is read one chunk at a time and arrives intact`() {
+        val sending = Device(); val receiving = Device()
+        val source = CountingSource(30L * 1024 * 1024)
+        val readAtUpload = mutableListOf<Long>()
+        val counting = HttpTransport { method, url, headers, body, timeout ->
+            if (method == "POST" && url.endsWith("/v1/messages")) readAtUpload += source.position
+            relay.execute(method, url, headers, body, timeout)
+        }
+        val sender = DeviceLinkClient(sending.identity, sending.keys, MemoryLinkStore(), LinkConfig("Pixel", "android"), counting) { now }
+        val receiver = DeviceLinkClient(receiving.identity, receiving.keys, MemoryLinkStore(), LinkConfig("Desk", "desktop"), relay) { now }
+        link(sender, receiver)
+        relay.uploadFaults[relay.uploads + 3] = relayError(503, "unavailable")
+        var outcome: SendOutcome? = null
+        // Real time: the one retry pause is 1 s, and 30 MB of sealing should not race a virtual-time timeout.
+        runBlocking { outcome = sender.send(source.content()).single() }
+        assertTrue(outcome!!.accepted)
+        assertEquals(1, source.opened)
+        val parts = Payload.partsFor(source.size)
+        // Upload k (and the resend of chunk 2) happens with exactly chunks 0..k read: nothing is read ahead.
+        val chunkEnd = { k: Int -> minOf(source.size, (k + 1L) * Limits.CHUNK_BYTES) }
+        assertEquals(listOf(0, 1, 2, 2).map(chunkEnd) + (3 until parts).map(chunkEnd), readAtUpload)
+        val opened = relay.mailbox.map { receiving.crypto.open(it, sender.localBundle, now) }
+        assertEquals((0 until parts).toList(), opened.map { it.part })
+        assertEquals(setOf(outcome!!.itemId), opened.map { it.group }.toSet())
+        assertTrue(opened.all { it.parts == parts && it.size == source.size && it.kind == PayloadKind.FILE && it.name == "big.zip" })
+
+        val digest = java.security.MessageDigest.getInstance("SHA-256")
+        var applied = 0
+        runBlocking {
+            repeat(parts) {
+                applied += receiver.receiveOnce(0) { item ->
+                    assertEquals(outcome!!.itemId, item.id)
+                    item.writeTo(java.security.DigestOutputStream(java.io.OutputStream.nullOutputStream(), digest))
+                    ReceiptStatus.DELIVERED
+                }
+            }
+        }
+        assertEquals(1, applied)
+        assertTrue(source.sha256().contentEquals(digest.digest()))
+    }
+
+    @Test fun `a source shorter than its size fails the send without a network error`() {
+        linked()
+        val short = OutgoingContent.Source(PayloadKind.FILE, "cut.bin", "application/octet-stream", Limits.MAX_CONTENT_BYTES + 1L) {
+            java.io.ByteArrayInputStream(ByteArray(Limits.CHUNK_BYTES + 5))
+        }
+        var outcome: SendOutcome? = null
+        runTest { outcome = android.send(short).single() }
+        assertEquals(SendOutcome.SEND_FAILED, outcome!!.error)
+        assertEquals("only the complete first chunk went out", 1, relay.mailbox.size)
     }
 }

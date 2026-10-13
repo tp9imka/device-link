@@ -78,11 +78,13 @@ final class ClipStore: ObservableObject {
         var record = ClipRecord(id: item.id, direction: .received, peerName: item.peer.name, kind: item.kind.rawValue,
                                 text: item.text, fileName: nil, mime: item.payload.mime, at: Date(), state: .shareNeeded,
                                 html: item.html, sensitive: item.sensitive)
-        if let data = item.bytes(), let name = item.fileName {
+        if item.kind == .image || item.kind == .file, let name = item.fileName {
             let directory = Self.filesDirectory.appendingPathComponent(item.id)
             try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            try? data.write(to: directory.appendingPathComponent(name), options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
-            record.fileName = name
+            let protection: [FileAttributeKey: Any] = [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication]
+            if (try? ReceivedFiles.write(to: directory.appendingPathComponent(name), replacing: true, attributes: protection) {
+                try item.write(to: $0)
+            }) != nil { record.fileName = name }
             ReceivedFiles.prune(in: Self.filesDirectory)
         }
         let copied = autoCopy && !item.stale && Pasteboard.write(record)
